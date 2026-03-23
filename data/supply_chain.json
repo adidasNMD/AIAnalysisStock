@@ -1,0 +1,55 @@
+{
+  "AI_Infrastructure": {
+    "description": "AI算力基础设施全产业链映射图谱",
+    "upstream_compute": {
+      "tickers": ["NVDA", "AMD", "AVGO"],
+      "role": "GPU/ASIC设计与制造，算力核心供应商",
+      "note": "已被华尔街充分定价，上车超额赔率极低"
+    },
+    "midstream_interconnect": {
+      "optical_transceivers": {
+        "tickers": ["AAOI", "LITE", "COHR"],
+        "role": "800G/1.6T硅光模块，万卡集群互联速率瓶颈",
+        "deduction": "GPU集群规模越大，对光互联带宽需求呈指数增长。二线厂筹码结构最干净"
+      },
+      "networking": {
+        "tickers": ["ANET", "CSCO"],
+        "role": "数据中心交换机与网络架构"
+      }
+    },
+    "midstream_cooling": {
+      "tickers": ["VRT"],
+      "role": "液冷与热管理，高密度GPU集群的散热刚需"
+    },
+    "downstream_memory": {
+      "tickers": ["WDC", "MU", "STX"],
+      "role": "企业级SSD/HBM，大模型推理的高并发随机读取瓶颈",
+      "deduction": "超大参数预训练与推理需要极高并发IO，HBM3E产能受限带来强定价权"
+    },
+    "downstream_servers": {
+      "tickers": ["SMCI", "DELL"],
+      "role": "AI服务器组装与交付"
+    },
+    "downstream_cloud": {
+      "tickers": ["CRWV"],
+      "role": "GPU-as-a-Service，专用AI算力租赁",
+      "deduction": "CSP产能不足时的溢出需求承接者，CoreWeave IPO后的定价重估"
+    },
+    "power_nuclear": {
+      "tickers": ["SMR", "OKLO", "CEG", "VST"],
+      "role": "核电基荷电力，数据中心长期稳定电力PPA",
+      "deduction": "数据中心用电量爆炸增长，可再生能源无法提供稳定基荷，核电SMR是唯一解"
+    },
+    "application_ai": {
+      "tickers": ["PL"],
+      "role": "AI应用落地，卫星遥感数据+AI推理平台",
+      "deduction": "海量卫星数据+AI推理能力=地球智能平台，市场严重低估其数据资产价值重估潜力"
+    }
+  },
+  "deductionChainTemplates": [
+    "GPU demand surge (NVDA) → Optical interconnect bottleneck (AAOI, LITE) → Enterprise SSD/HBM demand (WDC, MU)",
+    "Government AI infrastructure bill → Data center buildout → Stable baseload power → Nuclear SMR (SMR, OKLO, CEG)",
+    "AI inference scaling → GPU rental demand overflow → CoreWeave (CRWV) revenue explosion",
+    "Satellite data volume explosion → AI-powered analytics platform → Planet Labs (PL) value re-rating"
+  ]
+}
