@@ -8,7 +8,7 @@ export const RawSignalSchema = z.object({
   timestamp: z.number(),
   author: z.string().optional(),
   url: z.string().optional(),
-  metadata: z.record(z.any()).optional()
+  metadata: z.record(z.string(), z.any()).optional()
 });
 export type RawSignal = z.infer<typeof RawSignalSchema>;
 

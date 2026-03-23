@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/index.ts",
+    "daemon": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/worker.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -13,12 +14,15 @@
   "type": "commonjs",
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "@types/node-cron": "^3.0.11",
     "@types/uuid": "^10.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
+    "node-cron": "^4.2.1",
+    "openclaw": "^2026.3.22",
     "uuid": "^13.0.0",
     "zod": "^4.3.6"
   }
