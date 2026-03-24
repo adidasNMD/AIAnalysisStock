@@ -13,6 +13,10 @@ export interface LLMConfig {
  * 不依赖任何特定厂商的 SDK（如 openai包），采用纯粹的 fetch 协议请求标准的 /v1/chat/completions 接口。
  * 这保证了系统可以无缝接入任何 OpenAI 兼容的中转代理、DeepSeek、Ollama 以及各种开源模型。
  */
+const MAX_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 60000;
+const FALLBACK_MODELS = ['gpt-4o-mini', 'gpt-3.5-turbo'];
+
 export async function generateStructuredOutput<T>(
   schema: z.ZodType<T>,
   systemPrompt: string,
@@ -117,46 +121,77 @@ export async function generateStructuredOutput<T>(
     return mockResult as T;
   }
 
-  const requestBody = {
-    model,
-    messages: [
-      { role: 'system', content: finalSystemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    // 大多数现代模型/中转支持简单的 json_object 声明，如果不兼容可将此行注释
-    response_format: { type: "json_object" } 
-  };
+  // 带重试和超时的请求逻辑
+  let lastError: Error | null = null;
+  const modelsToTry = [model, ...FALLBACK_MODELS.filter(m => m !== model)];
 
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`LLM API 请求错误 (${response.status}): ${errorBody}`);
-  }
-
-  const data = await response.json();
-  const rawContent = data.choices?.[0]?.message?.content;
-  
-  if (!rawContent) {
-    throw new Error('LLM 接口返回了空数据或异常格式。');
-  }
-
-  try {
-    // 兼容部分未完全听从指令的模型，手动清除可能存在的 ```json 前缀
-    const cleanedContent = rawContent.replace(/^```json\s*/, '').replace(/```\s*$/, '');
-    const parsedJson = JSON.parse(cleanedContent);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const currentModel = attempt === 0 ? model : (modelsToTry[Math.min(attempt, modelsToTry.length - 1)] || model);
     
-    // Zod 会在这最后一道防线极其严格地检查数据是否合法
-    return schema.parse(parsedJson);
-  } catch (err: any) {
-    console.error('[LLM Utility] 数据结构解析或验证失败:', err.message);
-    throw new Error('模型输出无法匹配预期的 Zod 数据约束。');
+    if (attempt > 0) {
+      const delay = Math.pow(2, attempt) * 1000; // 指数退避: 2s, 4s
+      console.log(`[LLM Utility] ⏳ 第 ${attempt + 1}/${MAX_RETRIES} 次重试 (${delay}ms 后)，使用模型: ${currentModel}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    try {
+      const requestBody = {
+        model: currentModel,
+        messages: [
+          { role: 'system', content: finalSystemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        // 大多数现代模型/中转支持简单的 json_object 声明，如果不兼容可将此行注释
+        response_format: { type: "json_object" } 
+      };
+
+      // 使用 AbortController 实现超时
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`LLM API 请求错误 (${response.status}): ${errorBody}`);
+      }
+
+      const data = await response.json();
+      const rawContent = data.choices?.[0]?.message?.content;
+      
+      if (!rawContent) {
+        throw new Error('LLM 接口返回了空数据或异常格式。');
+      }
+
+      // 兼容部分未完全听从指令的模型，手动清除可能存在的 ```json 前缀
+      const cleanedContent = rawContent.replace(/^```json\s*/, '').replace(/```\s*$/, '');
+      const parsedJson = JSON.parse(cleanedContent);
+      
+      // Zod 会在这最后一道防线极其严格地检查数据是否合法
+      return schema.parse(parsedJson);
+    } catch (err: any) {
+      lastError = err;
+      const isTimeout = err.name === 'AbortError';
+      const isRetryable = isTimeout || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503')));
+      
+      console.error(`[LLM Utility] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
+      
+      if (!isRetryable && attempt === 0) {
+        // 非可重试错误（如 parse 错误），直接抛出
+        throw err;
+      }
+    }
   }
+
+  throw lastError || new Error('LLM 请求在所有重试后仍然失败。');
 }

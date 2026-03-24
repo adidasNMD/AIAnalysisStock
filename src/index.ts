@@ -1,4 +1,4 @@
-import { OpenClawPipeline } from './workflows/pipeline';
+import { AgentSwarmOrchestrator } from './workflows/swarm-pipeline';
 import * as readline from 'readline';
 
 const rl = readline.createInterface({
@@ -8,8 +8,8 @@ const rl = readline.createInterface({
 
 async function main() {
   console.log(`\n==================================================================`);
-  console.log(`🦅 OPENCLAW AUTONOMOUS INTELLIGENCE DESK (MVP)`);
-  console.log(`   (Powered by Desearch.ai 🔥 + Generic LLM Schema Reasoning 🧠)`);
+  console.log(`🦅 OPENCLAW AUTONOMOUS INTELLIGENCE DESK (V4)`);
+  console.log(`   (Powered by Reddit + Desearch.ai 🔥 + Generic LLM Schema Reasoning 🧠)`);
   console.log(`==================================================================\n`);
 
   rl.question('Enter a market narrative or ticker to investigate (e.g., "NVDA Blackwell" or "Solana ETF"): ', async (query) => {
@@ -20,8 +20,8 @@ async function main() {
     }
     
     console.log(`\n[Agent Orchestrator] Dispatching search & intelligence forces for: "${query}"...`);
-    const pipeline = new OpenClawPipeline();
-    await pipeline.runPipeline(query);
+    const orchestrator = new AgentSwarmOrchestrator();
+    await orchestrator.executeMission(query);
     
     rl.close();
   });

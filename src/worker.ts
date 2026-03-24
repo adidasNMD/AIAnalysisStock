@@ -6,18 +6,23 @@ import { scanTicker, AlertSignal, generateTechSnapshot } from './tools/market-da
 import { sendAlertBatch, sendStopLossAlert, sendEntrySignal, sendReportSummary, sendMessage } from './utils/telegram';
 import { pollAllFeeds, alertsToContext, RSSAlert } from './tools/rss-monitor';
 import { watchIPO, filingsToContext } from './tools/edgar-monitor';
+import { TrendRadar } from './agents/trend/trend-radar';
+import { scanAllSectorETFs, generateSectorOverview } from './tools/sector-scanner';
+import { getActiveTickers, promoteTicker, generateDynamicWatchlistOverview, DynamicTicker } from './utils/dynamic-watchlist';
 
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
-// 多级触发哨兵模式
+// 多级触发哨兵模式 + TrendRadar 趋势雷达
 // ==========================================
 
 console.log(`\n==================================================================`);
 console.log(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
-console.log(`   Mode: Multi-trigger Watchlist Sentinel`);
+console.log(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar`);
+console.log(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
 console.log(`==================================================================\n`);
 
 const orchestrator = new AgentSwarmOrchestrator();
+const trendRadar = new TrendRadar();
 
 // 加载 Watchlist
 interface WatchlistTicker {
@@ -37,6 +42,9 @@ interface WatchlistTicker {
 interface WatchlistConfig {
   tickers: WatchlistTicker[];
   eventSources: Array<{ name: string; url: string; keywords: string[] }>;
+  sectorETFs?: Array<{ symbol: string; name: string; sector: string }>;
+  redditSources?: Array<{ subreddit: string; type: string; limit: number }>;
+  googleNewsKeywords?: string[];
 }
 
 function loadWatchlist(): WatchlistConfig {
@@ -49,20 +57,45 @@ function loadWatchlist(): WatchlistConfig {
 }
 
 // ==========================================
-// TRIGGER 1: 每 5 分钟 — Watchlist 价量异动扫描
+// TRIGGER 1: 每 5 分钟 — Watchlist + 动态观察池 价量异动扫描
 // ==========================================
 cron.schedule('*/5 * * * *', async () => {
   const watchlist = loadWatchlist();
-  console.log(`\n[Sentinel] 🔍 开始 Watchlist 价量扫描 (${watchlist.tickers.length} 只标的)...`);
+  const dynamicTickers = getActiveTickers();
+  const totalCount = watchlist.tickers.length + dynamicTickers.length;
+  console.log(`\n[Sentinel] 🔍 开始价量扫描 (静态 ${watchlist.tickers.length} + 动态 ${dynamicTickers.length} = ${totalCount} 只标的)...`);
 
   const allAlerts: AlertSignal[] = [];
 
+  // 扫描静态 Watchlist
   for (const ticker of watchlist.tickers) {
     try {
       const alerts = await scanTicker(ticker.symbol, ticker.alerts);
       allAlerts.push(...alerts);
     } catch (e: any) {
       console.error(`[Sentinel] Scan failed for ${ticker.symbol}: ${e.message}`);
+    }
+  }
+
+  // 扫描动态观察池（watching + focused）
+  for (const dTicker of dynamicTickers) {
+    try {
+      const alerts = await scanTicker(dTicker.symbol, dTicker.alerts);
+      allAlerts.push(...alerts);
+
+      // 关键：动态标的出现入场级信号 → 自动升级为 focused 并触发深度分析
+      const actionAlerts = alerts.filter(a => a.severity === 'action');
+      if (actionAlerts.length > 0 && dTicker.status === 'watching') {
+        promoteTicker(dTicker.symbol, `价量异动触发: ${actionAlerts.map(a => a.details).join('; ')}`);
+        console.log(`[Sentinel] 🎯 动态标的 ${dTicker.symbol} 升级为 focused！触发深度分析...`);
+        try {
+          await orchestrator.executeMission(`${dTicker.trendName} — ${dTicker.symbol} ${dTicker.name} breakout analysis`);
+        } catch (e: any) {
+          console.error(`[Sentinel] Deep analysis failed for dynamic ${dTicker.symbol}: ${e.message}`);
+        }
+      }
+    } catch (e: any) {
+      console.error(`[Sentinel] Dynamic scan failed for ${dTicker.symbol}: ${e.message}`);
     }
   }
 
@@ -75,7 +108,7 @@ cron.schedule('*/5 * * * *', async () => {
       await sendStopLossAlert(alert.symbol, alert.details);
     }
 
-    // 入场信号单独推送
+    // 入场信号单独推送（静态 Watchlist 标的）
     const actions = allAlerts.filter(a => a.severity === 'action');
     for (const alert of actions) {
       await sendEntrySignal(alert.symbol, alert.details);
@@ -98,7 +131,7 @@ cron.schedule('*/5 * * * *', async () => {
     // 信息级别汇总推送
     await sendAlertBatch(allAlerts);
   } else {
-    console.log(`[Sentinel] ✅ Watchlist 无异动，保持监控。`);
+    console.log(`[Sentinel] ✅ 全部标的无异动，保持监控。`);
   }
 });
 
@@ -168,6 +201,18 @@ cron.schedule('30 08 * * 1-5', async () => {
       snapshot += `[${ticker.symbol}] 数据获取失败\n`;
     }
   }
+
+  // 新增：板块 ETF 概览
+  try {
+    const sectorSignals = await scanAllSectorETFs();
+    snapshot += `\n${generateSectorOverview(sectorSignals)}`;
+  } catch (e: any) {
+    console.error(`[Sentinel] Sector scan failed: ${e.message}`);
+  }
+
+  // 新增：动态观察池概览
+  snapshot += `\n${generateDynamicWatchlistOverview()}`;
+
   await sendReportSummary('Watchlist 盘前扫描', snapshot);
 
   // 对每个赛道执行一次叙事级别的深度扫查
@@ -181,6 +226,38 @@ cron.schedule('30 08 * * 1-5', async () => {
     } catch (e: any) {
       console.error(`[Sentinel] Sector analysis failed for ${sector}: ${e.message}`);
     }
+  }
+});
+
+// ==========================================
+// TRIGGER 4: 每 15 分钟 — TrendRadar 趋势雷达扫描
+// ==========================================
+cron.schedule('7,22,37,52 * * * *', async () => {
+  console.log(`\n[Sentinel] 📡 TrendRadar 趋势雷达启动...`);
+  
+  try {
+    const analysis = await trendRadar.scan();
+    
+    // 推送趋势概览到 Telegram
+    const telegramMsg = trendRadar.formatForTelegram(analysis);
+    await sendMessage(telegramMsg);
+
+    // 对高分加速趋势自动触发深度分析
+    for (const topic of analysis.topics) {
+      if (topic.momentum === 'accelerating' && topic.hasCatalyst && topic.score >= 70) {
+        console.log(`[Sentinel] 🚀 高分趋势触发深度分析: ${topic.name} (${topic.score}分)`);
+        try {
+          await orchestrator.executeMission(`${topic.name} — 趋势主题深度分析`);
+        } catch (e: any) {
+          console.error(`[Sentinel] Trend deep analysis failed for ${topic.name}: ${e.message}`);
+        }
+      } else if (topic.momentum === 'decelerating' && topic.score < 30) {
+        // 衰退趋势风险预警
+        await sendMessage(`⚠️ *趋势衰退预警*: ${topic.name} 热度正在下降 (${topic.score}分)\n标的: ${topic.tickers.join(', ')}\n如已持仓，请注意风险控制。`);
+      }
+    }
+  } catch (e: any) {
+    console.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
   }
 });
 
@@ -204,6 +281,15 @@ if (process.argv.includes('--run-now')) {
       }
     }
 
+    // 板块 ETF 概览
+    console.log(`\n[Sentinel] 📊 板块 ETF 概览:`);
+    try {
+      const sectorSignals = await scanAllSectorETFs();
+      console.log(generateSectorOverview(sectorSignals));
+    } catch (e: any) {
+      console.log(`  板块扫描失败: ${e.message}`);
+    }
+
     // 再执行异动检测
     console.log(`\n[Sentinel] 🔍 价量异动扫描:`);
     for (const ticker of watchlist.tickers) {
@@ -216,6 +302,28 @@ if (process.argv.includes('--run-now')) {
         }
       } catch (e: any) {
         console.log(`  ❌ ${ticker.symbol}: 扫描失败 — ${e.message}`);
+      }
+    }
+
+    // 动态观察池概览
+    const dynamicTickers = getActiveTickers();
+    if (dynamicTickers.length > 0) {
+      console.log(`\n[Sentinel] 📋 动态观察池 (${dynamicTickers.length} 只标的):`);
+      for (const dt of dynamicTickers) {
+        console.log(`  ${dt.status === 'focused' ? '🎯' : '👀'} ${dt.symbol} (${dt.name}) | ${dt.chainLevel} | 评分${dt.multibaggerScore} | 来源: ${dt.discoverySource}`);
+      }
+    } else {
+      console.log(`\n[Sentinel] 📋 动态观察池为空（运行 --trend 触发标的发现）`);
+    }
+
+    // TrendRadar 扫描
+    if (process.argv.includes('--trend')) {
+      console.log(`\n[Sentinel] 📡 执行 TrendRadar 趋势扫描...`);
+      try {
+        const analysis = await trendRadar.scan();
+        console.log(trendRadar.formatForTelegram(analysis));
+      } catch (e: any) {
+        console.log(`  TrendRadar 扫描失败: ${e.message}`);
       }
     }
 

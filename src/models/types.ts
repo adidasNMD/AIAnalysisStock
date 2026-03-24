@@ -3,7 +3,7 @@ import { z } from 'zod';
 // 1. RawSignal 基础原始数据模型
 export const RawSignalSchema = z.object({
   id: z.string(),
-  sourceType: z.enum(['twitter', 'reddit', 'news', 'sec', 'calendar', 'internal_memory']),
+  sourceType: z.enum(['twitter', 'reddit', 'news', 'sec', 'calendar', 'internal_memory', 'google_news', 'sector_etf']),
   content: z.string(),
   timestamp: z.number(),
   author: z.string().optional(),
@@ -12,7 +12,7 @@ export const RawSignalSchema = z.object({
 });
 export type RawSignal = z.infer<typeof RawSignalSchema>;
 
-// 2. StructuredEvent 结构化事件模型
+// 2. StructuredEvent 结构化事件模型（增强版）
 export const StructuredEventSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -21,11 +21,25 @@ export const StructuredEventSchema = z.object({
   credibility: z.number().min(0).max(10), // 可信度打分
   novelty: z.number().min(0).max(10),     // 新颖度打分
   entities: z.array(z.string()),
-  timestamp: z.number()
+  timestamp: z.number(),
+  // 新增字段
+  eventType: z.enum(['policy', 'earnings', 'supply_chain', 'ipo', 'macro', 'sentiment', 'technical', 'other']).optional(),
+  direction: z.enum(['bullish', 'bearish', 'neutral']).optional(),
+  urgency: z.enum(['immediate', 'short_term', 'medium_term']).optional(),
+  trendRelevance: z.number().min(0).max(10).optional(), // 与当前热门趋势的关联度
 });
 export type StructuredEvent = z.infer<typeof StructuredEventSchema>;
 
-// [REMOVED] NarrativeStage Schema (User requested removal of arbitrary strict stages)
+// 3. NarrativeStage 叙事生命周期阶段（重新引入）
+export const NarrativeStageSchema = z.enum([
+  'earlyFermentation',  // 早期酝酿 → 小仓试错
+  'emergingConsensus',  // 共识形成 → 逐步建仓
+  'mainExpansion',      // 主升浪 → 加仓参与
+  'crowdedClimax',      // 拥挤高潮 → 控制风险
+  'narrativeFatigue',   // 叙事疲劳 → 准备退出
+  'postCollapse'        // 崩溃后 → 完全回避
+]);
+export type NarrativeStage = z.infer<typeof NarrativeStageSchema>;
 
 // 4. NarrativeTopic 叙事主题
 export const NarrativeTopicSchema = z.object({
@@ -78,3 +92,25 @@ export const DebateResultSchema = z.object({
   timestamp: z.number()
 });
 export type DebateResult = z.infer<typeof DebateResultSchema>;
+
+// 8. TrendSnapshot 趋势快照模型（新增 — TrendRadar 输出）
+export const TrendTopicSchema = z.object({
+  name: z.string(),
+  momentum: z.enum(['accelerating', 'stable', 'decelerating']),
+  phase: z.enum(['emerging', 'trending', 'fading']),
+  tickers: z.array(z.string()),
+  relatedETFs: z.array(z.string()),
+  hasCatalyst: z.boolean(),
+  catalystDescription: z.string().optional(),
+  score: z.number().min(0).max(100),
+  sources: z.array(z.string()),
+});
+export type TrendTopic = z.infer<typeof TrendTopicSchema>;
+
+export const TrendSnapshotSchema = z.object({
+  timestamp: z.number(),
+  topics: z.array(TrendTopicSchema),
+  marketSentiment: z.enum(['risk_on', 'neutral', 'risk_off']),
+  summary: z.string(),
+});
+export type TrendSnapshot = z.infer<typeof TrendSnapshotSchema>;

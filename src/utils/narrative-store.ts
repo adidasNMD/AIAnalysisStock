@@ -28,6 +28,7 @@ export interface NarrativeRecord {
     date: string;
     event: string;
   }>;
+  stage: 'earlyFermentation' | 'emergingConsensus' | 'mainExpansion' | 'crowdedClimax' | 'narrativeFatigue' | 'postCollapse';
   status: 'active' | 'paused' | 'invalidated';
 }
 
@@ -125,6 +126,7 @@ export function createNarrative(
       date: now,
       event: `首次发现: ${topic.title}`
     }],
+    stage: 'earlyFermentation',
     status: 'active'
   };
 

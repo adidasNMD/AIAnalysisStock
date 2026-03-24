@@ -77,5 +77,28 @@
     { "name": "WhiteHouse", "url": "https://www.whitehouse.gov/feed/", "keywords": ["AI", "artificial intelligence", "nuclear", "data center", "tariff", "semiconductor", "chips"] },
     { "name": "NRC", "url": "https://www.nrc.gov/reading-rm/doc-collections/news/rss.xml", "keywords": ["SMR", "NuScale", "OKLO", "advanced reactor", "license", "approval"] },
     { "name": "DOE", "url": "https://www.energy.gov/rss/articles.xml", "keywords": ["nuclear", "data center", "clean energy", "grid"] }
+  ],
+  "sectorETFs": [
+    { "symbol": "SMH", "name": "半导体", "sector": "semiconductor" },
+    { "symbol": "XLK", "name": "科技", "sector": "technology" },
+    { "symbol": "XLE", "name": "能源", "sector": "energy" },
+    { "symbol": "XLF", "name": "金融", "sector": "financials" },
+    { "symbol": "IBB", "name": "生物医药", "sector": "biotech" },
+    { "symbol": "URA", "name": "铀/核电", "sector": "nuclear" },
+    { "symbol": "TAN", "name": "太阳能", "sector": "solar" },
+    { "symbol": "LIT", "name": "锂电池", "sector": "lithium" },
+    { "symbol": "BOTZ", "name": "机器人/AI", "sector": "robotics_ai" },
+    { "symbol": "SOXX", "name": "半导体指数", "sector": "semiconductor_index" }
+  ],
+  "redditSources": [
+    { "subreddit": "wallstreetbets", "type": "hot", "limit": 10 },
+    { "subreddit": "stocks", "type": "hot", "limit": 10 },
+    { "subreddit": "investing", "type": "hot", "limit": 10 },
+    { "subreddit": "semiconductors", "type": "new", "limit": 15 },
+    { "subreddit": "nuclear", "type": "new", "limit": 15 }
+  ],
+  "googleNewsKeywords": [
+    "AI data center", "nuclear power plant", "semiconductor shortage",
+    "GPU demand", "optical transceiver", "CoreWeave", "SMR reactor"
   ]
 }
