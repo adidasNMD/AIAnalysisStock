@@ -1,47 +1,32 @@
-import { RawSignal, StructuredEvent, StructuredEventSchema } from '../../models/types';
-import { generateStructuredOutput } from '../../utils/llm';
-import { v4 as uuidv4 } from 'uuid';
+import { RawSignal } from '../../models/types';
+import { generateTextCompletion } from '../../utils/llm';
 
+/**
+ * EventExtractorAgent — 事件提取器 (Free-form Text Flow 版本)
+ * 
+ * 从混合多源情报中提取核心事件的文本摘要
+ */
 export class EventExtractorAgent {
-  /**
-   * 将含有噪音的混合多源情报，融合成一个聚焦的高价值结构化事件
-   */
-  async extractEvent(signals: RawSignal[], topicContext: string): Promise<StructuredEvent | null> {
+  async extractEvent(signals: RawSignal[], topicContext: string): Promise<string | null> {
     if (signals.length === 0) return null;
 
     console.log(`\n[EventExtractor] 🧠 正在处理 ${signals.length} 条关于 "${topicContext}" 的原始情报...`);
 
-    // 将多条内容拼接作为语料
     const contentPayload = signals.map(s => `[平台: ${s.sourceType}] ${s.content}`).join('\n---\n');
 
-    const systemPrompt = `You are an elite financial intelligence analyst on Wall Street. 
-Review the noisy social media and news signals provided below. 
-Extract the single most important cohesive event regarding the topic: "${topicContext}".
-Evaluate 'novelty' and 'credibility' strictly on a 0-10 scale. If the inputs are pure spam or irrelevant noise, return credibility 0.
-Ensure you return all requested JSON structure (title, summary, credibility, novelty, entities array).`;
+    const systemPrompt = `你是一个精锐的金融情报分析员。
+从多源的噪声信号中提取最核心的、可能影响市场的单一事件。
+评估其可信度和新颖度。如果全是噪音，明确说明。
+所有输出使用中文。`;
 
-    const userPrompt = `Raw Signals payload:\n${contentPayload}`;
+    const userPrompt = `主题: "${topicContext}"\n\n原始情报:\n${contentPayload}`;
 
     try {
-      const parsedEvent = await generateStructuredOutput(
-        StructuredEventSchema.omit({ id: true, sourceSignalIds: true, timestamp: true }),
-        systemPrompt,
-        userPrompt
-      );
-
-      // 组装最终业务数据
-      const result: StructuredEvent = {
-        ...parsedEvent,
-        id: `ev_${uuidv4()}`,
-        sourceSignalIds: signals.map(s => s.id),
-        timestamp: Date.now()
-      };
-
-      console.log(`[EventExtractor] ✅ 成功抽取事件: "${result.title}" (可信度: ${result.credibility}, 新颖度: ${result.novelty})`);
-      return result;
-
+      const summary = await generateTextCompletion(systemPrompt, userPrompt);
+      console.log(`[EventExtractor] ✅ 事件摘要提取完成 (${summary.length} 字)`);
+      return summary;
     } catch (e: any) {
-      console.error('[EventExtractor] 抽取发生逻辑中断:', e.message);
+      console.error('[EventExtractor] 提取失败:', e.message);
       return null;
     }
   }

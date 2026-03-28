@@ -1,22 +1,19 @@
-import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
-import { generateStructuredOutput } from '../../utils/llm';
+import { generateTextCompletion } from '../../utils/llm';
+import { DEFAULT_NEWS_KEYWORDS } from '../../tools/google-news';
 import { scanMultipleSubreddits, redditPostsToSignals, extractTickersFromPosts, RedditPost } from '../../tools/reddit';
 import { scanMultipleKeywords, googleNewsToSignals, GoogleNewsItem } from '../../tools/google-news';
 import { scanAllSectorETFs, sectorSignalsToRawSignals, SectorSignal } from '../../tools/sector-scanner';
 import { RawSignal } from '../../models/types';
-import { TickerDiscoveryEngine, DiscoveredTicker } from '../discovery/ticker-discovery';
+import { TickerDiscoveryEngine } from '../discovery/ticker-discovery';
 import { addDiscoveredTickers, getActiveTickers } from '../../utils/dynamic-watchlist';
 import { saveTrendReport } from '../../utils/agent-logger';
 
 // ==========================================
-// TrendRadar 趋势雷达模块
-// 每 15 分钟回答: "现在什么最热？热度在加速还是减速？"
-// 并自动从趋势中发现标的 → 写入动态观察池
+// TrendRadar 趋势雷达模块 (Free-form Text Flow 版本)
 // ==========================================
 
-// 加载投资者画像
 function loadInvestorProfile(): string {
   try {
     const profilePath = path.join(process.cwd(), 'investor_profile.md');
@@ -29,29 +26,39 @@ function loadInvestorProfile(): string {
   return '';
 }
 
-// LLM 输出结构定义
-const TrendAnalysisSchema = z.object({
-  topics: z.array(z.object({
-    name: z.string().describe('趋势主题名称，简洁概括'),
-    momentum: z.enum(['accelerating', 'stable', 'decelerating']).describe('动量方向'),
-    phase: z.enum(['emerging', 'trending', 'fading']).describe('阶段'),
-    tickers: z.array(z.string()).describe('相关标的代码'),
-    relatedETFs: z.array(z.string()).describe('相关板块 ETF'),
-    hasCatalyst: z.boolean().describe('是否有真实催化事件'),
-    catalystDescription: z.string().optional().describe('催化事件描述'),
-    score: z.number().min(0).max(100).describe('综合热度评分'),
-    sources: z.array(z.string()).describe('信息来源标注'),
-    supplyChainHint: z.string().optional().describe('供应链瓶颈节点提示，帮助后续标的发现'),
-  })).describe('当前 Top 热门主题列表'),
-  marketSentiment: z.enum(['risk_on', 'neutral', 'risk_off']).describe('整体市场风险情绪'),
-  summary: z.string().describe('一段话概括当前市场趋势全貌'),
-});
+/**
+ * 从 LLM 文本输出中提取 ticker 代码
+ */
+function extractTickersFromAnalysis(text: string): string[] {
+  const matches = text.match(/\$([A-Z]{1,5})\b/g);
+  if (!matches) return [];
+  return [...new Set(matches.map(m => m.replace('$', '')))];
+}
 
-export type TrendAnalysis = z.infer<typeof TrendAnalysisSchema>;
-export type TrendTopic = TrendAnalysis['topics'][number];
+// TrendAnalysis 改为纯文本接口
+export interface TrendAnalysis {
+  /** LLM 生成的完整趋势分析文本 */
+  report: string;
+  /** 从文本中提取的 ticker 列表 */
+  mentionedTickers: string[];
+  /** 市场情绪（从文本中简单检测） */
+  marketSentiment: string;
+  /** 为兼容下游保留的 topics 接口 — 从文本中解析 */
+  topics: Array<{
+    name: string;
+    momentum: string;
+    score: number;
+    tickers: string[];
+    hasCatalyst: boolean;
+    phase: string;
+    relatedETFs: string[];
+    sources: string[];
+    catalystDescription?: string;
+    supplyChainHint?: string;
+  }>;
+}
 
-// 历史快照用于计算加速度
-const snapshotHistory: TrendAnalysis[] = [];
+const snapshotHistory: string[] = [];
 
 export class TrendRadar {
   private tickerDiscovery = new TickerDiscoveryEngine();
@@ -61,37 +68,46 @@ export class TrendRadar {
     this.investorProfile = loadInvestorProfile();
   }
 
-  /**
-   * 执行完整趋势扫描 + 标的发现
-   */
   async scan(): Promise<TrendAnalysis> {
     console.log(`\n[TrendRadar] 📡 =====================================`);
     console.log(`[TrendRadar] 📡 开始全方位趋势扫描...`);
     console.log(`[TrendRadar] 📡 =====================================\n`);
 
-    // =============================================
+    // Step 0: LLM 动态生成当前最热的搜索关键词
+    const dynamicKeywords = await this.generateDynamicKeywords();
+
+    // 从 watchlist.json 中读取 LLM 自进化过的关键词
+    let evolvedKeywords: string[] = [];
+    try {
+      const watchlistPath = path.join(process.cwd(), 'data', 'watchlist.json');
+      if (fs.existsSync(watchlistPath)) {
+        const watchlist = JSON.parse(fs.readFileSync(watchlistPath, 'utf-8'));
+        evolvedKeywords = watchlist.googleNewsKeywords || [];
+      }
+    } catch (e: any) {
+      console.error(`[TrendRadar] ⚠️ 读取 watchlist 关键词失败: ${e.message}`);
+    }
+
+    const allKeywords = [...new Set([...dynamicKeywords, ...evolvedKeywords, ...DEFAULT_NEWS_KEYWORDS])];
+    console.log(`[TrendRadar] 🔑 搜索关键词: ${allKeywords.length} 个 (AI动态${dynamicKeywords.length} + 进化池${evolvedKeywords.length} + 预设${DEFAULT_NEWS_KEYWORDS.length})`);
+
     // 第一步：并发采集多源数据
-    // =============================================
     const [redditPosts, newsItems, sectorSignals] = await Promise.all([
       this.collectRedditData(),
-      this.collectNewsData(),
+      this.collectNewsData(allKeywords),
       this.collectSectorData(),
     ]);
 
-    // =============================================
-    // 第二步：汇聚为统一信号
-    // =============================================
+    // 第二步：汇聚信号
     const allSignals: RawSignal[] = [
       ...redditPostsToSignals(redditPosts),
       ...googleNewsToSignals(newsItems),
       ...sectorSignalsToRawSignals(sectorSignals),
     ];
 
-    console.log(`[TrendRadar] 📊 多源信号汇聚完成: ${allSignals.length} 条 (Reddit: ${redditPosts.length}, News: ${newsItems.length}, Sector: ${sectorSignals.length})`);
+    console.log(`[TrendRadar] 📊 多源信号汇聚完成: ${allSignals.length} 条`);
 
-    // =============================================
-    // 第三步：提取 Reddit 热门 ticker
-    // =============================================
+    // 第三步：Reddit 热门 ticker
     const tickerHeat = extractTickersFromPosts(redditPosts);
     const topTickers = [...tickerHeat.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -99,42 +115,33 @@ export class TrendRadar {
       .map(([ticker, count]) => `$${ticker}(${count}次被提及)`)
       .join(', ');
 
-    // =============================================
-    // 第四步：板块轮动洞察
-    // =============================================
+    // 第四步：板块轮动
     const sectorOverview = sectorSignals
       .map(s => `${s.sectorName}(${s.etfSymbol}): ${s.changePercent > 0 ? '+' : ''}${s.changePercent.toFixed(2)}% 量比${s.volumeSurgeRatio.toFixed(1)}x`)
       .join('\n');
 
-    // =============================================
-    // 第五步：获取当前动态观察池标的（避免重复发现）
-    // =============================================
+    // 第五步：已有动态观察池
     const existingTickers = getActiveTickers().map(t => t.symbol);
 
-    // =============================================
-    // 第六步：组装 LLM 分析 Prompt（注入投资画像）
-    // =============================================
+    // 第六步：LLM 纯文本分析
     const investorContext = this.investorProfile
-      ? `\n\n=== 投资者画像（你的分析必须对齐此画像）===\n${this.investorProfile.substring(0, 1500)}`
+      ? `\n\n=== 投资者画像 ===\n${this.investorProfile.substring(0, 1500)}`
       : '';
 
-    const systemPrompt = `你是一个顶级的市场趋势分析师。你的任务是分析来自多个数据源的实时信号，识别当前市场中最重要的 3-7 个热门趋势主题。
+    const systemPrompt = `你是一个顶级的市场趋势分析师。你的任务是分析来自多个数据源的实时信号，撰写一份完整的趋势扫描报告。
 ${investorContext}
 
-核心分析原则：
-1. 优先关注"多源共振"——同一主题在 Reddit、新闻、板块 ETF 中同时出现，说明该趋势势头强劲
-2. 区分"新兴热度"（刚出现）、"持续热度"（已确认）和"衰退热度"（在冷却）
-3. 判断每个主题的动量方向：加速（讨论量/关注度在增加）、平稳、减速
-4. 检查每个主题是否有真实的催化事件（政策、财报、合同等），还是纯粹的散户情绪炒作
-5. 为每个主题列出最相关的股票代码和板块 ETF
-6. 综合评分 0-100，衡量该主题的交易价值和紧迫性
-7. 【关键】为每个主题提供"供应链瓶颈节点提示"（supplyChainHint）——指出该趋势的真正卡脖子环节在哪里，二三线受益标的可能在哪里。这是帮助后续标的发现引擎寻找洼地的关键信息
-8. 不要只推荐龙头股。重点关注有数倍弹性的二三线标的
-
-你的分析必须极其务实，面向实际交易决策。`;
+报告要求：
+1. 识别当前市场中最重要的 3-7 个热门趋势主题
+2. 对每个主题评估：动量方向（加速/稳定/减速）、阶段（新兴/趋势中/衰退）、是否有真实催化事件
+3. 列出相关标的代码（$TICKER 格式）
+4. 综合多源信号共振分析
+5. 给出整体市场情绪判断
+6. 在报告末尾明确写出市场情绪判断：**市场情绪: risk_on** 或 **市场情绪: risk_off** 或 **市场情绪: neutral**
+7. 所有输出使用中文`;
 
     let userPrompt = `当前时间: ${new Date().toISOString()}\n\n`;
-    userPrompt += `=== Reddit 热门讨论 (散户情绪) ===\n`;
+    userPrompt += `=== Reddit 热门讨论 ===\n`;
     userPrompt += allSignals
       .filter(s => s.sourceType === 'reddit')
       .slice(0, 20)
@@ -142,144 +149,98 @@ ${investorContext}
       .join('\n');
     
     if (topTickers) {
-      userPrompt += `\n\n📌 Reddit 高频提及 Ticker: ${topTickers}\n`;
+      userPrompt += `\n\n📌 Reddit 高频提及: ${topTickers}\n`;
     }
 
-    userPrompt += `\n\n=== 财经新闻 (主流媒体) ===\n`;
+    userPrompt += `\n\n=== 财经新闻 ===\n`;
     userPrompt += allSignals
       .filter(s => s.sourceType === 'google_news')
       .slice(0, 15)
       .map(s => s.content)
       .join('\n');
 
-    userPrompt += `\n\n=== 板块 ETF 实时表现 ===\n${sectorOverview}`;
+    userPrompt += `\n\n=== 板块 ETF 表现 ===\n${sectorOverview}`;
 
     if (existingTickers.length > 0) {
-      userPrompt += `\n\n=== 已在动态观察池的标的 ===\n${existingTickers.join(', ')}\n（请发现新的趋势和标的，不要只重复这些）`;
+      userPrompt += `\n\n=== 已在观察池 ===\n${existingTickers.join(', ')}`;
     }
 
-    // 注入上一次快照用于动量对比
     if (snapshotHistory.length > 0) {
-      const lastSnapshot = snapshotHistory[snapshotHistory.length - 1]!;
-      userPrompt += `\n\n=== 上一轮趋势快照 (用于对比动量变化) ===\n`;
-      userPrompt += lastSnapshot.topics
-        .map(t => `${t.name}: 评分${t.score}, 动量${t.momentum}, 阶段${t.phase}`)
-        .join('\n');
+      userPrompt += `\n\n=== 上一轮趋势报告摘要 ===\n${snapshotHistory[snapshotHistory.length - 1]!.substring(0, 500)}`;
     }
 
-    // =============================================
-    // 第七步：LLM 结构化分析
-    // =============================================
-    console.log(`[TrendRadar] 🧠 提交至 LLM 进行趋势综合分析...`);
+    console.log(`[TrendRadar] 🧠 提交至 LLM 进行趋势分析...`);
+    const report = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
 
-    const analysis = await generateStructuredOutput(
-      TrendAnalysisSchema,
-      systemPrompt,
-      userPrompt,
-    );
+    // 保存快照
+    snapshotHistory.push(report);
+    if (snapshotHistory.length > 10) snapshotHistory.shift();
 
-    // 保存快照用于下次对比
-    snapshotHistory.push(analysis);
-    if (snapshotHistory.length > 10) {
-      snapshotHistory.shift();
+    // 从文本中提取 ticker
+    const mentionedTickers = extractTickersFromAnalysis(report);
+
+    // 检测市场情绪
+    let marketSentiment = 'neutral';
+    if (report.includes('risk_on') || report.includes('风险偏好') || report.includes('看多')) {
+      marketSentiment = 'risk_on';
+    } else if (report.includes('risk_off') || report.includes('避险') || report.includes('看空')) {
+      marketSentiment = 'risk_off';
     }
 
-    // =============================================
-    // 第八步：对加速趋势自动触发标的发现 🎯
-    // =============================================
-    const acceleratingTopics = analysis.topics.filter(
-      t => (t.momentum === 'accelerating' || t.phase === 'emerging') && t.score >= 50
-    );
-
-    const allDiscoveredTickers: Array<{ symbol: string; name: string; chainLevel: string; multibaggerScore: number; reasoning: string }> = [];
-
-    if (acceleratingTopics.length > 0) {
-      console.log(`\n[TrendRadar] 🎯 发现 ${acceleratingTopics.length} 个加速趋势，启动标的发现引擎...`);
-
-      for (const topic of acceleratingTopics) {
-        try {
-          const description = topic.supplyChainHint
-            ? `${topic.name}: ${topic.supplyChainHint}`
-            : topic.name;
-
-          const { tickers: discovered } = await this.tickerDiscovery.discoverFromTrend(
-            topic.name,
-            description,
-            existingTickers,
-          );
-
-          // 将发现的标的写入动态观察池
-          if (discovered.length > 0) {
-            const tickersToAdd = discovered
-              .filter(d => !d.alreadyPriced)
-              .map(d => ({
-                symbol: d.symbol,
-                name: d.name,
-                trendName: topic.name,
-                chainLevel: d.chainLevel,
-                multibaggerScore: d.multibaggerScore,
-                reasoning: d.reasoning,
-                discoverySource: `TrendRadar:${topic.name}`,
-              }));
-
-            await addDiscoveredTickers(tickersToAdd);
-            allDiscoveredTickers.push(...tickersToAdd);
-          }
-        } catch (e: any) {
-          console.error(`[TrendRadar] 标的发现失败 (${topic.name}): ${e.message}`);
-        }
+    // 自动标的发现：从提取的 ticker 中筛选新标的写入动态观察池
+    const newTickers = mentionedTickers.filter(t => !existingTickers.includes(t));
+    if (newTickers.length > 0) {
+      try {
+        const tickersToAdd = newTickers.slice(0, 5).map(symbol => ({
+          symbol,
+          name: symbol, // Yahoo Finance 验证时会获取真实名称
+          trendName: 'TrendRadar',
+          chainLevel: 'hidden_gem' as const,
+          multibaggerScore: 50,
+          reasoning: `TrendRadar 文本分析中提及`,
+          discoverySource: 'TrendRadar:text_extraction',
+        }));
+        await addDiscoveredTickers(tickersToAdd);
+      } catch (e: any) {
+        console.error(`[TrendRadar] 标的自动写入失败: ${e.message}`);
       }
     }
 
-    // =============================================
-    // 第九步：保存完整情报报告 📊
-    // =============================================
+    // 保存情报报告（兼容旧接口）
     try {
-      saveTrendReport(analysis, allDiscoveredTickers, {
-        redditCount: redditPosts.length,
-        newsCount: newsItems.length,
-        sectorCount: sectorSignals.length,
-      });
+      saveTrendReport(
+        { topics: [], marketSentiment, summary: report.substring(0, 500) },
+        newTickers.map(t => ({ symbol: t, name: t, chainLevel: 'hidden_gem', multibaggerScore: 50, reasoning: 'text extraction' })),
+        { redditCount: redditPosts.length, newsCount: newsItems.length, sectorCount: sectorSignals.length }
+      );
     } catch (e: any) {
-      console.error(`[TrendRadar] 情报报告保存失败: ${e.message}`);
+      console.error(`[TrendRadar] 报告保存失败: ${e.message}`);
     }
 
-    // =============================================
-    // 输出日志
-    // =============================================
-    console.log(`\n[TrendRadar] ✅ 趋势扫描完成 — 市场情绪: ${analysis.marketSentiment}`);
-    console.log(`[TrendRadar] 📋 发现 ${analysis.topics.length} 个热门主题:`);
-    for (const topic of analysis.topics) {
-      const momentumIcon = topic.momentum === 'accelerating' ? '🚀' : topic.momentum === 'decelerating' ? '📉' : '➡️';
-      const catalystIcon = topic.hasCatalyst ? '✅有催化' : '❌无催化';
-      console.log(`  ${momentumIcon} [${topic.score}分] ${topic.name} | ${topic.phase} | ${catalystIcon} | ${topic.tickers.join(', ')}`);
-    }
-    console.log(`[TrendRadar] 💡 ${analysis.summary}\n`);
+    console.log(`\n[TrendRadar] ✅ 趋势扫描完成 — 情绪: ${marketSentiment}, 提及 ${mentionedTickers.length} 个 ticker`);
+    console.log(`[TrendRadar] 💡 ${report.substring(0, 200)}...\n`);
 
-    return analysis;
+    return {
+      report,
+      mentionedTickers,
+      marketSentiment,
+      topics: [], // 不再有结构化 topics，保留空数组兼容
+    };
   }
 
-  /**
-   * 采集 Reddit 数据
-   */
   private async collectRedditData(): Promise<RedditPost[]> {
     try {
       return await scanMultipleSubreddits(
-        ['wallstreetbets', 'stocks', 'investing', 'options', 'semiconductors'],
-        5,
-      );
+        ['wallstreetbets', 'stocks', 'investing', 'options', 'semiconductors'], 5);
     } catch (e: any) {
       console.error(`[TrendRadar] Reddit 采集失败: ${e.message}`);
       return [];
     }
   }
 
-  /**
-   * 采集 Google News 数据
-   */
-  private async collectNewsData(): Promise<GoogleNewsItem[]> {
+  private async collectNewsData(keywords?: string[]): Promise<GoogleNewsItem[]> {
     try {
-      return await scanMultipleKeywords(undefined, 5);
+      return await scanMultipleKeywords(keywords, 5);
     } catch (e: any) {
       console.error(`[TrendRadar] Google News 采集失败: ${e.message}`);
       return [];
@@ -287,8 +248,47 @@ ${investorContext}
   }
 
   /**
-   * 采集板块 ETF 数据
+   * LLM 动态生成当前最热的搜索关键词
+   * 让 AI 根据当前日期和市场背景，推荐最应该搜索的话题
    */
+  private async generateDynamicKeywords(): Promise<string[]> {
+    try {
+      console.log(`[TrendRadar] 🧠 请求 AI 生成当前最热搜索关键词...`);
+
+      const result = await generateTextCompletion(
+        `你是一个金融市场情报分析师。你的任务是给出当前最值得搜索的财经热点关键词。`,
+        `当前时间: ${new Date().toISOString()}
+
+请列出 8-12 个当前最值得在 Google News 和 Reddit 上搜索的财经热点关键词/短语。
+要求：
+1. 必须是当下正在发生、有时效性的话题（不要给过时的旧闻）
+2. 覆盖：美股行情、AI/科技、半导体、能源、宏观政策、加密货币、中港股市
+3. 每行一个关键词，中英文都要有
+4. 用于 Google News RSS 搜索，所以要简洁、精准
+5. 不要编号，直接一行一个关键词
+
+示例格式：
+NVIDIA earnings AI demand
+美联储降息 利率决议
+Tesla robotaxi autonomous
+港股 科技股 反弹`,
+      );
+
+      // 从 AI 输出中提取关键词（每行一个）
+      const keywords = result
+        .split('\n')
+        .map(line => line.replace(/^[-•*\d.]+\s*/, '').trim()) // 去掉列表符号
+        .filter(line => line.length > 3 && line.length < 60) // 过滤太短或太长的
+        .slice(0, 12);
+
+      console.log(`[TrendRadar] 🔑 AI 生成了 ${keywords.length} 个动态关键词: ${keywords.join(' | ')}`);
+      return keywords;
+    } catch (e: any) {
+      console.error(`[TrendRadar] ⚠️ AI 关键词生成失败，使用默认关键词: ${e.message}`);
+      return [];
+    }
+  }
+
   private async collectSectorData(): Promise<SectorSignal[]> {
     try {
       return await scanAllSectorETFs();
@@ -298,34 +298,21 @@ ${investorContext}
     }
   }
 
-  /**
-   * 生成 Telegram 推送消息
-   */
   formatForTelegram(analysis: TrendAnalysis): string {
     let msg = `📡 *TrendRadar 趋势雷达*\n`;
     msg += `⏰ ${new Date().toISOString().split('T')[0]} | 情绪: ${analysis.marketSentiment}\n\n`;
-
-    for (const topic of analysis.topics) {
-      const momentumIcon = topic.momentum === 'accelerating' ? '🚀' : topic.momentum === 'decelerating' ? '📉' : '➡️';
-      const catalystIcon = topic.hasCatalyst ? '✅' : '❓';
-      
-      msg += `${momentumIcon} *${topic.name}* (${topic.score}分)\n`;
-      msg += `   阶段: ${topic.phase} | 催化: ${catalystIcon}\n`;
-      msg += `   标的: \`${topic.tickers.join('`, `')}\`\n`;
-      if (topic.relatedETFs.length > 0) {
-        msg += `   ETF: ${topic.relatedETFs.join(', ')}\n`;
-      }
-      if (topic.catalystDescription) {
-        msg += `   💡 ${topic.catalystDescription}\n`;
-      }
-      if (topic.supplyChainHint) {
-        msg += `   🔗 瓶颈: ${topic.supplyChainHint}\n`;
-      }
-      msg += `\n`;
+    
+    // 直接截取 LLM 报告的前 800 字作为推送
+    const reportSnippet = analysis.report.substring(0, 800).replace(/[*_`]/g, '');
+    msg += reportSnippet;
+    
+    if (analysis.mentionedTickers.length > 0) {
+      msg += `\n\n📌 提及标的: ${analysis.mentionedTickers.map(t => `$${t}`).join(', ')}`;
     }
 
-    msg += `📋 ${analysis.summary}`;
     return msg;
   }
 }
 
+// 导出兼容类型
+export type TrendTopic = TrendAnalysis['topics'][number];

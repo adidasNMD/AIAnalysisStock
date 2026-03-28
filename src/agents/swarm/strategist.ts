@@ -1,52 +1,43 @@
-import { z } from 'zod';
 import { AutonomousAgent } from '../core/agent';
-import { NarrativeTopic, ChainMapping, ChainMappingSchema } from '../../models/types';
-import { generateStructuredOutput } from '../../utils/llm';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// 大模型动态生成的产业链分析结构
-const SupplyChainAnalysisSchema = z.object({
-  eventCore: z.string().describe('顶层事件的本质驱动力'),
-  firstOrderImpact: z.array(z.object({
-    sector: z.string(),
-    tickers: z.array(z.string()),
-    logic: z.string(),
-    alreadyPriced: z.boolean().describe('华尔街是否已经充分定价')
-  })).describe('第一层直接受益方（往往已被过度定价）'),
-  secondOrderImpact: z.array(z.object({
-    sector: z.string(),
-    tickers: z.array(z.string()),
-    logic: z.string(),
-    bottleneckType: z.string().describe('瓶颈类型：产能/技术/供给/需求')
-  })).describe('第二层衍生受益方——真正的瓶颈堵点'),
-  thirdOrderImpact: z.array(z.object({
-    sector: z.string(),
-    tickers: z.array(z.string()),
-    logic: z.string(),
-    laggardReason: z.string().describe('为何尚未被市场发现')
-  })).describe('第三层滞后受益方——散户套利的主战场'),
-  supplyChainRisks: z.array(z.string()).describe('产业链中可能断裂的薄弱环节')
-});
-
-type SupplyChainAnalysis = z.infer<typeof SupplyChainAnalysisSchema>;
-
+/**
+ * QuantStrategistAgent — 量化策略师
+ * 
+ * 输入: 分析师的事件推导备忘录文本
+ * 输出: 一篇《产业链映射与标的推导研报》(string)
+ * 
+ * 核心改变：
+ * - 移除 SupplyChainAnalysisSchema 和 ChainMappingSchema 的 Zod 定义
+ * - 合并两阶段 LLM 调用为单次深度分析
+ * - 产业链种子图谱仍作为参考素材注入
+ */
 export class QuantStrategistAgent extends AutonomousAgent {
   private seedGraph: any;
 
   constructor() {
     super({
-      role: 'Quant Strategist',
-      goal: 'Deduce deep supply chain dependencies and map actionable trend-following tickers.',
-      instructions: 'You are an elite quantitative strategist. You are strictly forbidden from analyzing the primary event target. You MUST derive the 2nd and 3rd order derivative beneficiaries (e.g. Memory chips, Optical Modules, Power grid) that will follow the trend. Output in Chinese language.'
+      role: '量化策略师 (Quant Strategist)',
+      goal: '基于上游分析师的事件推导，进行极其深入的多层级产业链推导，精确映射从龙头到洼地的全链条标的。',
+      instructions: `你是全球顶尖的科技产业链分析师与量化策略师。你拥有对半导体、AI 基础设施、能源、光通信、存储、先进封装等产业链的极深理解。
+
+核心原则：
+1. 第一层受益方（如 NVDA）往往已被华尔街充分定价 — 标注为"已定价龙头"
+2. 第二层是真正的瓶颈堵点（如光模块、先进封装、液冷）— 标注为"瓶颈验证标的"
+3. 第三层是滞后的、尚未被散户和机构充分关注的洼地标的 — 标注为"洼地埋伏标的"，**这才是我们的主战场**
+4. 必须标注具体的美股 ticker 代码（如 $AAOI, $WDC, $MU）
+5. 每一步推导都必须有具体的技术原理和产业逻辑支撑
+6. 明确指出产业链中可能断裂的风险点
+7. 所有输出使用中文`
     });
 
-    // 加载种子图谱作为参考（非硬约束）
+    // 加载种子图谱作为参考
     try {
       const chainPath = path.join(process.cwd(), 'data', 'supply_chain.json');
       if (fs.existsSync(chainPath)) {
         this.seedGraph = JSON.parse(fs.readFileSync(chainPath, 'utf-8'));
-        console.log('[QuantStrategist] ✅ 种子产业链图谱已加载（将由 LLM 动态增强）');
+        console.log('[QuantStrategist] ✅ 种子产业链图谱已加载');
       }
     } catch (e: any) {
       console.error('[QuantStrategist] ⚠️ 种子图谱加载失败:', e.message);
@@ -54,75 +45,56 @@ export class QuantStrategistAgent extends AutonomousAgent {
   }
 
   /**
-   * 第一阶段：用顶级大模型动态分析产业链
+   * 基于分析师备忘录，输出产业链研报
    */
-  private async analyzeSupplyChain(topic: NarrativeTopic): Promise<SupplyChainAnalysis> {
-    console.log(`\n[QuantStrategist] 🧠 第一阶段：LLM 深度产业链推导中...`);
+  async strategize(analystMemo: string, investorProfile?: string): Promise<string> {
+    console.log(`\n[QuantStrategist] 🧠 开始产业链深度推导...`);
 
-    const systemPrompt = `你是全球顶尖的科技产业链分析师，拥有对半导体、AI基础设施、能源、光通信、存储等产业链的极深理解。
-你的任务是针对一个特定的市场事件，进行极其深入的多层级产业链推导分析。
+    let enrichedContext = analystMemo;
 
-核心原则：
-1. 第一层受益方（如 NVDA）往往已被华尔街充分定价，标注 alreadyPriced=true
-2. 第二层是真正的瓶颈堵点（如光模块、先进封装、液冷），这些是供给侧的卡脖子节点
-3. 第三层是滞后的、尚未被散户和机构充分关注的洼地标的——这才是跟风套利的主战场
-4. 必须明确指出产业链中可能断裂的风险点
-
-你的推导必须基于真实的技术原理和产业逻辑，不允许凭空捏造。每一步推导都要给出具体理由。`;
-
-    let userPrompt = `事件: ${topic.title}\n描述: ${topic.description}\n冲击力评分: ${topic.impactScore}/100`;
-
-    // 种子图谱作为参考素材（非硬约束）
+    // 注入种子图谱作为参考
     if (this.seedGraph) {
-      userPrompt += `\n\n以下是一份参考产业链图谱，你可以在此基础上进行扩展、修正或补充：\n${JSON.stringify(this.seedGraph, null, 2)}`;
+      enrichedContext += `\n\n=== 参考产业链图谱（可在此基础上扩展、修正或补充）===\n${JSON.stringify(this.seedGraph, null, 2)}`;
     }
 
-    return await generateStructuredOutput(SupplyChainAnalysisSchema, systemPrompt, userPrompt);
-  }
+    if (investorProfile) {
+      enrichedContext += `\n\n=== 投资者画像（请根据此画像调整推导重点和标的选择优先级）===\n${investorProfile.substring(0, 2000)}`;
+    }
 
-  async strategize(topic: NarrativeTopic): Promise<{ topic: NarrativeTopic, mapping: ChainMapping }> {
-     // 第一阶段：LLM 动态产业链深度分析
-     const chainAnalysis = await this.analyzeSupplyChain(topic);
+    const strategyReport = await this.executeTextTask(
+      `基于上游分析师提供的事件推导备忘录，撰写一份极其深入的《产业链映射与标的推导研报》。
 
-     console.log(`[QuantStrategist] ✅ 产业链分析完成:`);
-     console.log(`  - 第一层(已定价): ${chainAnalysis.firstOrderImpact.map(i => i.tickers.join(',')).join(' | ')}`);
-     console.log(`  - 第二层(瓶颈): ${chainAnalysis.secondOrderImpact.map(i => i.tickers.join(',')).join(' | ')}`);
-     console.log(`  - 第三层(洼地): ${chainAnalysis.thirdOrderImpact.map(i => i.tickers.join(',')).join(' | ')}`);
+要求的报告结构：
 
-     // 第二阶段：基于产业链分析结果，精准映射标的
-     const enrichedContext = `Topic: ${topic.title}
-Desc: ${topic.description}
+## 🏗️ 事件本质与顶层驱动力
+- 用一段话精炼概括这个事件的本质驱动力
 
-=== LLM 产业链深度分析结果 (treat as authoritative) ===
-事件本质: ${chainAnalysis.eventCore}
+## 🗺️ 三级产业链推导
 
-【第一层 · 已充分定价】
-${chainAnalysis.firstOrderImpact.map(i => `${i.sector}: ${i.tickers.join(', ')} — ${i.logic}`).join('\n')}
+### 第一层 · 已充分定价的龙头（仅做参考锚定，不建议追高）
+| 标的 | 赛道 | 推导逻辑 | 是否已充分定价 |
+对每个标的用 $TICKER 格式标注代码
 
-【第二层 · 瓶颈堵点】
-${chainAnalysis.secondOrderImpact.map(i => `${i.sector}: ${i.tickers.join(', ')} — ${i.logic} (瓶颈: ${i.bottleneckType})`).join('\n')}
+### 第二层 · 瓶颈堵点（验证叙事是否成立的关键标的）
+| 标的 | 赛道 | 推导逻辑 | 瓶颈类型 |
+这些是供给侧卡脖子节点。如果它们的订单/产能印证了叙事，则叙事成立。
 
-【第三层 · 滞后洼地】
-${chainAnalysis.thirdOrderImpact.map(i => `${i.sector}: ${i.tickers.join(', ')} — ${i.logic} (未被发现原因: ${i.laggardReason})`).join('\n')}
+### 第三层 · 滞后洼地（我们要重点埋伏的主战场！）
+| 标的 | 赛道 | 推导逻辑 | 为何尚未被市场发现 |
+散户筹码干净、机构关注度低、弹性远大于龙头的标的。
 
-【产业链断裂风险】
-${chainAnalysis.supplyChainRisks.join('\n')}
-=== END ===`;
+## 🔗 完整推导链条
+按 "顶层事件 → 第一层 → 第二层 → 第三层" 的逻辑，写出完整的逐级推导链条（每一步都要有具体理由）。
 
-     const mappingData = await this.executeTask(
-         `基于上方的产业链深度分析结果，精确映射以下三类标的：
-- coreTickers: 第一层核心龙头（仅做参考锚定，不建议追高）
-- confirmTickers: 第二层瓶颈验证标的（用于确认叙事是否成立）
-- mappingTickers: 第三层滞后洼地标的（这才是我们要重点埋伏的！）
+## ⚠️ 产业链断裂风险
+列出产业链中可能断裂的薄弱环节和风险点。
 
-deductionChain 必须完整体现从顶层事件到第三层洼地的逐级推导逻辑。
-所有输出必须用中文。`,
-         ChainMappingSchema.omit({ narrativeId: true }),
-         enrichedContext
-     );
+## 📋 总括逻辑
+用 2-3 句话总结整个产业链映射的核心投资逻辑。`,
+      enrichedContext
+    );
 
-     const mapping: ChainMapping = { ...mappingData, narrativeId: topic.id };
-     
-     return { topic, mapping };
+    console.log(`[QuantStrategist] ✅ 产业链研报完成 (${strategyReport.length} 字)`);
+    return strategyReport;
   }
 }

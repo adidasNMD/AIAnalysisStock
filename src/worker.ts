@@ -9,20 +9,29 @@ import { watchIPO, filingsToContext } from './tools/edgar-monitor';
 import { TrendRadar } from './agents/trend/trend-radar';
 import { scanAllSectorETFs, generateSectorOverview } from './tools/sector-scanner';
 import { getActiveTickers, promoteTicker, generateDynamicWatchlistOverview, DynamicTicker } from './utils/dynamic-watchlist';
+import { startInteractiveBot } from './agents/telegram/interactive-bot';
+import { MacroContextEngine } from './agents/macro/macro-context';
+import { updatePerformance, formatPerformanceReport } from './utils/performance-tracker';
+import { NarrativeLifecycleEngine } from './agents/lifecycle/engine';
 
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
-// 多级触发哨兵模式 + TrendRadar 趋势雷达
+// 多级触发哨兵模式 + TrendRadar 趋势雷达 + 实时交互(Interactive Bot)
 // ==========================================
 
 console.log(`\n==================================================================`);
 console.log(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
-console.log(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar`);
+console.log(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
 console.log(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
 console.log(`==================================================================\n`);
 
 const orchestrator = new AgentSwarmOrchestrator();
 const trendRadar = new TrendRadar();
+const macroEngine = new MacroContextEngine();
+const lifecycleEngine = new NarrativeLifecycleEngine();
+
+// 启动实时交互长轮询机器人
+startInteractiveBot();
 
 // 加载 Watchlist
 interface WatchlistTicker {
@@ -213,6 +222,35 @@ cron.schedule('30 08 * * 1-5', async () => {
   // 新增：动态观察池概览
   snapshot += `\n${generateDynamicWatchlistOverview()}`;
 
+  // ==========================================
+  // [系统进阶集成]
+  // 按照 Phase 4 架构挂载：宏观环境、历史绩效反馈、叙事生命周期防卖飞
+  // ==========================================
+
+  try {
+    const macroAnalysis = await macroEngine.analyze();
+    snapshot += `\n${macroEngine.formatForReport(macroAnalysis)}`;
+  } catch (e: any) {
+    console.error(`[Sentinel] Macro analysis failed: ${e.message}`);
+  }
+
+  try {
+    const perfSummary = await updatePerformance();
+    snapshot += `\n${formatPerformanceReport(perfSummary)}`;
+  } catch (e: any) {
+    console.error(`[Sentinel] Performance tracking failed: ${e.message}`);
+  }
+
+  try {
+    const { messages } = await lifecycleEngine.evaluateAllActiveNarratives();
+    if (messages.length > 0) {
+      snapshot += `\n## 🛡️ 叙事生命周期干预引擎 (防卖飞/逃顶)\n\n`;
+      messages.forEach(m => snapshot += `> ${m}\n\n`);
+    }
+  } catch (e: any) {
+    console.error(`[Sentinel] Lifecycle evaluation failed: ${e.message}`);
+  }
+
   await sendReportSummary('Watchlist 盘前扫描', snapshot);
 
   // 对每个赛道执行一次叙事级别的深度扫查
@@ -230,10 +268,39 @@ cron.schedule('30 08 * * 1-5', async () => {
 });
 
 // ==========================================
-// TRIGGER 4: 每 15 分钟 — TrendRadar 趋势雷达扫描
+// TRIGGER 4: 每 15 分钟 — TrendRadar 趋势雷达扫描 (自动变频省Token机制)
 // ==========================================
+function isActiveTradingHours(): boolean {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  const utcMin = now.getUTCMinutes();
+  const timeVal = utcHour + utcMin / 60.0;
+  const day = now.getUTCDay(); 
+
+  // 周六日全天非交易时间段
+  if (day === 0 || day === 6) return false;
+
+  // 美股核心时段 (考虑夏令时误差，宽泛圈定 13:30 - 21:00 UTC)
+  const isUSMarket = timeVal >= 13.5 && timeVal <= 21.0;
+  // 港股核心时段 (01:30 - 08:00 UTC)
+  const isHKMarket = timeVal >= 1.5 && timeVal <= 8.0;
+
+  return isUSMarket || isHKMarket;
+}
+
 cron.schedule('7,22,37,52 * * * *', async () => {
-  console.log(`\n[Sentinel] 📡 TrendRadar 趋势雷达启动...`);
+  const now = new Date();
+  const isTrading = isActiveTradingHours();
+  
+  // 非交易时间：从每15分钟高频扫描，降级为每 2 小时扫描一次（偶数小时的07分执行）
+  if (!isTrading) {
+    if (now.getMinutes() > 15 || now.getHours() % 2 !== 0) {
+      return; 
+    }
+    console.log(`\n[Sentinel] 📡 处于非交易时段，TrendRadar 进入降频休眠模式，当前执行 2小时/次 的扫描...`);
+  } else {
+    console.log(`\n[Sentinel] 📡 处于美股/港股活跃交易时段，TrendRadar 启动高频扫描...`);
+  }
   
   try {
     const analysis = await trendRadar.scan();
@@ -242,18 +309,15 @@ cron.schedule('7,22,37,52 * * * *', async () => {
     const telegramMsg = trendRadar.formatForTelegram(analysis);
     await sendMessage(telegramMsg);
 
-    // 对高分加速趋势自动触发深度分析
-    for (const topic of analysis.topics) {
-      if (topic.momentum === 'accelerating' && topic.hasCatalyst && topic.score >= 70) {
-        console.log(`[Sentinel] 🚀 高分趋势触发深度分析: ${topic.name} (${topic.score}分)`);
-        try {
-          await orchestrator.executeMission(`${topic.name} — 趋势主题深度分析`);
-        } catch (e: any) {
-          console.error(`[Sentinel] Trend deep analysis failed for ${topic.name}: ${e.message}`);
-        }
-      } else if (topic.momentum === 'decelerating' && topic.score < 30) {
-        // 衰退趋势风险预警
-        await sendMessage(`⚠️ *趋势衰退预警*: ${topic.name} 热度正在下降 (${topic.score}分)\n标的: ${topic.tickers.join(', ')}\n如已持仓，请注意风险控制。`);
+    // 新版：如果趋势报告中提及了大量 ticker，自动触发深度分析
+    if (analysis.mentionedTickers && analysis.mentionedTickers.length >= 5) {
+      console.log(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，触发深度分析...`);
+      try {
+        // 用报告的前200字作为深度分析的 query
+        const topicSummary = analysis.report.substring(0, 200).replace(/\n/g, ' ');
+        await orchestrator.executeMission(`趋势雷达洞察 — ${topicSummary}`);
+      } catch (e: any) {
+        console.error(`[Sentinel] Trend deep analysis failed: ${e.message}`);
       }
     }
   } catch (e: any) {

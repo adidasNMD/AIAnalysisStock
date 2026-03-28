@@ -1,9 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { NarrativeTopic, ChainMapping, DebateResult } from '../models/types';
 
 const NARRATIVES_PATH = path.join(process.cwd(), 'data', 'narratives.json');
 
+/**
+ * NarrativeRecord — 叙事记录 (Free-form Text Flow 版本)
+ * 
+ * 核心改变：chainMapping 和 debateSnapshot 从结构化对象改为纯文本字段
+ */
 export interface NarrativeRecord {
   id: string;
   title: string;
@@ -11,19 +15,31 @@ export interface NarrativeRecord {
   impactScore: number;
   createdAt: string;
   lastUpdatedAt: string;
-  chainMapping: {
+  
+  /** 策略师的产业链研报原文（纯文本） */
+  analysisText: string;
+  /** 辩论备忘录原文（纯文本） */
+  debateText: string;
+
+  /** @deprecated 旧版结构化映射，保留用于向后兼容读取 */
+  chainMapping?: {
     coreTickers: string[];
     confirmTickers: string[];
     mappingTickers: string[];
     logicDescription: string;
     deductionChain: string[];
   } | null;
-  debateSnapshot: {
+  /** @deprecated 旧版辩论快照，保留用于向后兼容读取 */
+  debateSnapshot?: {
     bullCore: string;
     bearCore: string;
     keyTriggers: string[];
     ironcladStopLosses: string[];
   } | null;
+
+  /** 从分析文本中提取的核心龙头 ticker（用于生命周期引擎 SMA 检测） */
+  coreTicker?: string | undefined;
+
   eventHistory: Array<{
     date: string;
     event: string;
@@ -33,12 +49,39 @@ export interface NarrativeRecord {
 }
 
 /**
- * 加载所有历史叙事
+ * 从文本中提取 ticker 代码（$AAOI 格式）
+ */
+function extractTickersFromText(text: string): string[] {
+  const matches = text.match(/\$([A-Z]{1,5})\b/g);
+  if (!matches) return [];
+  return [...new Set(matches.map(m => m.replace('$', '')))];
+}
+
+/**
+ * 加载所有历史叙事（自动兼容旧版数据格式）
  */
 export function loadNarratives(): NarrativeRecord[] {
   try {
     if (fs.existsSync(NARRATIVES_PATH)) {
-      return JSON.parse(fs.readFileSync(NARRATIVES_PATH, 'utf-8'));
+      const rawRecords = JSON.parse(fs.readFileSync(NARRATIVES_PATH, 'utf-8'));
+      // 自动适配旧数据格式
+      return rawRecords.map((r: any) => {
+        // 如果是旧版数据（有 chainMapping 对象但没有 analysisText），自动转换
+        if (r.chainMapping && typeof r.chainMapping === 'object' && !r.analysisText) {
+          r.analysisText = `产业链映射:\n- 核心标的: ${r.chainMapping.coreTickers?.join(', ') || '无'}\n- 验证标的: ${r.chainMapping.confirmTickers?.join(', ') || '无'}\n- 洼地标的: ${r.chainMapping.mappingTickers?.join(', ') || '无'}\n- 逻辑: ${r.chainMapping.logicDescription || ''}\n- 推导链: ${r.chainMapping.deductionChain?.join(' → ') || ''}`;
+          // 尝试提取 coreTicker
+          if (!r.coreTicker && r.chainMapping.coreTickers?.length > 0) {
+            r.coreTicker = r.chainMapping.coreTickers[0];
+          }
+        }
+        if (r.debateSnapshot && typeof r.debateSnapshot === 'object' && !r.debateText) {
+          r.debateText = `多方论据: ${r.debateSnapshot.bullCore || ''}\n空方论据: ${r.debateSnapshot.bearCore || ''}\n催化条件: ${r.debateSnapshot.keyTriggers?.join(', ') || ''}\n止损条件: ${r.debateSnapshot.ironcladStopLosses?.join(', ') || ''}`;
+        }
+        // 确保新字段存在
+        if (!r.analysisText) r.analysisText = '';
+        if (!r.debateText) r.debateText = '';
+        return r as NarrativeRecord;
+      });
     }
   } catch (e: any) {
     console.error(`[NarrativeStore] ⚠️ 加载叙事库失败: ${e.message}`);
@@ -77,7 +120,14 @@ export function findRelatedNarrative(
       return record;
     }
 
-    // 方法2: 相关标的重叠
+    // 方法2: 从 analysisText 中提取的 ticker 匹配
+    if (record.analysisText) {
+      const tickers = extractTickersFromText(record.analysisText);
+      const tickerMatch = tickers.some(t => titleLower.includes(t.toLowerCase()));
+      if (tickerMatch) return record;
+    }
+
+    // 方法3: 旧版 chainMapping 兼容
     if (record.chainMapping) {
       const allTickers = [
         ...record.chainMapping.coreTickers,
@@ -93,38 +143,32 @@ export function findRelatedNarrative(
 }
 
 /**
- * 创建新的叙事记录
+ * 创建新的叙事记录 (Free-form Text Flow 版本)
  */
 export function createNarrative(
-  topic: NarrativeTopic,
-  mapping: ChainMapping | null,
-  debate: DebateResult | null
+  title: string,
+  analysisText: string,
+  debateText: string,
 ): NarrativeRecord {
   const now = new Date().toISOString().split('T')[0] || '';
   
+  // 从分析文本中自动提取核心 ticker
+  const tickers = extractTickersFromText(analysisText);
+  const coreTicker: string | undefined = tickers.length > 0 ? tickers[0] : undefined;
+
   const record: NarrativeRecord = {
-    id: topic.id,
-    title: topic.title,
-    description: topic.description,
-    impactScore: topic.impactScore,
+    id: `topic_${Date.now()}`,
+    title,
+    description: analysisText.substring(0, 300),
+    impactScore: 0, // 不再由 JSON 提供分数
     createdAt: now,
     lastUpdatedAt: now,
-    chainMapping: mapping ? {
-      coreTickers: mapping.coreTickers,
-      confirmTickers: mapping.confirmTickers,
-      mappingTickers: mapping.mappingTickers,
-      logicDescription: mapping.logicDescription || '',
-      deductionChain: mapping.deductionChain || []
-    } : null,
-    debateSnapshot: debate ? {
-      bullCore: debate.bullCaseSummary || '',
-      bearCore: debate.bearCaseSummary || '',
-      keyTriggers: debate.keyTriggers || [],
-      ironcladStopLosses: debate.ironcladStopLosses || []
-    } : null,
+    analysisText,
+    debateText,
+    coreTicker,
     eventHistory: [{
       date: now,
-      event: `首次发现: ${topic.title}`
+      event: `首次发现: ${title}`
     }],
     stage: 'earlyFermentation',
     status: 'active'
@@ -134,20 +178,20 @@ export function createNarrative(
   records.push(record);
   saveNarratives(records);
 
-  console.log(`[NarrativeStore] 🆕 新建叙事记录: "${record.title}"`);
+  console.log(`[NarrativeStore] 🆕 新建叙事记录: "${record.title}" ${coreTicker ? `(龙头: $${coreTicker})` : ''}`);
   return record;
 }
 
 /**
- * 增量更新已有叙事
+ * 增量更新已有叙事 (Free-form Text Flow 版本)
  */
 export function updateNarrative(
   id: string,
   updates: {
     eventSummary?: string;
-    impactScore?: number;
-    mapping?: ChainMapping;
-    debate?: DebateResult;
+    analysisText?: string;
+    debateText?: string;
+    stage?: NarrativeRecord['stage'];
   }
 ): NarrativeRecord | null {
   const records = loadNarratives();
@@ -159,8 +203,8 @@ export function updateNarrative(
   
   record.lastUpdatedAt = now;
 
-  if (updates.impactScore) {
-    record.impactScore = updates.impactScore;
+  if (updates.stage) {
+    record.stage = updates.stage;
   }
 
   if (updates.eventSummary) {
@@ -170,23 +214,18 @@ export function updateNarrative(
     });
   }
 
-  if (updates.mapping) {
-    record.chainMapping = {
-      coreTickers: updates.mapping.coreTickers,
-      confirmTickers: updates.mapping.confirmTickers,
-      mappingTickers: updates.mapping.mappingTickers,
-      logicDescription: updates.mapping.logicDescription || '',
-      deductionChain: updates.mapping.deductionChain || []
-    };
+  if (updates.analysisText) {
+    record.analysisText = updates.analysisText;
+    record.description = updates.analysisText.substring(0, 300);
+    // 更新 coreTicker
+    const tickers = extractTickersFromText(updates.analysisText);
+    if (tickers.length > 0) {
+      record.coreTicker = tickers[0];
+    }
   }
 
-  if (updates.debate) {
-    record.debateSnapshot = {
-      bullCore: updates.debate.bullCaseSummary || '',
-      bearCore: updates.debate.bearCaseSummary || '',
-      keyTriggers: updates.debate.keyTriggers || [],
-      ironcladStopLosses: updates.debate.ironcladStopLosses || []
-    };
+  if (updates.debateText) {
+    record.debateText = updates.debateText;
   }
 
   records[index] = record;
@@ -208,13 +247,15 @@ export function getNarrativeContext(maxRecords: number = 5): string {
 
   return `\n=== 历史叙事追踪记忆 (${records.length} 条活跃叙事) ===\n` +
     records.map(r => {
-      let ctx = `【${r.title}】(冲击力: ${r.impactScore}) | 首次发现: ${r.createdAt} | 最后更新: ${r.lastUpdatedAt}`;
-      if (r.chainMapping) {
-        ctx += `\n  核心标的: ${r.chainMapping.coreTickers.join(', ')} | 洼地标的: ${r.chainMapping.mappingTickers.join(', ')}`;
+      let ctx = `【${r.title}】| 首次发现: ${r.createdAt} | 最后更新: ${r.lastUpdatedAt}`;
+      if (r.coreTicker) {
+        ctx += ` | 龙头: $${r.coreTicker}`;
       }
-      if (r.debateSnapshot) {
-        ctx += `\n  多方: ${r.debateSnapshot.bullCore.substring(0, 100)}`;
-        ctx += `\n  空方: ${r.debateSnapshot.bearCore.substring(0, 100)}`;
+      if (r.analysisText) {
+        ctx += `\n  产业链分析摘要: ${r.analysisText.substring(0, 300)}`;
+      }
+      if (r.debateText) {
+        ctx += `\n  辩论摘要: ${r.debateText.substring(0, 200)}`;
       }
       ctx += `\n  事件轨迹: ${r.eventHistory.slice(-3).map(e => `[${e.date}] ${e.event}`).join(' → ')}`;
       return ctx;

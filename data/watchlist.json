@@ -1,104 +1,93 @@
 {
-  "tickers": [
+  "tickers": [],
+  "sectorETFs": [
     {
-      "symbol": "AAOI",
-      "name": "Applied Optoelectronics",
-      "sector": "optical_modules",
-      "narrative": "AI数据中心800G/1.6T硅光互联瓶颈",
-      "alerts": { "breakAboveSMA": [20, 50, 250], "breakBelowSMA": [20], "volumeSurgeMultiple": 3.0 },
-      "status": "watching"
+      "symbol": "SMH",
+      "name": "半导体",
+      "sector": "semiconductor"
     },
     {
-      "symbol": "LITE",
-      "name": "Lumentum Holdings",
-      "sector": "optical_modules",
-      "narrative": "光通信上游验证标的",
-      "alerts": { "breakAboveSMA": [20, 50], "breakBelowSMA": [20], "volumeSurgeMultiple": 2.5 },
-      "status": "watching"
+      "symbol": "XLK",
+      "name": "科技",
+      "sector": "technology"
     },
     {
-      "symbol": "WDC",
-      "name": "Western Digital / 闪迪",
-      "sector": "memory_storage",
-      "narrative": "企业级SSD量价齐飞拐点，AI推理高并发读取刚需",
-      "alerts": { "breakAboveSMA": [20, 50], "breakBelowSMA": [20], "volumeSurgeMultiple": 2.5 },
-      "status": "watching"
+      "symbol": "XLE",
+      "name": "能源",
+      "sector": "energy"
     },
     {
-      "symbol": "MU",
-      "name": "Micron Technology",
-      "sector": "memory_storage",
-      "narrative": "HBM3E产能受限带来强定价权",
-      "alerts": { "breakAboveSMA": [50], "breakBelowSMA": [20], "volumeSurgeMultiple": 2.0 },
-      "status": "watching"
+      "symbol": "XLF",
+      "name": "金融",
+      "sector": "financials"
     },
     {
-      "symbol": "SMR",
-      "name": "NuScale Power",
-      "sector": "nuclear_smr",
-      "narrative": "美国核电政策大转弯+数据中心稳定电力刚需",
-      "alerts": { "breakAboveSMA": [20, 50], "breakBelowSMA": [20], "volumeSurgeMultiple": 3.0 },
-      "status": "watching"
+      "symbol": "IBB",
+      "name": "生物医药",
+      "sector": "biotech"
     },
     {
-      "symbol": "OKLO",
-      "name": "Oklo Inc.",
-      "sector": "nuclear_smr",
-      "narrative": "Sam Altman参投先进裂变，AI叙事双重催化",
-      "alerts": { "breakAboveSMA": [20, 50], "breakBelowSMA": [20], "volumeSurgeMultiple": 3.0 },
-      "status": "watching"
+      "symbol": "URA",
+      "name": "铀/核电",
+      "sector": "nuclear"
     },
     {
-      "symbol": "CRWV",
-      "name": "CoreWeave",
-      "sector": "ai_cloud",
-      "narrative": "英伟达亲儿子GPU-as-a-Service，IPO主升浪",
-      "alerts": { "breakAboveSMA": [50], "breakBelowSMA": [20], "volumeSurgeMultiple": 2.5, "edgarWatch": true },
-      "status": "watching"
+      "symbol": "TAN",
+      "name": "太阳能",
+      "sector": "solar"
     },
     {
-      "symbol": "PL",
-      "name": "Planet Labs",
-      "sector": "ai_saas",
-      "narrative": "卫星遥感+AI地球智能平台，十倍潜力价值重估",
-      "alerts": { "breakAboveSMA": [20, 50, 200], "breakBelowSMA": [20], "volumeSurgeMultiple": 3.0 },
-      "status": "watching"
+      "symbol": "LIT",
+      "name": "锂电池",
+      "sector": "lithium"
     },
     {
-      "symbol": "CEG",
-      "name": "Constellation Energy",
-      "sector": "nuclear_power",
-      "narrative": "核电基荷电力龙头，数据中心长期PPA合同",
-      "alerts": { "breakAboveSMA": [50], "breakBelowSMA": [20], "volumeSurgeMultiple": 2.0 },
-      "status": "watching"
+      "symbol": "BOTZ",
+      "name": "机器人/AI",
+      "sector": "robotics_ai"
+    },
+    {
+      "symbol": "SOXX",
+      "name": "半导体指数",
+      "sector": "semiconductor_index"
     }
   ],
-  "eventSources": [
-    { "name": "WhiteHouse", "url": "https://www.whitehouse.gov/feed/", "keywords": ["AI", "artificial intelligence", "nuclear", "data center", "tariff", "semiconductor", "chips"] },
-    { "name": "NRC", "url": "https://www.nrc.gov/reading-rm/doc-collections/news/rss.xml", "keywords": ["SMR", "NuScale", "OKLO", "advanced reactor", "license", "approval"] },
-    { "name": "DOE", "url": "https://www.energy.gov/rss/articles.xml", "keywords": ["nuclear", "data center", "clean energy", "grid"] }
-  ],
-  "sectorETFs": [
-    { "symbol": "SMH", "name": "半导体", "sector": "semiconductor" },
-    { "symbol": "XLK", "name": "科技", "sector": "technology" },
-    { "symbol": "XLE", "name": "能源", "sector": "energy" },
-    { "symbol": "XLF", "name": "金融", "sector": "financials" },
-    { "symbol": "IBB", "name": "生物医药", "sector": "biotech" },
-    { "symbol": "URA", "name": "铀/核电", "sector": "nuclear" },
-    { "symbol": "TAN", "name": "太阳能", "sector": "solar" },
-    { "symbol": "LIT", "name": "锂电池", "sector": "lithium" },
-    { "symbol": "BOTZ", "name": "机器人/AI", "sector": "robotics_ai" },
-    { "symbol": "SOXX", "name": "半导体指数", "sector": "semiconductor_index" }
-  ],
   "redditSources": [
-    { "subreddit": "wallstreetbets", "type": "hot", "limit": 10 },
-    { "subreddit": "stocks", "type": "hot", "limit": 10 },
-    { "subreddit": "investing", "type": "hot", "limit": 10 },
-    { "subreddit": "semiconductors", "type": "new", "limit": 15 },
-    { "subreddit": "nuclear", "type": "new", "limit": 15 }
+    {
+      "subreddit": "wallstreetbets",
+      "type": "hot",
+      "limit": 10
+    },
+    {
+      "subreddit": "stocks",
+      "type": "hot",
+      "limit": 10
+    },
+    {
+      "subreddit": "investing",
+      "type": "hot",
+      "limit": 10
+    },
+    {
+      "subreddit": "semiconductors",
+      "type": "new",
+      "limit": 15
+    },
+    {
+      "subreddit": "nuclear",
+      "type": "new",
+      "limit": 15
+    }
   ],
   "googleNewsKeywords": [
-    "AI data center", "nuclear power plant", "semiconductor shortage",
-    "GPU demand", "optical transceiver", "CoreWeave", "SMR reactor"
-  ]
-}
+    "NVIDIA GPU AI demand",
+    "semiconductor TSMC advanced packaging",
+    "AI data center capex",
+    "CoreWeave cloud GPU",
+    "optical transceiver 800G",
+    "SMR nuclear power",
+    "fintech crypto stablecoin",
+    "港股 科技股 AI",
+    "美股 半导体 芯片",
+    "恒生科技指数 行情"
+  }

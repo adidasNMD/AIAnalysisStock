@@ -48,6 +48,7 @@ export const NarrativeTopicSchema = z.object({
   description: z.string(),
   relatedEventIds: z.array(z.string()),
   impactScore: z.number().min(0).max(100), // 影响力/热度评分
+  narrativeType: z.enum(['Fundamental', 'Policy_Driven', 'Narrative_Hype']).optional(), // 新增：驱动力类型
   createdAt: z.number(),
   updatedAt: z.number()
 });

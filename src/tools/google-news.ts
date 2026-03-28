@@ -14,17 +14,39 @@ const parser = new Parser({
 
 const GOOGLE_NEWS_RSS_BASE = 'https://news.google.com/rss/search';
 
-// 预设的财经关键词
+// 预设的财经热点关键词
+// 聚焦：港美股 + 科技(AI/半导体/云) + 金融科技
 export const DEFAULT_NEWS_KEYWORDS = [
-  'AI data center',
-  'nuclear power plant',
-  'semiconductor shortage',
-  'GPU demand supply',
-  'optical transceiver 800G',
-  'CoreWeave IPO',
-  'SMR reactor nuclear',
-  'enterprise SSD demand',
-  'AI infrastructure capex',
+  // === 美股科技核心 ===
+  'NASDAQ tech stocks today',
+  'AI artificial intelligence stocks',
+  'NVIDIA earnings GPU demand',
+  'semiconductor chips TSMC',
+  'cloud computing data center',
+  'AI infrastructure investment capex',
+  'CoreWeave IPO AI cloud',
+  // === 美股金融科技 ===
+  'fintech payments digital banking',
+  'crypto Bitcoin ETF regulation',
+  'stablecoin USDC USDT regulation',
+  // === 港股科技 ===
+  '港股 科技股 行情',
+  '港股 AI 大模型 算力',
+  '港股 金融科技 支付',
+  '恒生科技指数',
+  // === 美股热门赛道 ===
+  'optical transceiver 800G AI',
+  'advanced packaging CoWoS',
+  'nuclear power SMR data center',
+  'SSD storage AI demand',
+  // === 宏观 & 政策（影响科技股的） ===
+  'Federal Reserve rate decision',
+  'US China tariff semiconductor',
+  'tech stock earnings season',
+  // === 中文美股 ===
+  '美股 科技股 财报',
+  '美股 AI 芯片 暴涨',
+  '英伟达 台积电 苹果',
 ];
 
 export interface GoogleNewsItem {
@@ -46,7 +68,13 @@ export async function fetchGoogleNewsRSS(
   const items: GoogleNewsItem[] = [];
 
   try {
-    const url = `${GOOGLE_NEWS_RSS_BASE}?q=${encodeURIComponent(query)}&hl=${lang}&gl=US&ceid=US:en`;
+    // 根据关键词是否包含中文自动切换新闻所在区域
+    const isChinese = /[\u3400-\u9FBF]/.test(query);
+    const langParams = isChinese 
+      ? `hl=zh-HK&gl=HK&ceid=HK:zh-HK` 
+      : `hl=${lang}&gl=US&ceid=US:en`;
+      
+    const url = `${GOOGLE_NEWS_RSS_BASE}?q=${encodeURIComponent(query)}&${langParams}`;
     const feed = await parser.parseURL(url);
 
     for (const entry of (feed.items || []).slice(0, limit)) {

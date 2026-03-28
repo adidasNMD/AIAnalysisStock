@@ -6,6 +6,7 @@ export interface LLMConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  streamToConsole?: boolean;
 }
 
 /**
@@ -14,8 +15,38 @@ export interface LLMConfig {
  * 这保证了系统可以无缝接入任何 OpenAI 兼容的中转代理、DeepSeek、Ollama 以及各种开源模型。
  */
 const MAX_RETRIES = 3;
-const REQUEST_TIMEOUT_MS = 60000;
-const FALLBACK_MODELS = ['gpt-4o-mini', 'gpt-3.5-turbo'];
+const REQUEST_TIMEOUT_MS = 180000; // 长达 3 分钟的超时时间，保证复杂的产业链分析不会中断
+const FALLBACK_MODELS = process.env.ANTHROPIC_AUTH_TOKEN ? [] : ['gpt-4o-mini', 'gpt-3.5-turbo'];
+
+import { zodToJsonSchema } from 'zod-to-json-schema';
+
+/**
+ * 生成一个万能容错体系。
+ * 针对用户“深度对话，不要硬性格式化，不要阻断”的核心指令：
+ * 这个 Proxy 将劫持所有属性访问。不论下游通过什么复杂的对象链去拿数据，都不会再报 TypeError。
+ */
+function createGracefulFallback<T>(rawText: string): T {
+  const handler: ProxyHandler<any> = {
+    get: (target, prop) => {
+      // 基础类型转换器，直接将文本外溢，真正做到“保留源对话”
+      if (prop === 'toString' || prop === Symbol.toPrimitive || prop === 'valueOf') return () => rawText;
+      if (prop === 'toJSON') return () => ({ unformattedContext: rawText });
+      if (prop === 'then') return undefined; // 防止 Promise 链陷入死循环
+      
+      if (typeof prop === 'string') {
+        if (prop === 'length') return 0;
+        if (prop === 'map' || prop === 'filter' || prop === 'reduce' || prop === 'forEach') return () => [];
+        if (prop === 'join') return () => rawText;
+        if (prop === 'slice') return () => [];
+        
+        // 遇到未知的属性层级访问，继续无限潜套安全的 Proxy
+        return new Proxy(target, handler);
+      }
+      return undefined;
+    }
+  };
+  return new Proxy({ _gracefulRecovery: true, _text: rawText }, handler) as T;
+}
 
 export async function generateStructuredOutput<T>(
   schema: z.ZodType<T>,
@@ -27,8 +58,11 @@ export async function generateStructuredOutput<T>(
   const baseUrl = config?.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
   let model = config?.model || process.env.LLM_MODEL || 'gpt-4o-mini';
 
+  // 动态生成严谨的 JSON Schema (避免传入 Name 参数产生 $ref 嵌套，直接打平)
+  const jsonSchemaString = JSON.stringify(zodToJsonSchema(schema as any), null, 2);
+
   // 强制大模型输出 JSON 的指令提示词
-  const finalSystemPrompt = `${systemPrompt}\n\nIMPORTANT: You must return ONLY raw valid JSON matching the exact schema requirements. Do not wrap it in markdown blockquotes like '\`\`\`json'. Return nothing but the JSON object.`;
+  const finalSystemPrompt = `${systemPrompt}\n\n[CRITICAL INSTRUCTION]: You must return ONLY raw, valid JSON. \n1. Your JSON keys MUST exactly, literally match the keys specified in the 'properties' of the schema below (e.g. if the schema requires 'title', do NOT output 'event_title').\n2. Do NOT invent new keys.\n3. Do NOT wrap the output in markdown blockquotes like \`\`\`json. Return ONLY the JSON object string.\n\n### EXPECTED EXACT JSON SCHEMA:\n${jsonSchemaString}`;
 
   // 演示模式：当没有真实的 API Key 时，自动拦截并返回漂亮的 Mock 数据！
   if (process.env.MOCK_LLM === 'true' || apiKey.includes('your_gen')) {
@@ -85,7 +119,7 @@ export async function generateStructuredOutput<T>(
        const roleMatch = systemPrompt.match(/ROLE:\s*(.*?)\n/)?.[1] || 'Agent Persona';
        const isBear = roleMatch.includes('short') || roleMatch.includes('macro');
        
-       const bearThesis = `从${roleMatch}的防守视角来看：二线跟风品种的业绩爆发经常极具欺骗性。光模块极度拥挤且订单能见度往往被华尔街刻意夸大，而存储作为强周期品，当前库存去化未达预期。此类滞后标的往往是在主力机构拉高出货核心龙头（如 NVDA）时，作为掩护资金撤退的烟雾弹被快速爆拉。不要轻易接盘。`;
+       const bearThesis = `从${roleMatch}的防守视角来看：二线跟风品种的业绩爆发经常极具欺骗性。光模块极度拥挤且订单能见度往往被华尔街刻意夸大，而存储作为强周期品，当前库存去化未达预期。此类滞后标的往往是在选为主力机构拉高出货核心龙头（如 NVDA）时，作为掩护资金撤退的烟雾弹被快速爆拉。不要轻易接盘。`;
        
        const bullThesis = `基于${roleMatch}逻辑的激进攻击：这是教科书级别的“右侧跟风套利”节点。主线逻辑（算力基建）已经被完全证实，聪明资金的逐利性必然像水流般寻找洼地。光通信和存储作为下一阶段大规模 AI 推理集群必不可少的基础设施，正是目前最好的补涨洼地，盈亏比较高。`;
 
@@ -118,6 +152,11 @@ export async function generateStructuredOutput<T>(
           sentimentScore: isBear ? -9 : 9
        };
     }
+    
+    if (config?.streamToConsole) {
+      const mockStr = JSON.stringify(mockResult, null, 2);
+      process.stdout.write(mockStr + '\n');
+    }
     return mockResult as T;
   }
 
@@ -135,26 +174,53 @@ export async function generateStructuredOutput<T>(
     }
 
     try {
-      const requestBody = {
-        model: currentModel,
-        messages: [
-          { role: 'system', content: finalSystemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        // 大多数现代模型/中转支持简单的 json_object 声明，如果不兼容可将此行注释
-        response_format: { type: "json_object" } 
-      };
+      let endpoint = '';
+      let headers: any = {};
+      let requestBody: any = {};
+      const isAnthropic = !!process.env.ANTHROPIC_AUTH_TOKEN;
+
+      if (isAnthropic) {
+        const antBaseUrl = config?.baseUrl || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+        const antKey = config?.apiKey || process.env.ANTHROPIC_AUTH_TOKEN || '';
+        const antModel = config?.model || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620';
+        
+        endpoint = `${antBaseUrl.replace(/\/v1$/, '').replace(/\/$/, '')}/v1/messages`;
+        headers = {
+          'Content-Type': 'application/json',
+          'x-api-key': antKey,
+          'Authorization': `Bearer ${antKey}`, // fallback for some proxies
+          'anthropic-version': '2023-06-01'
+        };
+        requestBody = {
+          model: currentModel === model ? antModel : currentModel,
+          max_tokens: 8192, // 注意：Anthropic 官方硬性规定 max_tokens 单次生成不能超过 8192，强制拉到 1M 会导致直接返回空数组 []
+          stream: config?.streamToConsole === true,
+          system: finalSystemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        };
+      } else {
+        endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+        headers = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        };
+        requestBody = {
+          model: currentModel,
+          stream: config?.streamToConsole === true,
+          messages: [
+            { role: 'system', content: finalSystemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        };
+      }
 
       // 使用 AbortController 实现超时
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
+        headers,
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
@@ -163,35 +229,258 @@ export async function generateStructuredOutput<T>(
 
       if (!response.ok) {
         const errorBody = await response.text();
+        console.error(`\n====== [LLM API RAW ERROR HTTP ${response.status}] ======`);
+        console.error(errorBody);
+        console.error(`========================================================\n`);
         throw new Error(`LLM API 请求错误 (${response.status}): ${errorBody}`);
       }
 
-      const data = await response.json();
-      const rawContent = data.choices?.[0]?.message?.content;
+      let rawContent = '';
+      let responseData: any = null;
+      if (requestBody.stream && response.body) {
+        // Node 18+ native fetch ReadableStream implementation
+        const body = response.body as any;
+        for await (const chunk of body) {
+          const decoded = new TextDecoder('utf-8').decode(chunk);
+          const lines = decoded.split('\n').filter(l => l.trim() !== '');
+          for (const line of lines) {
+            if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                let token = '';
+                if (isAnthropic) {
+                  if (parsed.type === 'content_block_delta' && parsed.delta) {
+                    token = parsed.delta.text || '';
+                  }
+                } else {
+                  token = parsed.choices?.[0]?.delta?.content || '';
+                }
+                if (token) {
+                  rawContent += token;
+                  process.stdout.write(token);
+                }
+              } catch (e) {
+                // Ignore parse errors on partial chunks
+              }
+            }
+          }
+        }
+        process.stdout.write('\n');
+      } else {
+        responseData = await response.json();
+        
+        // 兼容两种响应格式
+        if (isAnthropic && responseData.content && responseData.content.length > 0) {
+          rawContent = responseData.content[0].text;
+        } else {
+          rawContent = responseData.choices?.[0]?.message?.content;
+        }
+      }
       
       if (!rawContent) {
-        throw new Error('LLM 接口返回了空数据或异常格式。');
+        console.warn(`[DEBUG LLM] Response data dumping:`, JSON.stringify(responseData || {}, null, 2));
+        console.warn(`\n⚠️ [LLM Utility] 检测到大模型返回了彻底空的数据 (可能是 Proxy 抛弃或被 0 token 截断)。`);
+        console.warn(`💡 [系统指令] 根据“不因为格式化阻断”要求，将采用【纯文本对话穿透兜底】向下流转。`);
+        return createGracefulFallback('[模型此次请求没有返回任何实质文字]') as T;
       }
 
-      // 兼容部分未完全听从指令的模型，手动清除可能存在的 ```json 前缀
-      const cleanedContent = rawContent.replace(/^```json\s*/, '').replace(/```\s*$/, '');
-      const parsedJson = JSON.parse(cleanedContent);
+      // 提取 JSON 块（支持带有前后文对话的内容）
+      let cleanedContent = rawContent;
+      const jsonMatch = rawContent.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+      if (jsonMatch) {
+         cleanedContent = jsonMatch[0];
+      }
+
+      let parsedJson: any;
+      try {
+        parsedJson = JSON.parse(cleanedContent);
+      } catch (e: any) {
+        console.warn(`\n====== [RAW OUTPUT PARSE ERROR] ======`);
+        console.warn(`AI 没有按机器格式排版，而是输出了对话文本:\n${cleanedContent}`);
+        console.warn(`💡 [系统指令] 按照“非强制格式化”原则，系统不进行报错阻断，已自动将对话原意通过 Proxy 发放给下游 Agent 继续深度推进！`);
+        console.warn(`======================================\n`);
+        return createGracefulFallback(cleanedContent) as T;
+      }
       
-      // Zod 会在这最后一道防线极其严格地检查数据是否合法
-      return schema.parse(parsedJson);
+      const parsedResult = schema.safeParse(parsedJson);
+      if (!parsedResult.success) {
+        console.warn(`\n⚠️ [LLM Utility] 宽松模式: AI 输出与预期结构不完全匹配 (缺失或类型错误)，已强制放行。\n不匹配细节: ${parsedResult.error.issues.map((err: any) => `${err.path.join('.')}: ${err.message}`).join(', ')}\n`);
+      }
+      return parsedJson as T;
     } catch (err: any) {
       lastError = err;
       const isTimeout = err.name === 'AbortError';
-      const isRetryable = isTimeout || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503')));
+      const isParseError = err instanceof SyntaxError || (err.issues && Array.isArray(err.issues)); // ZodError checking
+      const isRetryable = isTimeout || isParseError || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503')));
       
       console.error(`[LLM Utility] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
       
       if (!isRetryable && attempt === 0) {
-        // 非可重试错误（如 parse 错误），直接抛出
+        // 非可重试错误，直接抛出
         throw err;
       }
     }
   }
 
   throw lastError || new Error('LLM 请求在所有重试后仍然失败。');
+}
+
+/**
+ * 纯文本大模型请求 — 自由文本思考流的核心通道
+ * 支持流式输出、3 次重试、180s 超时保护
+ * 用于所有 Agent 的深度分析、辩论、研报生成等场景
+ */
+export async function generateTextCompletion(
+  systemPrompt: string,
+  userPrompt: string,
+  config?: Partial<LLMConfig>
+): Promise<string> {
+  const apiKey = config?.apiKey || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || '';
+  const baseUrl = config?.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
+  let model = config?.model || process.env.LLM_MODEL || 'gpt-4o-mini';
+
+  if (process.env.MOCK_LLM === 'true' || apiKey.includes('your_gen')) {
+    console.log('[MockLLM] 🟢 Intercepting chat request...');
+    return `# Mock 深度分析报告\n\n## 事件概述\n这是系统生成的模拟深度分析回复。\n\n## 产业链推导\n- 第一层：直接受益方（已充分定价）\n- 第二层：瓶颈堵点（光模块、先进封装）\n- 第三层：滞后洼地（散户套利主战场）\n\n## 核心标的\n- $NVDA — 赛道龙头，已充分定价\n- $AAOI — 光模块瓶颈，筹码干净\n- $WDC — 存储洼地，量价齐飞拐点\n\n## 多空辩论\n### 🐂 多方论据\n产业逻辑坚实，订单可见度高\n\n### 🐻 空方论据\n估值已高，地缘风险不可忽视\n\n## 铁血止损\n- 龙头跌破 20日均线\n- 法案延期超过 2 周\n\n## 结论\n**建议深入追踪**，当前处于右侧跟风套利的最佳窗口期。`;
+  }
+
+  // 带重试和超时的请求逻辑
+  let lastError: Error | null = null;
+  const modelsToTry = [model, ...FALLBACK_MODELS.filter(m => m !== model)];
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const currentModel = attempt === 0 ? model : (modelsToTry[Math.min(attempt, modelsToTry.length - 1)] || model);
+    
+    if (attempt > 0) {
+      const delay = Math.pow(2, attempt) * 1000;
+      console.log(`[LLM Text] ⏳ 第 ${attempt + 1}/${MAX_RETRIES} 次重试 (${delay}ms 后)，使用模型: ${currentModel}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    try {
+      const isAnthropic = !!process.env.ANTHROPIC_AUTH_TOKEN;
+      let endpoint = '';
+      let headers: any = {};
+      let requestBody: any = {};
+
+      if (isAnthropic) {
+        const antBaseUrl = config?.baseUrl || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+        const antKey = config?.apiKey || process.env.ANTHROPIC_AUTH_TOKEN || '';
+        const antModel = config?.model || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620';
+        
+        endpoint = `${antBaseUrl.replace(/\/v1$/, '').replace(/\/$/, '')}/v1/messages`;
+        headers = {
+          'Content-Type': 'application/json',
+          'x-api-key': antKey,
+          'Authorization': `Bearer ${antKey}`,
+          'anthropic-version': '2023-06-01'
+        };
+        requestBody = {
+          model: currentModel === model ? antModel : currentModel,
+          max_tokens: 8192,
+          stream: config?.streamToConsole === true,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        };
+      } else {
+        endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+        headers = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        };
+        requestBody = {
+          model: currentModel,
+          stream: config?.streamToConsole === true,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        };
+      }
+
+      // 使用 AbortController 实现超时
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        console.error(`\n====== [LLM Text API RAW ERROR HTTP ${response.status}] ======`);
+        console.error(errorBody);
+        console.error(`=============================================================\n`);
+        throw new Error(`LLM API 请求错误 (${response.status}): ${errorBody}`);
+      }
+
+      let rawContent = '';
+      if (requestBody.stream && response.body) {
+        const body = response.body as any;
+        for await (const chunk of body) {
+          const decoded = new TextDecoder('utf-8').decode(chunk);
+          const lines = decoded.split('\n').filter(l => l.trim() !== '');
+          for (const line of lines) {
+            if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                let token = '';
+                if (isAnthropic) {
+                  if (parsed.type === 'content_block_delta' && parsed.delta) {
+                    token = parsed.delta.text || '';
+                  }
+                } else {
+                  token = parsed.choices?.[0]?.delta?.content || '';
+                }
+                if (token) {
+                  rawContent += token;
+                  process.stdout.write(token);
+                }
+              } catch (e) {
+                // Ignore parse errors on partial chunks
+              }
+            }
+          }
+        }
+        process.stdout.write('\n');
+      } else {
+        const responseData = await response.json();
+        if (isAnthropic && responseData.content && responseData.content.length > 0) {
+          rawContent = responseData.content[0].text;
+        } else {
+          rawContent = responseData.choices?.[0]?.message?.content;
+        }
+
+        if (!rawContent) {
+          console.error(`[DEBUG LLM Text] Response data dumping:`, JSON.stringify(responseData || {}, null, 2));
+          console.warn(`\n⚠️ [LLM Text] 检测到大模型返回了空数据，进入重试...`);
+          throw new Error('LLM 接口返回了空数据。');
+        }
+      }
+
+      if (!rawContent || rawContent.trim().length === 0) {
+        throw new Error('LLM 接口返回了空文本。');
+      }
+
+      return rawContent;
+
+    } catch (err: any) {
+      lastError = err;
+      const isTimeout = err.name === 'AbortError';
+      const isRetryable = isTimeout || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503') || err.message.includes('空数据') || err.message.includes('空文本')));
+      
+      console.error(`[LLM Text] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
+      
+      if (!isRetryable && attempt === 0) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error('LLM Text 请求在所有重试后仍然失败。');
 }
