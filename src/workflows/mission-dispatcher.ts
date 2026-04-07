@@ -1,0 +1,448 @@
+/**
+ * Sineige Alpha Engine — Mission Dispatcher
+ *
+ * 统一任务调度器：解析输入 → 分发给两个大脑
+ *
+ * 多入口触发场景：
+ *   场景A (探索模式): TrendRadar热点/手动问题 → OpenClaw先推导 → 推导出Tickers后送给TA
+ *   场景B (分析模式): 用户直接输入Ticker → 两个大脑同时启动，真正并行
+ *   场景C (复查模式): Watchlist定期复查 → 两个大脑同时启动
+ *
+ * Mission 状态机：
+ *   TRIGGERED → MAIN_RUNNING → MAIN_COMPLETE → TA_RUNNING → FULLY_ENRICHED
+ *                                              └→ (如果TA离线) MAIN_ONLY
+ */
+
+import { eventBus } from '../utils/event-bus';
+import { analyzeTicker, checkTAHealth, type TAAnalysisResult } from '../utils/ta-client';
+import { fetchTickerFullData, fetchMacroEnvironment, checkOpenBBHealth, type OpenBBTickerData } from '../utils/openbb-provider';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// ===== 类型定义 =====
+
+export type MissionStatus =
+  | 'triggered'
+  | 'main_running'
+  | 'main_complete'
+  | 'ta_running'
+  | 'fully_enriched'
+  | 'main_only'
+  | 'failed';
+
+export type MissionMode = 'explore' | 'analyze' | 'review';
+
+export interface MissionInput {
+  mode: MissionMode;
+  query: string;              // 探索模式: 问题文本 / 分析模式: Ticker
+  tickers?: string[];         // 分析/复查模式: 明确的Tickers
+  depth?: 'quick' | 'standard' | 'deep';
+  source?: string;            // 'trendradar' | 'manual' | 'watchlist' | 'webhook'
+  date?: string;              // TradingAgents 需要的日期
+}
+
+export interface UnifiedMission {
+  id: string;
+  traceId?: string;
+  input: MissionInput;
+  status: MissionStatus;
+  createdAt: string;
+  updatedAt: string;
+
+  // OpenClaw 主线结果
+  openclawReport: string | null;
+  openclawTickers: string[];
+  openclawDurationMs: number;
+
+  // TradingAgents 结果
+  taResults: TAAnalysisResult[];
+  taDurationMs: number;
+
+  // OpenBB 数据
+  openbbData: OpenBBTickerData[];
+  macroData: any;
+
+  // 双大脑共识
+  consensus: TickerConsensus[];
+
+  // 完整耗时
+  totalDurationMs: number;
+}
+
+export interface TickerConsensus {
+  ticker: string;
+  openclawVerdict: 'BUY' | 'HOLD' | 'SELL' | 'SKIP' | null;
+  taVerdict: 'BUY' | 'HOLD' | 'SELL' | 'UNKNOWN' | null;
+  agreement: 'agree' | 'disagree' | 'partial' | 'pending';
+  openbbVerdict: 'PASS' | 'WARN' | 'FAIL' | null;
+}
+
+// ===== Mission 存储 =====
+
+const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
+const missionCache = new Map<string, UnifiedMission>();
+
+function ensureMissionsDir() {
+  if (!fs.existsSync(MISSIONS_DIR)) {
+    fs.mkdirSync(MISSIONS_DIR, { recursive: true });
+  }
+}
+
+function generateMissionId(): string {
+  const now = new Date();
+  const ts = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  return `mission_${ts}_${Math.random().toString(36).substring(2, 6)}`;
+}
+
+function saveMission(mission: UnifiedMission) {
+  ensureMissionsDir();
+  const dateDir = path.join(MISSIONS_DIR, mission.createdAt.split('T')[0] || 'unknown');
+  if (!fs.existsSync(dateDir)) fs.mkdirSync(dateDir, { recursive: true });
+
+  const filePath = path.join(dateDir, `${mission.id}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(mission, null, 2), 'utf-8');
+  missionCache.set(mission.id, mission);
+}
+
+// ===== API: 读取 Missions =====
+
+export function getMission(id: string): UnifiedMission | null {
+  if (missionCache.has(id)) return missionCache.get(id)!;
+
+  ensureMissionsDir();
+  // 搜索所有日期目录
+  const dateDirs = fs.readdirSync(MISSIONS_DIR).filter(d => {
+    const fullPath = path.join(MISSIONS_DIR, d);
+    return fs.statSync(fullPath).isDirectory();
+  });
+
+  for (const dateDir of dateDirs) {
+    const filePath = path.join(MISSIONS_DIR, dateDir, `${id}.json`);
+    if (fs.existsSync(filePath)) {
+      const mission = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      missionCache.set(id, mission);
+      return mission;
+    }
+  }
+  return null;
+}
+
+export function listMissions(limit = 50): UnifiedMission[] {
+  ensureMissionsDir();
+  const missions: UnifiedMission[] = [];
+
+  const dateDirs = fs.readdirSync(MISSIONS_DIR)
+    .filter(d => fs.statSync(path.join(MISSIONS_DIR, d)).isDirectory())
+    .sort((a, b) => b.localeCompare(a)); // 最新日期排前
+
+  for (const dateDir of dateDirs) {
+    const dirPath = path.join(MISSIONS_DIR, dateDir);
+    const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.json')).sort((a, b) => b.localeCompare(a));
+
+    for (const file of files) {
+      if (missions.length >= limit) break;
+      try {
+        const mission = JSON.parse(fs.readFileSync(path.join(dirPath, file), 'utf-8'));
+        missions.push(mission);
+        missionCache.set(mission.id, mission);
+      } catch {}
+    }
+    if (missions.length >= limit) break;
+  }
+
+  return missions;
+}
+
+// ===== 核心调度逻辑 =====
+
+/**
+ * 启动一个统一 Mission
+ *
+ * 这个函数被 worker.ts 的 taskQueue.onProcess 回调调用。
+ * 它协调 OpenClaw + TradingAgents + OpenBB 的并行运行。
+ */
+export async function dispatchMission(
+  input: MissionInput,
+  executeOpenClaw: (query: string, depth: string, missionId: string) => Promise<string | null>,
+): Promise<UnifiedMission> {
+  const missionId = generateMissionId();
+  const now = new Date().toISOString();
+
+  const mission: UnifiedMission = {
+    id: missionId,
+    traceId: missionId,
+    input,
+    status: 'triggered',
+    createdAt: now,
+    updatedAt: now,
+    openclawReport: null,
+    openclawTickers: [],
+    openclawDurationMs: 0,
+    taResults: [],
+    taDurationMs: 0,
+    openbbData: [],
+    macroData: null,
+    consensus: [],
+    totalDurationMs: 0,
+  };
+
+  saveMission(mission);
+  eventBus.emitSystem('info', `🚀 Mission ${missionId} 已创建 (${input.mode})`);
+
+  const startTime = Date.now();
+
+  try {
+    if (input.mode === 'explore') {
+      // ━━━ 场景A: 探索模式 ━━━
+      // Step 1: OpenClaw 先推导标的
+      await runOpenClawPhase(mission, input, executeOpenClaw, startTime);
+
+      // Step 2: 从报告中提取 Tickers
+      const tickers = extractTickersFromReport(mission.openclawReport || '');
+      mission.openclawTickers = tickers;
+
+      if (tickers.length > 0) {
+        // Step 3: 并行获取 OpenBB 数据 + TradingAgents 分析
+        await runParallelEnrichment(mission, tickers, input.date);
+      } else {
+        mission.status = 'main_only';
+      }
+
+    } else if (input.mode === 'analyze') {
+      // ━━━ 场景B: 分析模式 (真正并行) ━━━
+      const tickers = input.tickers || [input.query.replace('$', '').toUpperCase()];
+      mission.openclawTickers = tickers;
+
+      // Step 1: 三个系统同时启动
+      await Promise.all([
+        runOpenClawPhase(mission, input, executeOpenClaw, startTime),
+        runParallelEnrichment(mission, tickers, input.date),
+      ]);
+
+    } else if (input.mode === 'review') {
+      // ━━━ 场景C: 复查模式 (真正并行) ━━━
+      const tickers = input.tickers || [];
+      mission.openclawTickers = tickers;
+
+      await Promise.all([
+        runOpenClawPhase(mission, input, executeOpenClaw, startTime),
+        runParallelEnrichment(mission, tickers, input.date),
+      ]);
+    }
+
+    // Step Final: 计算双大脑共识
+    mission.consensus = computeConsensus(mission);
+    mission.totalDurationMs = Date.now() - startTime;
+    if (mission.status !== 'main_only') {
+      mission.status = 'fully_enriched';
+    }
+    mission.updatedAt = new Date().toISOString();
+    saveMission(mission);
+
+    eventBus.emitSystem('info',
+      `✅ Mission ${missionId} 完成 (${Math.round(mission.totalDurationMs / 1000)}s) — ` +
+      `OC: ${mission.openclawReport ? '✅' : '❌'} | TA: ${mission.taResults.length} 只 | ` +
+      `共识: ${mission.consensus.map(c => `${c.ticker}:${c.agreement}`).join(', ')}`
+    );
+
+  } catch (e: any) {
+    mission.status = 'failed';
+    mission.totalDurationMs = Date.now() - startTime;
+    mission.updatedAt = new Date().toISOString();
+    saveMission(mission);
+    eventBus.emitSystem('error', `❌ Mission ${missionId} 失败: ${e.message}`);
+    throw e;
+  }
+
+  return mission;
+}
+
+// ===== 内部执行函数 =====
+
+async function runOpenClawPhase(
+  mission: UnifiedMission,
+  input: MissionInput,
+  executeOpenClaw: (query: string, depth: string, missionId: string) => Promise<string | null>,
+  globalStart: number,
+) {
+  mission.status = 'main_running';
+  mission.updatedAt = new Date().toISOString();
+  saveMission(mission);
+
+  const t0 = Date.now();
+  try {
+    mission.openclawReport = await executeOpenClaw(input.query, input.depth || 'deep', mission.id);
+    mission.openclawDurationMs = Date.now() - t0;
+    mission.status = 'main_complete';
+    mission.updatedAt = new Date().toISOString();
+    saveMission(mission);
+
+    eventBus.emitSystem('info',
+      `🔵 OpenClaw 完成 (${Math.round(mission.openclawDurationMs / 1000)}s)`
+    );
+  } catch (e: any) {
+    mission.openclawDurationMs = Date.now() - t0;
+    console.error(`[Dispatcher] OpenClaw 失败: ${e.message}`);
+    // 不抛出——允许 TA 继续
+  }
+}
+
+async function runParallelEnrichment(
+  mission: UnifiedMission,
+  tickers: string[],
+  date?: string,
+) {
+  if (tickers.length === 0) return;
+
+  // OpenBB + TA + Macro 三路并行
+  const [openbbResults, taResults, macroData] = await Promise.allSettled([
+    // OpenBB 数据查询
+    (async () => {
+      const isOnline = await checkOpenBBHealth();
+      if (!isOnline) {
+        const msg = '[Dispatcher] ⚠️ OpenBB 数据引擎离线或鉴权拒绝，强行跳过量化数据收集。请前往诊断中心查看详细原因。';
+        console.warn(msg);
+        eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] ${msg}`);
+        return [] as OpenBBTickerData[];
+      }
+      const results: OpenBBTickerData[] = [];
+      for (const ticker of tickers) {
+        try {
+          const data = await fetchTickerFullData(ticker);
+          if (data.verdict === 'WARN' && data.verdictReason?.includes('失败')) {
+            eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] OpenBB ${ticker} 查询异常: ${data.verdictReason}`);
+          }
+          results.push(data);
+        } catch (e: any) {
+          const msg = `OpenBB ${ticker} 查询崩溃: ${e.message}`;
+          console.error(`[Dispatcher] ${msg}`);
+          eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] ${msg}`);
+        }
+      }
+      return results;
+    })(),
+
+    // TradingAgents 分析
+    (async () => {
+      mission.status = 'ta_running';
+      mission.updatedAt = new Date().toISOString();
+      saveMission(mission);
+
+      const isOnline = await checkTAHealth();
+      if (!isOnline) {
+        console.log('[Dispatcher] ⚠️ TradingAgents 离线，跳过第二大脑分析');
+        return [] as TAAnalysisResult[];
+      }
+      const t0 = Date.now();
+      const results: TAAnalysisResult[] = [];
+      for (const ticker of tickers.slice(0, 3)) { // 最多分析3只
+        eventBus.emitSystem('info', `🟢 TradingAgents 开始分析: ${ticker}`);
+        const result = await analyzeTicker(ticker, date, mission.openclawReport || undefined);
+        results.push(result);
+      }
+      mission.taDurationMs = Date.now() - t0;
+      return results;
+    })(),
+
+    // 宏观环境
+    fetchMacroEnvironment(),
+  ]);
+
+  // 收集结果
+  if (openbbResults.status === 'fulfilled') {
+    mission.openbbData = openbbResults.value;
+  }
+  if (taResults.status === 'fulfilled') {
+    mission.taResults = taResults.value;
+  }
+  if (macroData.status === 'fulfilled') {
+    mission.macroData = macroData.value;
+  }
+}
+
+// ===== 工具函数 =====
+
+/**
+ * 从 OpenClaw 报告文本中提取 Ticker 符号
+ */
+function extractTickersFromReport(report: string): string[] {
+  if (!report) return [];
+
+  // 匹配 $TICKER 或 **$TICKER** 或 `$TICKER` 或 独立的 TICKER
+  const patterns = [
+    /\$([A-Z]{1,5})\b/g,                    // $NVDA
+    /\*\*\$?([A-Z]{2,5})\*\*/g,             // **NVDA**
+    /`\$?([A-Z]{2,5})`/g,                   // `NVDA`
+    /\b([A-Z]{2,5})\b(?=\s*[—–\-:：])/g,   // NVDA — 或 NVDA:
+  ];
+
+  const tickers = new Set<string>();
+  const BLACKLIST = new Set([
+    'AI', 'ETF', 'IPO', 'CEO', 'CTO', 'FDA', 'SEC', 'GDP', 'CPI', 'RSI',
+    'SMA', 'EPS', 'FCF', 'BUY', 'SELL', 'HOLD', 'SKIP', 'NEW', 'MACD',
+    'API', 'USD', 'RMB', 'BCI', 'PE', 'PS', 'QE', 'YOY', 'QOQ',
+    'NOTE', 'WARN', 'PASS', 'FAIL', 'DEEP', 'THE', 'AND', 'FOR',
+  ]);
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(report)) !== null) {
+      const ticker = match[1]?.toUpperCase();
+      if (ticker && !BLACKLIST.has(ticker) && ticker.length >= 2) {
+        tickers.add(ticker);
+      }
+    }
+  }
+
+  return Array.from(tickers).slice(0, 10);
+}
+
+/**
+ * 计算双大脑共识
+ */
+function computeConsensus(mission: UnifiedMission): TickerConsensus[] {
+  const tickers = mission.openclawTickers;
+  if (!tickers.length) return [];
+
+  return tickers.map(ticker => {
+    // OpenClaw 从报告中推断态度
+    let ocVerdict: TickerConsensus['openclawVerdict'] = null;
+    if (mission.openclawReport) {
+      const report = mission.openclawReport.toUpperCase();
+      const tickerContext = report.split(ticker).slice(1).join('').slice(0, 200);
+      if (tickerContext.includes('BUY') || tickerContext.includes('做多') || tickerContext.includes('✅') || tickerContext.includes('建仓')) {
+        ocVerdict = 'BUY';
+      } else if (tickerContext.includes('SELL') || tickerContext.includes('做空') || tickerContext.includes('离场')) {
+        ocVerdict = 'SELL';
+      } else if (tickerContext.includes('HOLD') || tickerContext.includes('观望')) {
+        ocVerdict = 'HOLD';
+      } else if (tickerContext.includes('跳过') || tickerContext.includes('SKIP') || tickerContext.includes('❌')) {
+        ocVerdict = 'SKIP';
+      }
+    }
+
+    // TradingAgents PM 裁决
+    const taResult = mission.taResults.find(r => r.ticker === ticker);
+    const taVerdict = taResult?.portfolioManagerDecision?.action || null;
+
+    // OpenBB 评级
+    const openbbResult = mission.openbbData.find(d => d.ticker === ticker);
+    const openbbVerdict = openbbResult?.verdict || null;
+
+    // 共识判断
+    let agreement: TickerConsensus['agreement'] = 'pending';
+    if (ocVerdict && taVerdict) {
+      if (ocVerdict === 'BUY' && taVerdict === 'BUY') agreement = 'agree';
+      else if (ocVerdict === 'SELL' && taVerdict === 'SELL') agreement = 'agree';
+      else if ((ocVerdict === 'BUY' && taVerdict === 'SELL') || (ocVerdict === 'SELL' && taVerdict === 'BUY')) {
+        agreement = 'disagree';
+      } else {
+        agreement = 'partial';
+      }
+    } else if (ocVerdict || taVerdict) {
+      agreement = 'partial';
+    }
+
+    return { ticker, openclawVerdict: ocVerdict, taVerdict, agreement, openbbVerdict };
+  });
+}

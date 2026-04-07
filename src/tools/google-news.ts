@@ -14,39 +14,29 @@ const parser = new Parser({
 
 const GOOGLE_NEWS_RSS_BASE = 'https://news.google.com/rss/search';
 
-// 预设的财经热点关键词
-// 聚焦：港美股 + 科技(AI/半导体/云) + 金融科技
 export const DEFAULT_NEWS_KEYWORDS = [
-  // === 美股科技核心 ===
-  'NASDAQ tech stocks today',
-  'AI artificial intelligence stocks',
-  'NVIDIA earnings GPU demand',
-  'semiconductor chips TSMC',
-  'cloud computing data center',
-  'AI infrastructure investment capex',
-  'CoreWeave IPO AI cloud',
-  // === 美股金融科技 ===
-  'fintech payments digital banking',
-  'crypto Bitcoin ETF regulation',
-  'stablecoin USDC USDT regulation',
-  // === 港股科技 ===
-  '港股 科技股 行情',
-  '港股 AI 大模型 算力',
-  '港股 金融科技 支付',
-  '恒生科技指数',
-  // === 美股热门赛道 ===
-  'optical transceiver 800G AI',
-  'advanced packaging CoWoS',
-  'nuclear power SMR data center',
-  'SSD storage AI demand',
-  // === 宏观 & 政策（影响科技股的） ===
-  'Federal Reserve rate decision',
-  'US China tariff semiconductor',
-  'tech stock earnings season',
-  // === 中文美股 ===
-  '美股 科技股 财报',
-  '美股 AI 芯片 暴涨',
-  '英伟达 台积电 苹果',
+  // === 机器智能与脑机 (Machine Intelligence & BCI) ===
+  'Embodied AI humanoid robot',
+  'brain computer interface BCI neuralink synchronization',
+  'AI inference chips liquid cooling',
+  'AGI reasoning models breakthrough',
+  // === 医疗生物革命 (AI Drug Discovery & Synthetic Bio) ===
+  'AI drug discovery IPO breakthrough',
+  'CRISPR gene editing trial results',
+  'synthetic biology mRNA cancer vaccines',
+  'precision medicine biomarkers',
+  // === 新能源与基础设施 (New Energy Infrastructure & Fusion) ===
+  'nuclear fusion breakthrough reactor',
+  'SMR small modular reactor data center',
+  'solid state battery EV commercialization',
+  'smart grid AI power management',
+  // === 经典硬核基本盘 (Core Hard-Tech) ===
+  'advanced packaging CoWoS TSMC',
+  'optical transceiver 800G silicon photonics',
+  'Quantum computing error correction qubits',
+  // === 宏观与政策 (Macro & Policy on Tech) ===
+  'Federal Reserve rate tech stocks',
+  'US semiconductor export restrictions',
 ];
 
 export interface GoogleNewsItem {

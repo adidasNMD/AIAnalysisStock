@@ -1,0 +1,17 @@
+node_modules
+.git
+.gitmodules
+out
+data
+*.db
+*.sqlite
+.env
+.env.local
+config/.env
+vendors/openbb/.git
+vendors/trading-agents/.git
+vendors/trendradar/.git
+vendors/openclaw/.git
+dashboard/node_modules
+dashboard/dist
+docker

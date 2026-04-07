@@ -11,15 +11,15 @@ export class NarrativeLifecycleEngine {
   async evaluateAllActiveNarratives(): Promise<{ updated: number; messages: string[] }> {
     console.log(`\n[LifecycleEngine] 🔄 开始评估活跃叙事的生命周期状态...`);
     
-    const records = loadNarratives().filter(r => r.status === 'active');
+    const narratives = await loadNarratives();
+    const records = narratives.filter((r: any) => r.status === 'active');
     const messages: string[] = [];
     let updatedCount = 0;
 
     for (const record of records) {
       // 使用新版 coreTicker 字段（从文本正则提取）
       // 同时兼容旧版 chainMapping.coreTickers
-      const coreTicker = record.coreTicker || 
-        (record.chainMapping && record.chainMapping.coreTickers.length > 0 ? record.chainMapping.coreTickers[0] : null);
+      const coreTicker = record.coreTicker;
 
       if (!coreTicker) {
         continue; // 没有核心标的，无法进行量价评估
@@ -60,7 +60,7 @@ export class NarrativeLifecycleEngine {
         }
 
         if (newStage !== record.stage) {
-            updateNarrative(record.id, {
+            await updateNarrative(record.id, {
                 stage: newStage,
                 eventSummary: `生命周期引擎判定: 从 ${record.stage} 跃迁至 ${newStage}`
             });

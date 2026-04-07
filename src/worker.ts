@@ -13,6 +13,11 @@ import { startInteractiveBot } from './agents/telegram/interactive-bot';
 import { MacroContextEngine } from './agents/macro/macro-context';
 import { updatePerformance, formatPerformanceReport } from './utils/performance-tracker';
 import { NarrativeLifecycleEngine } from './agents/lifecycle/engine';
+import { healthMonitor } from './utils/health-monitor';
+import { taskQueue } from './utils/task-queue';
+import { startServer } from './server/app';
+import { dispatchMission } from './workflows/mission-dispatcher';
+import { eventBus } from './utils/event-bus';
 
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
@@ -29,6 +34,72 @@ const orchestrator = new AgentSwarmOrchestrator();
 const trendRadar = new TrendRadar();
 const macroEngine = new MacroContextEngine();
 const lifecycleEngine = new NarrativeLifecycleEngine();
+
+// ==========================================
+// 初始化系统监控与任务队列
+// ==========================================
+(async () => {
+  // 1. 检测大模型连通性
+  await healthMonitor.checkConnectivity();
+  // 2. 恢复积压的任务
+  const recovered = await taskQueue.recover();
+  if (recovered > 0) console.log(`[Sentinel] 🔄 恢复了 ${recovered} 个积压任务`);
+  // 3. 注册队列处理器
+  taskQueue.onProcess(async (task) => {
+    try {
+      // === 使用 Mission Dispatcher 封装 OpenClaw + TA + OpenBB 并行执行 ===
+      const isTicker = /^\$?[A-Z]{1,5}$/.test(task.query.trim());
+      const mode = isTicker ? 'analyze' as const : 'explore' as const;
+
+      const mission = await dispatchMission(
+        {
+          mode,
+          query: task.query,
+          tickers: isTicker ? [task.query.replace('$', '').toUpperCase()] : [],
+          depth: task.depth,
+          source: task.source,
+        },
+        // executeOpenClaw 回调: 调用原始 orchestrator
+        async (query: string, depth: string, missionId: string) => {
+          const result = await orchestrator.executeMission(
+            query,
+            depth as any,
+            task.statePayload ? JSON.parse(task.statePayload) : null,
+            async (state) => {
+              await taskQueue.updateTaskState(task.id, JSON.stringify(state));
+            },
+            (progress) => {
+              taskQueue.updateProgress(task.id, progress);
+            },
+            async () => {
+              const tasks = await taskQueue.getAll();
+              const t = tasks.find((tx: any) => tx.id === task.id);
+              return t?.status === 'canceled';
+            },
+            missionId
+          );
+          return typeof result === 'string' ? result : JSON.stringify(result);
+        }
+      );
+
+      // 记录 Mission 共识到日志
+      if (mission.consensus.length > 0) {
+        const consensusSummary = mission.consensus
+          .map(c => `${c.ticker}: OC=${c.openclawVerdict || '-'} TA=${c.taVerdict || '-'} → ${c.agreement}`)
+          .join(' | ');
+        eventBus.emitSystem('info', `📊 双大脑共识: ${consensusSummary}`);
+      }
+
+      healthMonitor.recordSuccess();
+    } catch (e: any) {
+      healthMonitor.recordFailure(e.message);
+      throw e;
+    }
+  });
+  taskQueue.processNext(); // Trigger processing for recovered tasks
+  // 4. 启动本地 API 供大屏使用
+  startServer(3000);
+})();
 
 // 启动实时交互长轮询机器人
 startInteractiveBot();
@@ -66,88 +137,14 @@ function loadWatchlist(): WatchlistConfig {
 }
 
 // ==========================================
-// TRIGGER 1: 每 5 分钟 — Watchlist + 动态观察池 价量异动扫描
+// TRIGGER 1: 价量异常已被用户要求禁用，因为产生过多重复噪声
 // ==========================================
-cron.schedule('*/5 * * * *', async () => {
-  const watchlist = loadWatchlist();
-  const dynamicTickers = getActiveTickers();
-  const totalCount = watchlist.tickers.length + dynamicTickers.length;
-  console.log(`\n[Sentinel] 🔍 开始价量扫描 (静态 ${watchlist.tickers.length} + 动态 ${dynamicTickers.length} = ${totalCount} 只标的)...`);
-
-  const allAlerts: AlertSignal[] = [];
-
-  // 扫描静态 Watchlist
-  for (const ticker of watchlist.tickers) {
-    try {
-      const alerts = await scanTicker(ticker.symbol, ticker.alerts);
-      allAlerts.push(...alerts);
-    } catch (e: any) {
-      console.error(`[Sentinel] Scan failed for ${ticker.symbol}: ${e.message}`);
-    }
-  }
-
-  // 扫描动态观察池（watching + focused）
-  for (const dTicker of dynamicTickers) {
-    try {
-      const alerts = await scanTicker(dTicker.symbol, dTicker.alerts);
-      allAlerts.push(...alerts);
-
-      // 关键：动态标的出现入场级信号 → 自动升级为 focused 并触发深度分析
-      const actionAlerts = alerts.filter(a => a.severity === 'action');
-      if (actionAlerts.length > 0 && dTicker.status === 'watching') {
-        promoteTicker(dTicker.symbol, `价量异动触发: ${actionAlerts.map(a => a.details).join('; ')}`);
-        console.log(`[Sentinel] 🎯 动态标的 ${dTicker.symbol} 升级为 focused！触发深度分析...`);
-        try {
-          await orchestrator.executeMission(`${dTicker.trendName} — ${dTicker.symbol} ${dTicker.name} breakout analysis`);
-        } catch (e: any) {
-          console.error(`[Sentinel] Deep analysis failed for dynamic ${dTicker.symbol}: ${e.message}`);
-        }
-      }
-    } catch (e: any) {
-      console.error(`[Sentinel] Dynamic scan failed for ${dTicker.symbol}: ${e.message}`);
-    }
-  }
-
-  if (allAlerts.length > 0) {
-    console.log(`[Sentinel] ⚡ 发现 ${allAlerts.length} 条异动信号！`);
-
-    // 紧急止损信号单独推送
-    const criticals = allAlerts.filter(a => a.severity === 'critical');
-    for (const alert of criticals) {
-      await sendStopLossAlert(alert.symbol, alert.details);
-    }
-
-    // 入场信号单独推送（静态 Watchlist 标的）
-    const actions = allAlerts.filter(a => a.severity === 'action');
-    for (const alert of actions) {
-      await sendEntrySignal(alert.symbol, alert.details);
-
-      // 入场级别信号自动触发深度分析流水线
-      const ticker = watchlist.tickers.find(t => t.symbol === alert.symbol);
-      if (ticker) {
-        console.log(`[Sentinel] 🧠 异动信号触发深度分析: ${alert.symbol} — ${ticker.narrative}`);
-        try {
-          const report = await orchestrator.executeMission(`${ticker.narrative} — ${ticker.symbol} ${ticker.name} breakout analysis`);
-          if (report) {
-            await sendReportSummary(`${ticker.symbol} 深度异动分析`, report.substring(0, 500));
-          }
-        } catch (e: any) {
-          console.error(`[Sentinel] Deep analysis failed for ${alert.symbol}: ${e.message}`);
-        }
-      }
-    }
-
-    // 信息级别汇总推送
-    await sendAlertBatch(allAlerts);
-  } else {
-    console.log(`[Sentinel] ✅ 全部标的无异动，保持监控。`);
-  }
-});
+// cron.schedule('*/5 * * * *', async () => { ... });
 
 // ==========================================
-// TRIGGER 2: 每 15 分钟 — RSS 事件源 + SEC EDGAR 轮询
+// TRIGGER 2: 媒体资讯与公告 (每小时的第30分钟触发)
 // ==========================================
-cron.schedule('*/15 * * * *', async () => {
+cron.schedule('30 * * * *', async () => {
   const watchlist = loadWatchlist();
   
   // RSS 政府公告轮询
@@ -162,16 +159,12 @@ cron.schedule('*/15 * * * *', async () => {
       });
       await sendMessage(msg);
 
-      // 高优先级事件自动触发深度分析
+      // 高优先级事件自动触发分析
       for (const alert of rssAlerts) {
         if (alert.matchedKeywords.length >= 2) {
-          console.log(`[Sentinel] 🧠 高命中率事件触发深度分析: ${alert.title}`);
-          try {
-            const context = alertsToContext([alert]);
-            await orchestrator.executeMission(alert.title);
-          } catch (e: any) {
-            console.error(`[Sentinel] Event analysis failed: ${e.message}`);
-          }
+          console.log(`[Sentinel] 🧠 高命中率事件排队分析: ${alert.title}`);
+          // T2 事件驱动使用 'standard' 深度
+          await taskQueue.enqueue(alert.title, 'standard', 'T2_RSS_Event', 50);
         }
       }
     }
@@ -253,54 +246,22 @@ cron.schedule('30 08 * * 1-5', async () => {
 
   await sendReportSummary('Watchlist 盘前扫描', snapshot);
 
-  // 对每个赛道执行一次叙事级别的深度扫查
+  // 对每个赛道下发一次深度扫查任务
   const sectors = [...new Set(watchlist.tickers.map(t => t.sector))];
   for (const sector of sectors) {
     const sectorTickers = watchlist.tickers.filter(t => t.sector === sector);
     const narrative = sectorTickers[0]?.narrative || sector;
-    console.log(`[Sentinel] 🧠 赛道深度分析: ${sector} — ${narrative}`);
-    try {
-      await orchestrator.executeMission(narrative);
-    } catch (e: any) {
-      console.error(`[Sentinel] Sector analysis failed for ${sector}: ${e.message}`);
-    }
+    console.log(`[Sentinel] 🧠 赛道每日深度分析排队: ${sector} — ${narrative}`);
+    // T3 盘前日报使用 'deep' 深度，但不占用最高优先级
+    await taskQueue.enqueue(narrative, 'deep', 'T3_Daily_Sector', 10);
   }
 });
 
 // ==========================================
-// TRIGGER 4: 每 15 分钟 — TrendRadar 趋势雷达扫描 (自动变频省Token机制)
+// TRIGGER 4: 趋势雷达媒体扫描 (每小时的整点触发: 寻找新的交易机会)
 // ==========================================
-function isActiveTradingHours(): boolean {
-  const now = new Date();
-  const utcHour = now.getUTCHours();
-  const utcMin = now.getUTCMinutes();
-  const timeVal = utcHour + utcMin / 60.0;
-  const day = now.getUTCDay(); 
-
-  // 周六日全天非交易时间段
-  if (day === 0 || day === 6) return false;
-
-  // 美股核心时段 (考虑夏令时误差，宽泛圈定 13:30 - 21:00 UTC)
-  const isUSMarket = timeVal >= 13.5 && timeVal <= 21.0;
-  // 港股核心时段 (01:30 - 08:00 UTC)
-  const isHKMarket = timeVal >= 1.5 && timeVal <= 8.0;
-
-  return isUSMarket || isHKMarket;
-}
-
-cron.schedule('7,22,37,52 * * * *', async () => {
-  const now = new Date();
-  const isTrading = isActiveTradingHours();
-  
-  // 非交易时间：从每15分钟高频扫描，降级为每 2 小时扫描一次（偶数小时的07分执行）
-  if (!isTrading) {
-    if (now.getMinutes() > 15 || now.getHours() % 2 !== 0) {
-      return; 
-    }
-    console.log(`\n[Sentinel] 📡 处于非交易时段，TrendRadar 进入降频休眠模式，当前执行 2小时/次 的扫描...`);
-  } else {
-    console.log(`\n[Sentinel] 📡 处于美股/港股活跃交易时段，TrendRadar 启动高频扫描...`);
-  }
+cron.schedule('0 * * * *', async () => {
+  console.log(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
   
   try {
     const analysis = await trendRadar.scan();
@@ -309,16 +270,12 @@ cron.schedule('7,22,37,52 * * * *', async () => {
     const telegramMsg = trendRadar.formatForTelegram(analysis);
     await sendMessage(telegramMsg);
 
-    // 新版：如果趋势报告中提及了大量 ticker，自动触发深度分析
+    // 新版：如果趋势报告中提及了大量 ticker，自动排队触发分析
     if (analysis.mentionedTickers && analysis.mentionedTickers.length >= 5) {
-      console.log(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，触发深度分析...`);
-      try {
-        // 用报告的前200字作为深度分析的 query
-        const topicSummary = analysis.report.substring(0, 200).replace(/\n/g, ' ');
-        await orchestrator.executeMission(`趋势雷达洞察 — ${topicSummary}`);
-      } catch (e: any) {
-        console.error(`[Sentinel] Trend deep analysis failed: ${e.message}`);
-      }
+      console.log(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，排队标准分析...`);
+      const topicSummary = analysis.report.substring(0, 200).replace(/\n/g, ' ');
+      // T4 趋势轮换使用 'standard' 深度
+      await taskQueue.enqueue(`趋势雷达洞察 — ${topicSummary}`, 'standard', 'T4_Trend_Radar', 30);
     }
   } catch (e: any) {
     console.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
@@ -394,8 +351,8 @@ if (process.argv.includes('--run-now')) {
     // 可选深度分析
     if (process.argv.includes('--deep')) {
       const query = process.argv[process.argv.indexOf('--deep') + 1] || watchlist.tickers[0]?.narrative || 'AI Infrastructure';
-      console.log(`\n[Sentinel] 🧠 触发深度分析: ${query}`);
-      await orchestrator.executeMission(query);
+      console.log(`\n[Sentinel] 🧠 手动触发深度分析: ${query}`);
+      await taskQueue.enqueue(query, 'deep', 'manual', 100);
     }
   })().catch(console.error);
 }

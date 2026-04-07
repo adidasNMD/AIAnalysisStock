@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { eventBus } from './event-bus';
 
 // ==========================================
 // AgentLogger — Agent 全链路追踪日志
@@ -33,14 +34,16 @@ let activeMission: MissionTrace | null = null;
 /**
  * 开始一个新的 Mission 追踪
  */
-export function startMissionTrace(query: string): string {
+export function startMissionTrace(query: string, explicitId?: string): string {
   const now = new Date();
-  const missionId = `mission_${now.toISOString().replace(/[:.]/g, '-')}`;
+  const tzoffset = now.getTimezoneOffset() * 60000; 
+  const localISOTime = new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
+  const missionId = explicitId || `mission_${localISOTime.replace(/[:.]/g, '-')}`;
   
   activeMission = {
     missionId,
     query,
-    startedAt: now.toISOString(),
+    startedAt: localISOTime,
     steps: [],
   };
 
@@ -59,18 +62,24 @@ export function logAgentStep(
   durationMs: number,
   meta?: Record<string, any>,
 ): void {
+  const now = new Date();
+  const tzoffset = now.getTimezoneOffset() * 60000; 
+  const localISOTime = new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
+
   const trace: AgentTrace = {
     agentName,
-    timestamp: new Date().toISOString(),
+    timestamp: localISOTime,
     phase,
-    input: typeof input === 'string' ? input.substring(0, 5000) : input,
-    output: typeof output === 'string' ? output.substring(0, 5000) : output,
+    input: input, // 不要截断，保留完整的输入上下文以便回溯
+    output: output, // 不要截断，保留完整的深度思考过程和输出
     durationMs,
     meta,
   };
 
   if (activeMission) {
     activeMission.steps.push(trace);
+    let textOut = typeof output === 'string' ? output : JSON.stringify(output);
+    eventBus.emitLog(activeMission.missionId, agentName, phase, textOut, meta);
   }
 
   console.log(`[AgentLogger] 📎 ${agentName} | ${phase} | ${durationMs}ms`);
@@ -82,11 +91,14 @@ export function logAgentStep(
 export function endMissionTrace(): string | null {
   if (!activeMission) return null;
 
-  activeMission.completedAt = new Date().toISOString();
+  const now = new Date();
+  const tzoffset = now.getTimezoneOffset() * 60000; 
+  const localISOTime = new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
+
+  activeMission.completedAt = localISOTime;
 
   // 保存 JSON trace
-  const now = new Date();
-  const dateStr = now.toISOString().split('T')[0] || '1970-01-01';
+  const dateStr = localISOTime.split('T')[0] || '1970-01-01';
   const dirPath = path.join(TRACE_DIR, dateStr);
 
   if (!fs.existsSync(dirPath)) {

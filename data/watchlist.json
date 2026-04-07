@@ -1,5 +1,27 @@
 {
-  "tickers": [],
+  "tickers": [
+    {
+      "symbol": "NVDA",
+      "name": "NVIDIA",
+      "sector": "Semiconductor",
+      "narrative": "AI Data Center GPU Dominance",
+      "alerts": { "priceSurge": 5, "volumeSurge": 2.5, "smaBreakout": [20, 50], "edgarWatch": true }
+    },
+    {
+      "symbol": "TSM",
+      "name": "Taiwan Semiconductor",
+      "sector": "Semiconductor",
+      "narrative": "Advanced Node Foundry Dominance",
+      "alerts": { "priceSurge": 4, "volumeSurge": 2.0, "smaBreakout": [20], "edgarWatch": false }
+    },
+    {
+      "symbol": "ASTS",
+      "name": "AST SpaceMobile",
+      "sector": "Space",
+      "narrative": "Direct-to-Cell LEO Satellite Network",
+      "alerts": { "priceSurge": 10, "volumeSurge": 3.0, "smaBreakout": [20], "edgarWatch": true }
+    }
+  ],
   "sectorETFs": [
     {
       "symbol": "SMH",
@@ -90,4 +112,5 @@
     "港股 科技股 AI",
     "美股 半导体 芯片",
     "恒生科技指数 行情"
-  }
+  ]
+}

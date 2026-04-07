@@ -7,6 +7,8 @@ export interface LLMConfig {
   baseUrl: string;
   model: string;
   streamToConsole?: boolean;
+  /** 模型分级：primary = 主力模型，secondary = 小模型（节省 Token） */
+  tier?: 'primary' | 'secondary';
 }
 
 /**
@@ -16,7 +18,7 @@ export interface LLMConfig {
  */
 const MAX_RETRIES = 3;
 const REQUEST_TIMEOUT_MS = 180000; // 长达 3 分钟的超时时间，保证复杂的产业链分析不会中断
-const FALLBACK_MODELS = process.env.ANTHROPIC_AUTH_TOKEN ? [] : ['gpt-4o-mini', 'gpt-3.5-turbo'];
+const FALLBACK_MODELS: string[] = [];
 
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
@@ -32,13 +34,13 @@ function createGracefulFallback<T>(rawText: string): T {
       if (prop === 'toString' || prop === Symbol.toPrimitive || prop === 'valueOf') return () => rawText;
       if (prop === 'toJSON') return () => ({ unformattedContext: rawText });
       if (prop === 'then') return undefined; // 防止 Promise 链陷入死循环
-      
+
       if (typeof prop === 'string') {
         if (prop === 'length') return 0;
         if (prop === 'map' || prop === 'filter' || prop === 'reduce' || prop === 'forEach') return () => [];
         if (prop === 'join') return () => rawText;
         if (prop === 'slice') return () => [];
-        
+
         // 遇到未知的属性层级访问，继续无限潜套安全的 Proxy
         return new Proxy(target, handler);
       }
@@ -69,12 +71,12 @@ export async function generateStructuredOutput<T>(
     console.log('[MockLLM] 🟢 Intercepting request and returning simulated OpenClaw Swarm Data...');
     let mockResult: any = {};
     if (systemPrompt.includes('Data Scout')) {
-       mockResult = {
-         validInsights: [
-           { source: 'WhiteHouse_RSS', content: 'URGENT: President announces $500B strategic reserve for sovereign AI data centers.', timestamp: Date.now() },
-           { source: 'TechInsider', content: 'Supply chain checks indicate immediate bottlenecks will be in Optical Transceivers and Enterprise SSDs, not just GPUs.', timestamp: Date.now() }
-         ]
-       };
+      mockResult = {
+        validInsights: [
+          { source: 'WhiteHouse_RSS', content: 'URGENT: President announces $500B strategic reserve for sovereign AI data centers.', timestamp: Date.now() },
+          { source: 'TechInsider', content: 'Supply chain checks indicate immediate bottlenecks will be in Optical Transceivers and Enterprise SSDs, not just GPUs.', timestamp: Date.now() }
+        ]
+      };
     } else if (systemPrompt.includes('Lead Market Analyst')) {
       if (userPrompt.includes('Event Title')) {
         mockResult = {
@@ -93,66 +95,66 @@ export async function generateStructuredOutput<T>(
         };
       }
     } else if (systemPrompt.includes('Quant Strategist')) {
-       mockResult = {
-          coreTickers: ['NVDA', 'CEG'],
-          confirmTickers: ['SMCI', 'DELL'],
-          mappingTickers: ['AAOI', 'WDC', 'MU'],
-          logicDescription: 'As capital flows into massive sovereign AI clusters, the immediate bottleneck shifts from compute (NVDA) to data transfer (800G/1.6T Optical modules) and massive high-density storage (Enterprise SSDs).',
-          deductionChain: [
-            '1. Sovereign AI Reserve injects $500B directly into Data Center construction.',
-             '2. Core Compute (NVDA GPUs) is already fully priced and capacity constrained.',
-            '1. 顶层驱动: $500B 国家级战略AI数据中心发包法案。',
-            '2. 对撞主干: 算力核心 (NVDA) 已被华尔街过度定价，目前上车超额赔率极低，属于高危区。',
-            '3. 寻找堵点: 万卡集群的互联速率是第一痛点，硅光通信模块 (尤其是AAOI这类二线) 订单被迫井喷，筹码干净。',
-            '4. 向下沉降: 超大参数预训练与推理需要极高并发读取，高毛利企业级闪存SSD与HBM (WDC, MU) 进入量价齐飞拐点。'
-          ]
-       };
+      mockResult = {
+        coreTickers: ['NVDA', 'CEG'],
+        confirmTickers: ['SMCI', 'DELL'],
+        mappingTickers: ['AAOI', 'WDC', 'MU'],
+        logicDescription: 'As capital flows into massive sovereign AI clusters, the immediate bottleneck shifts from compute (NVDA) to data transfer (800G/1.6T Optical modules) and massive high-density storage (Enterprise SSDs).',
+        deductionChain: [
+          '1. Sovereign AI Reserve injects $500B directly into Data Center construction.',
+          '2. Core Compute (NVDA GPUs) is already fully priced and capacity constrained.',
+          '1. 顶层驱动: $500B 国家级战略AI数据中心发包法案。',
+          '2. 对撞主干: 算力核心 (NVDA) 已被华尔街过度定价，目前上车超额赔率极低，属于高危区。',
+          '3. 寻找堵点: 万卡集群的互联速率是第一痛点，硅光通信模块 (尤其是AAOI这类二线) 订单被迫井喷，筹码干净。',
+          '4. 向下沉降: 超大参数预训练与推理需要极高并发读取，高毛利企业级闪存SSD与HBM (WDC, MU) 进入量价齐飞拐点。'
+        ]
+      };
     } else if (systemPrompt.includes('Master Arbitrator')) {
-       mockResult = {
-          bullCaseSummary: '【右侧跟风套利发令枪】经过议会六方维度的激辩，多方占据绝对主导权。这不是题材炒作，而是美国顶级政府信用背书与产业实质订单落地的双击。我们放弃已经在天上飞翔的英伟达，直接降维打击光模块和存储赛道。这些标的此前受制于传统消费电子的疲软被错杀，此时借助 AI 基础设施大爆发的“叙事外溢”，配合资金面上的空头回补，大概率将迎来数倍（Multi-bagger）的主升浪修复。',
-          bearCaseSummary: '【反向冷却与防守漏洞】尽管多头情绪激昂，但不可忽视地缘政治的绞杀。光模块与存储行业极度依赖台积电（TSM）的 CoWoS 先进封装产能，若底层硅片与封装跟不上，所谓光模块订单只是纸上富贵。目前大盘科技股高管正在密集减持，此时去追高波动极大的科技基建二线股，若大盘出现流动性黑洞，极易死在山腰。',
-          keyTriggers: ['下周二美国商务部正式公开对于数据中心芯片与光器件的关税豁免清单。', '光模块核心厂商业绩预演中超预期至少 50%，并在电话会上宣布产能近满。', '衍生标的日线级别放巨量突破 250 日牛熊分界线。'],
-          ironcladStopLosses: ['法案在国会遭到党派阻击，被宣布延期表决超过2周以上。', '龙头股 NVDA 出现日线级别 5% 以上的放量跌破 50 日均线，引发板块逃亡。', '交易日内，标的带量跌破 20 日均线且 3 天内未收回有效破位，必须无条件清仓。']
-       };
+      mockResult = {
+        bullCaseSummary: '【右侧跟风套利发令枪】经过议会六方维度的激辩，多方占据绝对主导权。这不是题材炒作，而是美国顶级政府信用背书与产业实质订单落地的双击。我们放弃已经在天上飞翔的英伟达，直接降维打击光模块和存储赛道。这些标的此前受制于传统消费电子的疲软被错杀，此时借助 AI 基础设施大爆发的“叙事外溢”，配合资金面上的空头回补，大概率将迎来数倍（Multi-bagger）的主升浪修复。',
+        bearCaseSummary: '【反向冷却与防守漏洞】尽管多头情绪激昂，但不可忽视地缘政治的绞杀。光模块与存储行业极度依赖台积电（TSM）的 CoWoS 先进封装产能，若底层硅片与封装跟不上，所谓光模块订单只是纸上富贵。目前大盘科技股高管正在密集减持，此时去追高波动极大的科技基建二线股，若大盘出现流动性黑洞，极易死在山腰。',
+        keyTriggers: ['下周二美国商务部正式公开对于数据中心芯片与光器件的关税豁免清单。', '光模块核心厂商业绩预演中超预期至少 50%，并在电话会上宣布产能近满。', '衍生标的日线级别放巨量突破 250 日牛熊分界线。'],
+        ironcladStopLosses: ['法案在国会遭到党派阻击，被宣布延期表决超过2周以上。', '龙头股 NVDA 出现日线级别 5% 以上的放量跌破 50 日均线，引发板块逃亡。', '交易日内，标的带量跌破 20 日均线且 3 天内未收回有效破位，必须无条件清仓。']
+      };
     } else {
-       // Must be one of the 7 Council Personas (e.g. technicalRetail, institutional)
-       const roleMatch = systemPrompt.match(/ROLE:\s*(.*?)\n/)?.[1] || 'Agent Persona';
-       const isBear = roleMatch.includes('short') || roleMatch.includes('macro');
-       
-       const bearThesis = `从${roleMatch}的防守视角来看：二线跟风品种的业绩爆发经常极具欺骗性。光模块极度拥挤且订单能见度往往被华尔街刻意夸大，而存储作为强周期品，当前库存去化未达预期。此类滞后标的往往是在选为主力机构拉高出货核心龙头（如 NVDA）时，作为掩护资金撤退的烟雾弹被快速爆拉。不要轻易接盘。`;
-       
-       const bullThesis = `基于${roleMatch}逻辑的激进攻击：这是教科书级别的“右侧跟风套利”节点。主线逻辑（算力基建）已经被完全证实，聪明资金的逐利性必然像水流般寻找洼地。光通信和存储作为下一阶段大规模 AI 推理集群必不可少的基础设施，正是目前最好的补涨洼地，盈亏比较高。`;
+      // Must be one of the 7 Council Personas (e.g. technicalRetail, institutional)
+      const roleMatch = systemPrompt.match(/ROLE:\s*(.*?)\n/)?.[1] || 'Agent Persona';
+      const isBear = roleMatch.includes('short') || roleMatch.includes('macro');
 
-       mockResult = {
-          role: roleMatch, // ignored by schema, but added in council.ts
-          thesis: isBear ? bearThesis : bullThesis,
-          supportingPoints: isBear ? 
-            [
-              '美债收益率曲线（2Y10Y）开始深度解挂（De-inversion），这是衰退期兑现的死亡交叉特征，资金正疯狂逃向避风港。',
-              '劳动力市场数据恶化速度超过了美联储能用货币政策“对冲”的速度，货币传导实质上存在长达6-9个月的时滞。',
-              'AI 浪潮相关的企业资本支出（CapEx）回报率开始受到华尔街质疑，科技股一旦指引不及预期，存在严重杀跌双杀风险。',
-              '跨国利差缩窄，日元套利交易解套远未结束，降息将加速美元走弱，进而引发跨国资本的抛售螺旋。'
-            ] : 
-            [
-              '恐慌指数（VIX）在此前的抛售中已释放了历史极值的压力，空头动能彻底衰竭，形成完美的逼空前夜。',
-              '无风险利率（RFR）的大幅下降将逼迫场外超过 6 万亿美元的货币基金被迫离开避风港，重新寻找高收益资产（TINA效应再现）。',
-              '从严密的 DCF 估值模型来看，降息 50 个基点能直接让标普500的合理估值中枢立刻上浮至少 8%-12%。',
-              '技术面上看，各大权重股均在长期 200 日均线上方形成了极其坚固的强支撑结构，下方抛压真空极度稀薄。'
-            ],
-          riskingPoints: isBear ? 
-            [
-              '如果降息幅度超预期直接打压 75bps 并伴随联储的“白衣骑士”天量 QE，可能会用印钞强行把市场拉起。',
-              '下周的通胀数据瞬间诡异反弹回升，逼迫空头担忧加息重提而提前平仓离场导致逼空。',
-              '华尔街巨鳄联手护盘，利用巨额看涨期权Gamma Gamma squeeze机制制造短期的强逼空行情。'
-            ] : [
-              '降息反而引发了市场对于美国极度经济衰退的恐慌确认，引发类似于 2008 年雷曼时刻的无差别连环抛售。',
-              '地缘政治（如中东局势突变或东欧战火扩散）突然爆发黑天鹅，使得全球流动性瞬间枯竭躲入黄金美债。',
-              '长期美债收益率不降反升（因为交易员担忧恶性通胀二次反弹导致债券抛售潮），压垮股票估值。'
-            ],
-          sentimentScore: isBear ? -9 : 9
-       };
+      const bearThesis = `从${roleMatch}的防守视角来看：二线跟风品种的业绩爆发经常极具欺骗性。光模块极度拥挤且订单能见度往往被华尔街刻意夸大，而存储作为强周期品，当前库存去化未达预期。此类滞后标的往往是在选为主力机构拉高出货核心龙头（如 NVDA）时，作为掩护资金撤退的烟雾弹被快速爆拉。不要轻易接盘。`;
+
+      const bullThesis = `基于${roleMatch}逻辑的激进攻击：这是教科书级别的“右侧跟风套利”节点。主线逻辑（算力基建）已经被完全证实，聪明资金的逐利性必然像水流般寻找洼地。光通信和存储作为下一阶段大规模 AI 推理集群必不可少的基础设施，正是目前最好的补涨洼地，盈亏比较高。`;
+
+      mockResult = {
+        role: roleMatch, // ignored by schema, but added in council.ts
+        thesis: isBear ? bearThesis : bullThesis,
+        supportingPoints: isBear ?
+          [
+            '美债收益率曲线（2Y10Y）开始深度解挂（De-inversion），这是衰退期兑现的死亡交叉特征，资金正疯狂逃向避风港。',
+            '劳动力市场数据恶化速度超过了美联储能用货币政策“对冲”的速度，货币传导实质上存在长达6-9个月的时滞。',
+            'AI 浪潮相关的企业资本支出（CapEx）回报率开始受到华尔街质疑，科技股一旦指引不及预期，存在严重杀跌双杀风险。',
+            '跨国利差缩窄，日元套利交易解套远未结束，降息将加速美元走弱，进而引发跨国资本的抛售螺旋。'
+          ] :
+          [
+            '恐慌指数（VIX）在此前的抛售中已释放了历史极值的压力，空头动能彻底衰竭，形成完美的逼空前夜。',
+            '无风险利率（RFR）的大幅下降将逼迫场外超过 6 万亿美元的货币基金被迫离开避风港，重新寻找高收益资产（TINA效应再现）。',
+            '从严密的 DCF 估值模型来看，降息 50 个基点能直接让标普500的合理估值中枢立刻上浮至少 8%-12%。',
+            '技术面上看，各大权重股均在长期 200 日均线上方形成了极其坚固的强支撑结构，下方抛压真空极度稀薄。'
+          ],
+        riskingPoints: isBear ?
+          [
+            '如果降息幅度超预期直接打压 75bps 并伴随联储的“白衣骑士”天量 QE，可能会用印钞强行把市场拉起。',
+            '下周的通胀数据瞬间诡异反弹回升，逼迫空头担忧加息重提而提前平仓离场导致逼空。',
+            '华尔街巨鳄联手护盘，利用巨额看涨期权Gamma Gamma squeeze机制制造短期的强逼空行情。'
+          ] : [
+            '降息反而引发了市场对于美国极度经济衰退的恐慌确认，引发类似于 2008 年雷曼时刻的无差别连环抛售。',
+            '地缘政治（如中东局势突变或东欧战火扩散）突然爆发黑天鹅，使得全球流动性瞬间枯竭躲入黄金美债。',
+            '长期美债收益率不降反升（因为交易员担忧恶性通胀二次反弹导致债券抛售潮），压垮股票估值。'
+          ],
+        sentimentScore: isBear ? -9 : 9
+      };
     }
-    
+
     if (config?.streamToConsole) {
       const mockStr = JSON.stringify(mockResult, null, 2);
       process.stdout.write(mockStr + '\n');
@@ -166,7 +168,7 @@ export async function generateStructuredOutput<T>(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const currentModel = attempt === 0 ? model : (modelsToTry[Math.min(attempt, modelsToTry.length - 1)] || model);
-    
+
     if (attempt > 0) {
       const delay = Math.pow(2, attempt) * 1000; // 指数退避: 2s, 4s
       console.log(`[LLM Utility] ⏳ 第 ${attempt + 1}/${MAX_RETRIES} 次重试 (${delay}ms 后)，使用模型: ${currentModel}`);
@@ -183,7 +185,7 @@ export async function generateStructuredOutput<T>(
         const antBaseUrl = config?.baseUrl || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
         const antKey = config?.apiKey || process.env.ANTHROPIC_AUTH_TOKEN || '';
         const antModel = config?.model || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620';
-        
+
         endpoint = `${antBaseUrl.replace(/\/v1$/, '').replace(/\/$/, '')}/v1/messages`;
         headers = {
           'Content-Type': 'application/json',
@@ -237,12 +239,20 @@ export async function generateStructuredOutput<T>(
 
       let rawContent = '';
       let responseData: any = null;
+
+      // 提取 Agent Name，用于 UI 端展示
+      let agentName = 'AI Agent';
+      const roleMatch = systemPrompt.match(/(?:【角色】|ROLE:)\s*(.+)/);
+      if (roleMatch && roleMatch[1]) agentName = roleMatch[1].trim();
+      const eventBus = require('./event-bus').eventBus;
+
       if (requestBody.stream && response.body) {
         // Node 18+ native fetch ReadableStream implementation
         const body = response.body as any;
+        let sseBuffer = '';
         for await (const chunk of body) {
           const decoded = new TextDecoder('utf-8').decode(chunk);
-          const lines = decoded.split('\n').filter(l => l.trim() !== '');
+          const lines = decoded.split('\n').filter((l: string) => l.trim() !== '');
           for (const line of lines) {
             if (line.startsWith('data: ') && line !== 'data: [DONE]') {
               try {
@@ -258,6 +268,11 @@ export async function generateStructuredOutput<T>(
                 if (token) {
                   rawContent += token;
                   process.stdout.write(token);
+                  sseBuffer += token;
+                  if (sseBuffer.includes('\n') || sseBuffer.length > 30) {
+                    eventBus.emitLog('global', agentName, 'streaming', sseBuffer);
+                    sseBuffer = '';
+                  }
                 }
               } catch (e) {
                 // Ignore parse errors on partial chunks
@@ -265,10 +280,11 @@ export async function generateStructuredOutput<T>(
             }
           }
         }
+        if (sseBuffer.length > 0) eventBus.emitLog('global', agentName, 'streaming', sseBuffer);
         process.stdout.write('\n');
       } else {
         responseData = await response.json();
-        
+
         // 兼容两种响应格式
         if (isAnthropic && responseData.content && responseData.content.length > 0) {
           rawContent = responseData.content[0].text;
@@ -276,7 +292,7 @@ export async function generateStructuredOutput<T>(
           rawContent = responseData.choices?.[0]?.message?.content;
         }
       }
-      
+
       if (!rawContent) {
         console.warn(`[DEBUG LLM] Response data dumping:`, JSON.stringify(responseData || {}, null, 2));
         console.warn(`\n⚠️ [LLM Utility] 检测到大模型返回了彻底空的数据 (可能是 Proxy 抛弃或被 0 token 截断)。`);
@@ -288,7 +304,7 @@ export async function generateStructuredOutput<T>(
       let cleanedContent = rawContent;
       const jsonMatch = rawContent.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
       if (jsonMatch) {
-         cleanedContent = jsonMatch[0];
+        cleanedContent = jsonMatch[0];
       }
 
       let parsedJson: any;
@@ -301,7 +317,7 @@ export async function generateStructuredOutput<T>(
         console.warn(`======================================\n`);
         return createGracefulFallback(cleanedContent) as T;
       }
-      
+
       const parsedResult = schema.safeParse(parsedJson);
       if (!parsedResult.success) {
         console.warn(`\n⚠️ [LLM Utility] 宽松模式: AI 输出与预期结构不完全匹配 (缺失或类型错误)，已强制放行。\n不匹配细节: ${parsedResult.error.issues.map((err: any) => `${err.path.join('.')}: ${err.message}`).join(', ')}\n`);
@@ -312,9 +328,9 @@ export async function generateStructuredOutput<T>(
       const isTimeout = err.name === 'AbortError';
       const isParseError = err instanceof SyntaxError || (err.issues && Array.isArray(err.issues)); // ZodError checking
       const isRetryable = isTimeout || isParseError || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503')));
-      
+
       console.error(`[LLM Utility] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
-      
+
       if (!isRetryable && attempt === 0) {
         // 非可重试错误，直接抛出
         throw err;
@@ -337,7 +353,16 @@ export async function generateTextCompletion(
 ): Promise<string> {
   const apiKey = config?.apiKey || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || '';
   const baseUrl = config?.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
-  let model = config?.model || process.env.LLM_MODEL || 'gpt-4o-mini';
+
+  // 模型分级：secondary tier 强制使用小模型以节省 Token
+  const isSecondary = config?.tier === 'secondary';
+  let model = isSecondary
+    ? (process.env.LLM_SECONDARY_MODEL || 'gpt-4o-mini')
+    : (config?.model || process.env.LLM_MODEL || 'gpt-4o-mini');
+
+  if (isSecondary) {
+    console.log(`[LLM Text] 💰 使用二级小模型: ${model} (节省 Token)`);
+  }
 
   if (process.env.MOCK_LLM === 'true' || apiKey.includes('your_gen')) {
     console.log('[MockLLM] 🟢 Intercepting chat request...');
@@ -350,7 +375,7 @@ export async function generateTextCompletion(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const currentModel = attempt === 0 ? model : (modelsToTry[Math.min(attempt, modelsToTry.length - 1)] || model);
-    
+
     if (attempt > 0) {
       const delay = Math.pow(2, attempt) * 1000;
       console.log(`[LLM Text] ⏳ 第 ${attempt + 1}/${MAX_RETRIES} 次重试 (${delay}ms 后)，使用模型: ${currentModel}`);
@@ -367,7 +392,7 @@ export async function generateTextCompletion(
         const antBaseUrl = config?.baseUrl || process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
         const antKey = config?.apiKey || process.env.ANTHROPIC_AUTH_TOKEN || '';
         const antModel = config?.model || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20240620';
-        
+
         endpoint = `${antBaseUrl.replace(/\/v1$/, '').replace(/\/$/, '')}/v1/messages`;
         headers = {
           'Content-Type': 'application/json',
@@ -473,9 +498,9 @@ export async function generateTextCompletion(
       lastError = err;
       const isTimeout = err.name === 'AbortError';
       const isRetryable = isTimeout || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503') || err.message.includes('空数据') || err.message.includes('空文本')));
-      
+
       console.error(`[LLM Text] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
-      
+
       if (!isRetryable && attempt === 0) {
         throw err;
       }

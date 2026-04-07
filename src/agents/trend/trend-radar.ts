@@ -187,24 +187,10 @@ ${investorContext}
       marketSentiment = 'risk_off';
     }
 
-    // 自动标的发现：从提取的 ticker 中筛选新标的写入动态观察池
+    // [已移除] 之前这里会用简单的 Regex 把报告中带 $ 的 Ticker (如 $NVDA) 直接丢进 dynamic_watchlist.json。
+    // 这导致观察池被大量的巨头和 ETF (如 $XLE, $SMH) 污染，完全绕过了 TradingAgents 与市值卡点的筛选。
+    // 现在，标的发现将全权交由 OpenClaw 海选机制驱动。
     const newTickers = mentionedTickers.filter(t => !existingTickers.includes(t));
-    if (newTickers.length > 0) {
-      try {
-        const tickersToAdd = newTickers.slice(0, 5).map(symbol => ({
-          symbol,
-          name: symbol, // Yahoo Finance 验证时会获取真实名称
-          trendName: 'TrendRadar',
-          chainLevel: 'hidden_gem' as const,
-          multibaggerScore: 50,
-          reasoning: `TrendRadar 文本分析中提及`,
-          discoverySource: 'TrendRadar:text_extraction',
-        }));
-        await addDiscoveredTickers(tickersToAdd);
-      } catch (e: any) {
-        console.error(`[TrendRadar] 标的自动写入失败: ${e.message}`);
-      }
-    }
 
     // 保存情报报告（兼容旧接口）
     try {
@@ -231,7 +217,7 @@ ${investorContext}
   private async collectRedditData(): Promise<RedditPost[]> {
     try {
       return await scanMultipleSubreddits(
-        ['wallstreetbets', 'stocks', 'investing', 'options', 'semiconductors'], 5);
+        ['wallstreetbets', 'stocks', 'singularity', 'biotech', 'robotics', 'Futurology'], 5);
     } catch (e: any) {
       console.error(`[TrendRadar] Reddit 采集失败: ${e.message}`);
       return [];
@@ -259,19 +245,20 @@ ${investorContext}
         `你是一个金融市场情报分析师。你的任务是给出当前最值得搜索的财经热点关键词。`,
         `当前时间: ${new Date().toISOString()}
 
-请列出 8-12 个当前最值得在 Google News 和 Reddit 上搜索的财经热点关键词/短语。
+请列出 8-12 个当前最值得在 Google News 和 Reddit 上搜索的前沿科技与财经热点关键词/短语。
 要求：
-1. 必须是当下正在发生、有时效性的话题（不要给过时的旧闻）
-2. 覆盖：美股行情、AI/科技、半导体、能源、宏观政策、加密货币、中港股市
-3. 每行一个关键词，中英文都要有
-4. 用于 Google News RSS 搜索，所以要简洁、精准
+1. 必须是当下正在发生、有时效性的突破话题
+2. 覆盖：脑机接口(BCI)、具身智能(Embodied AI)、可控核聚变、量子计算、AI制药与合成生物、以及半导体/算力基建。
+3. 每行一个关键词，优先使用英文专业术语或中英文混合
+4. 用于 Google News RSS 搜索，要精准匹配最硬核的科技突破。
 5. 不要编号，直接一行一个关键词
 
 示例格式：
-NVIDIA earnings AI demand
-美联储降息 利率决议
-Tesla robotaxi autonomous
-港股 科技股 反弹`,
+Neuralink human trial telepathy
+Embodied AI robotics Figure 01
+Nuclear fusion net energy gain
+CRISPR synthetic biology breakthrough
+AI drug discovery FDA approval`,
       );
 
       // 从 AI 输出中提取关键词（每行一个）

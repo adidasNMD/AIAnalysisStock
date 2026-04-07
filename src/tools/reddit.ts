@@ -42,9 +42,12 @@ export interface RedditPost {
  */
 async function fetchRedditJSON(endpoint: string): Promise<RedditPost[]> {
   const posts: RedditPost[] = [];
-  
+
   try {
-    const response = await fetch(`${REDDIT_BASE}${endpoint}.json?raw_json=1&limit=25`, {
+    const [path, queryStr] = endpoint.split('?');
+    const url = `${REDDIT_BASE}${path}.json?raw_json=1&limit=25${queryStr ? '&' + queryStr : ''}`;
+    
+    const response = await fetch(url, {
       headers: {
         'User-Agent': USER_AGENT,
         'Accept': 'application/json',
@@ -79,7 +82,9 @@ async function fetchRedditJSON(endpoint: string): Promise<RedditPost[]> {
       });
     }
   } catch (e: any) {
-    console.error(`[Reddit] Fetch failed for ${endpoint}: ${e.message}`);
+    const errorMsg = `[Reddit] Fetch failed for ${endpoint}: ${e.message}`;
+    console.error(errorMsg);
+    require('../utils/event-bus').eventBus.emitSystem('error', errorMsg);
   }
 
   return posts;
@@ -108,7 +113,7 @@ export async function searchPosts(query: string, subreddit?: string, limit: numb
   const endpoint = subreddit
     ? `/r/${subreddit}/search?q=${encodeURIComponent(query)}&restrict_sr=on&sort=relevance&t=day`
     : `/search?q=${encodeURIComponent(query)}&sort=relevance&t=day`;
-  
+
   const posts = await fetchRedditJSON(endpoint);
   return posts.slice(0, limit);
 }
@@ -121,9 +126,9 @@ export async function scanMultipleSubreddits(
   limit: number = 5
 ): Promise<RedditPost[]> {
   console.log(`[Reddit] 📡 批量扫描 ${subreddits.length} 个 subreddit...`);
-  
+
   const allPosts: RedditPost[] = [];
-  
+
   // 串行请求避免被 Reddit 限流
   for (const sub of subreddits) {
     try {
@@ -193,7 +198,7 @@ export const redditTool: AgentTool<{ query: string; limit?: number }> = {
   }),
   execute: async (args) => {
     console.log(`\n[Tool Exec] 🔧 Reddit Tool: Searching for "${args.query}"`);
-    
+
     // 搜索 + 热帖双管齐下
     const [searchResults, wsbHot, stocksHot] = await Promise.all([
       searchPosts(args.query, undefined, args.limit || 10),

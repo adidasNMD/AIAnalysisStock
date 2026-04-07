@@ -1,0 +1,32 @@
+# ===================================================
+# OpenBB Platform API Server
+# Python 3.11 + OpenBB
+# ===================================================
+
+FROM python:3.11-slim AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 1. 安装 OpenBB Platform
+RUN pip install --no-cache-dir \
+    openbb \
+    openbb-fmp \
+    openbb-yfinance \
+    openbb-sec
+
+# 2. 复制 OpenBB 源码 (如有定制)
+COPY . .
+
+# 3. 创建配置目录
+RUN mkdir -p /root/.openbb_platform
+
+# 4. 暴露端口
+EXPOSE 8000
+
+# 5. 启动 OpenBB API
+CMD ["openbb-api", "--host", "0.0.0.0", "--port", "8000"]

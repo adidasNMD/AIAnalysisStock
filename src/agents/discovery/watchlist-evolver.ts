@@ -63,7 +63,8 @@ export async function evolveWatchlist(): Promise<{
 
   // 收集当前系统已有的知识作为 LLM 上下文
   const activeTickers = getActiveTickers();
-  const narratives = loadNarratives().filter(n => n.status === 'active');
+  const narrativesList = await loadNarratives();
+  const narratives = narrativesList.filter((n: any) => n.status === 'active');
 
   const currentKeywords = config.googleNewsKeywords || [];
   const currentSubreddits = (config.redditSources || []).map(r => r.subreddit);

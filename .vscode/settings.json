@@ -1,1 +1,13 @@
-{}
+{
+  "files.exclude": {
+    "**/venv": true,
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.DS_Store": true,
+    "**/node_modules": true
+  },
+  "search.exclude": {
+    "**/venv": true,
+    "**/node_modules": true
+  }
+}

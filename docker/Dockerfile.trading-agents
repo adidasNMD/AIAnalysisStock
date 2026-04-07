@@ -1,0 +1,44 @@
+# ===================================================
+# TradingAgents API Server
+# Python 3.11 + FastAPI + LangGraph
+# ===================================================
+
+FROM python:3.11-slim AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 1. 安装 Python 依赖
+# 先复制 requirements (如果存在) 或手动安装核心包
+COPY requirements*.txt ./
+RUN if [ -f requirements.txt ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
+    else \
+        pip install --no-cache-dir \
+            fastapi uvicorn pydantic \
+            langchain langchain-openai langchain-community \
+            langgraph \
+            yfinance pandas numpy \
+            requests beautifulsoup4; \
+    fi
+
+# 2. 复制 TradingAgents 源码
+COPY . .
+
+# 3. 安装 TradingAgents 自身 (如果有 setup.py/pyproject.toml)
+RUN if [ -f setup.py ]; then pip install --no-cache-dir -e .; \
+    elif [ -f pyproject.toml ]; then pip install --no-cache-dir -e .; \
+    fi
+
+# 4. 创建输出目录
+RUN mkdir -p /app/out/ta_results
+
+# 5. 暴露端口
+EXPOSE 8001
+
+# 6. 启动 FastAPI
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8001"]

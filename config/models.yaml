@@ -1,0 +1,49 @@
+# ==========================================
+# Sineige Alpha Intelligence Engine
+# 统一模型配置中心 (Single Source of Truth)
+# ==========================================
+# 所有服务从此文件读取 LLM 配置
+# 可通过 Dashboard Settings 页面在线编辑
+
+# ===== 全局默认 =====
+defaults:
+  provider: zhipu               # zhipu / openai / anthropic / google
+  base_url: "https://open.bigmodel.cn/api/coding/paas/v4/"
+  # API Key 从 config/.env 的 LLM_API_KEY 环境变量读取
+
+# ===== 按用途分配模型 =====
+models:
+  # 深度推理：用于 Council 辩论、Bull/Bear 研判、最终综合
+  deep_think:
+    model: "GLM-5.1"
+    temperature: 0.7
+    max_tokens: 8192
+
+  # 快速响应：用于 DataScout 摘要、标签分类、轻量任务
+  quick_think:
+    model: "GLM-5.1"
+    temperature: 0.5
+    max_tokens: 4096
+
+# ===== 按服务覆盖（可选，不填则用上面的默认） =====
+services:
+  # OpenClaw 各阶段使用的模型
+  openclaw:
+    scout: "quick_think"
+    analyst: "deep_think"
+    strategist: "deep_think"
+    council: "deep_think"
+    synthesis: "deep_think"
+
+  # TradingAgents 各角色使用的模型
+  trading_agents:
+    analysts: "quick_think"        # 4位分析师
+    researchers: "deep_think"      # Bull/Bear Researcher
+    trader: "deep_think"           # Trader Agent
+    risk_management: "quick_think" # 风控三方
+    portfolio_manager: "deep_think" # PM 终审
+
+  # TrendRadar AI 功能
+  trendradar:
+    ai_filter: "quick_think"
+    ai_translation: "quick_think"

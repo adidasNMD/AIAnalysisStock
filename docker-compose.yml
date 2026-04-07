@@ -1,0 +1,120 @@
+# ===================================================
+# Sineige Alpha Engine — Docker Compose
+# 四服务编排: OpenClaw + TradingAgents + OpenBB + Dashboard
+# ===================================================
+
+services:
+  # ━━━ 核心引擎: OpenClaw Sentinel Daemon + API ━━━
+  openclaw:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.openclaw
+    container_name: sineige-openclaw
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config:/app/config
+      - ./out:/app/out
+      - ./investor_profile.md:/app/investor_profile.md
+      - ./data:/app/data
+      - ./vendors/trendradar/output:/app/vendors/trendradar/output
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - OPENBB_API_URL=http://openbb:8000
+      - TRADING_AGENTS_URL=http://trading-agents:8001
+    depends_on:
+      trading-agents:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ━━━ 第二大脑: TradingAgents 量化分析 ━━━
+  trading-agents:
+    build:
+      context: ./vendors/trading-agents
+      dockerfile: ../../docker/Dockerfile.trading-agents
+    container_name: sineige-trading-agents
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./config:/app/config
+      - ./out/ta_results:/app/out/ta_results
+    env_file:
+      - .env
+    environment:
+      - TA_PORT=8001
+      - TRADINGAGENTS_RESULTS_DIR=/app/out/ta_results
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ━━━ 神经触角: TrendRadar 自动采集 ━━━
+  trendradar:
+    build:
+      context: ./vendors/trendradar
+      dockerfile: docker/Dockerfile
+    container_name: sineige-trendradar
+    volumes:
+      - ./vendors/trendradar/config:/app/config
+      - ./vendors/trendradar/output:/app/output
+    environment:
+      - TZ=Asia/Shanghai
+      - CRON_SCHEDULE=*/30 * * * *
+      - RUN_MODE=cron
+      - IMMEDIATE_RUN=true
+    restart: unless-stopped
+
+  # ━━━ 数据层: OpenBB Platform ━━━
+  openbb:
+    build:
+      context: ./vendors/openbb
+      dockerfile: ../../docker/Dockerfile.openbb
+    container_name: sineige-openbb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+    env_file:
+      - .env
+    environment:
+      - OPENBB_PORT=8000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/system/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ━━━ 前端: Dashboard SPA ━━━
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: ../docker/Dockerfile.dashboard
+    container_name: sineige-dashboard
+    ports:
+      - "5173:80"
+    depends_on:
+      - openclaw
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+# ━━━ 网络 ━━━
+networks:
+  default:
+    name: sineige-network
