@@ -110,6 +110,7 @@ interface WatchlistTicker {
   name: string;
   sector: string;
   narrative: string;
+  role?: 'sector_leader' | 'target';
   alerts: {
     breakAboveSMA?: number[];
     breakBelowSMA?: number[];
@@ -133,13 +134,82 @@ function loadWatchlist(): WatchlistConfig {
     console.error('[Sentinel] ❌ watchlist.json not found!');
     return { tickers: [], eventSources: [] };
   }
-  return JSON.parse(fs.readFileSync(watchlistPath, 'utf-8'));
+  const config: WatchlistConfig = JSON.parse(fs.readFileSync(watchlistPath, 'utf-8'));
+  config.tickers = config.tickers.map(t => ({
+    ...t,
+    role: t.role ?? 'target',
+  }));
+  return config;
 }
 
 // ==========================================
-// TRIGGER 1: 价量异常已被用户要求禁用，因为产生过多重复噪声
+// TRIGGER 1: 价量哨兵 (每5分钟) — 含 Cooldown 去重
 // ==========================================
-// cron.schedule('*/5 * * * *', async () => { ... });
+
+// T1 开关
+const T1_ENABLED = process.env.T1_ENABLED !== 'false'; // 默认开启
+
+// Cooldown 去重
+export const alertCooldown = new Map<string, number>(); // ticker → lastAlertTimestamp
+const COOLDOWN_MS = Number(process.env.T1_COOLDOWN_MS) || 30 * 60 * 1000; // 默认 30 分钟
+
+export function shouldAlert(ticker: string): boolean {
+  const lastAlert = alertCooldown.get(ticker);
+  if (lastAlert && Date.now() - lastAlert < COOLDOWN_MS) {
+    console.log(`[T1] ⏳ ${ticker} 在冷却期内，跳过 (${Math.round((Date.now() - lastAlert) / 60000)}min ago)`);
+    return false;
+  }
+  alertCooldown.set(ticker, Date.now());
+  return true;
+}
+
+export function cleanupCooldown() {
+  const expiry = Date.now() - 2 * 60 * 60 * 1000; // 2 小时
+  for (const [ticker, ts] of alertCooldown.entries()) {
+    if (ts < expiry) alertCooldown.delete(ticker);
+  }
+}
+
+if (T1_ENABLED) {
+  cron.schedule('*/5 * * * *', async () => {
+    cleanupCooldown();
+    const watchlist = loadWatchlist();
+    const targets = watchlist.tickers.filter(t => t.role === 'target');
+    const allAlerts: AlertSignal[] = [];
+
+    for (const t of targets) {
+      try {
+        const alerts = await scanTicker(t.symbol, {
+          breakAboveSMA: [20, 250],
+          breakBelowSMA: [20],
+          volumeSurgeMultiple: 2.0,
+        });
+        for (const alert of alerts) {
+          if (shouldAlert(alert.symbol)) {
+            allAlerts.push(alert);
+          }
+        }
+      } catch (e: any) {
+        console.error(`[T1] 扫描 ${t.symbol} 失败: ${e.message}`);
+      }
+    }
+
+    if (allAlerts.length > 0) {
+      await sendAlertBatch(allAlerts.map(a => ({
+        symbol: a.symbol,
+        details: a.details,
+        severity: a.severity,
+      })));
+      const critical = allAlerts.filter(a => a.severity === 'critical');
+      for (const a of critical) {
+        await taskQueue.enqueue(`T1 异动: ${a.details}`, 'quick', 'T1_PriceScan', 80);
+      }
+    }
+  });
+  console.log('[Sentinel] ✅ T1 价量哨兵已启用 (每5分钟, cooldown=' + COOLDOWN_MS / 60000 + 'min)');
+} else {
+  console.log('[Sentinel] ⏸️ T1 价量哨兵已禁用 (T1_ENABLED=false)');
+}
 
 // ==========================================
 // TRIGGER 2: 媒体资讯与公告 (每小时的第30分钟触发)
