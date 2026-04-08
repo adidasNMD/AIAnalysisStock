@@ -9,6 +9,7 @@
  */
 
 import * as dotenv from 'dotenv';
+import { MARKET_CAP_MIN, MARKET_CAP_MAX, isMarketCapWithinGate } from './market-cap-gate';
 dotenv.config();
 
 const OPENBB_BASE_URL = process.env.OPENBB_API_URL || 'http://localhost:8000';
@@ -362,13 +363,14 @@ function computeVerdict(
   const reasons: string[] = [];
   let score = 0;
 
-  // 市值红线 (3亿-1000亿)
+  // 市值 Gate enforcement: ensure market cap within gate [MIN, MAX]
   if (core.marketCap !== null) {
-    if (core.marketCap < 300_000_000) {
-      return { verdict: 'FAIL', verdictReason: `${ticker} 市值 $${(core.marketCap / 1e6).toFixed(0)}M < $300M 红线` };
-    }
-    if (core.marketCap > 100_000_000_000) {
-      return { verdict: 'FAIL', verdictReason: `${ticker} 市值 $${(core.marketCap / 1e9).toFixed(0)}B > $100B 红线` };
+    const cap = core.marketCap;
+    if (!isMarketCapWithinGate(cap)) {
+      return {
+        verdict: 'FAIL',
+        verdictReason: `${ticker} 市值 $${(cap / 1e9).toFixed(0)}B 不在门限 [${(MARKET_CAP_MIN / 1e6)}M-${MARKET_CAP_MAX / 1e9}B]`,
+      };
     }
     score += 2;
     reasons.push('市值符合 ✅');

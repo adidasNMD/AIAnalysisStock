@@ -4,6 +4,7 @@ import { generateTextCompletion } from '../../utils/llm';
 import { searchPosts, extractTickersFromPosts } from '../../tools/reddit';
 import { fetchGoogleNewsRSS, GoogleNewsItem } from '../../tools/google-news';
 import { getQuote } from '../../tools/market-data';
+import { isMarketCapWithinGate } from '../../utils/market-cap-gate';
 
 // ==========================================
 // TickerDiscoveryEngine — (Free-form Text Flow 版本)
@@ -119,7 +120,7 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     // Yahoo Finance 验证
     const validatedTickers: DiscoveredTicker[] = [];
-    const MEGA_CAP_THRESHOLD = 500_000_000_000;
+    // Market cap gate will be enforced by central gate utilities
 
     for (const symbol of extractedTickers) {
       try {
@@ -129,8 +130,8 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
           continue;
         }
 
-        if (quote.marketCap > MEGA_CAP_THRESHOLD) {
-          console.log(`[TickerDiscovery] 🚫 排除巨头: ${symbol} ($${(quote.marketCap / 1e9).toFixed(0)}B)`);
+        if (!isMarketCapWithinGate(quote.marketCap)) {
+          console.log(`[TickerDiscovery] 🚫 排除: ${symbol} ($${(quote.marketCap / 1e9).toFixed(1)}B) — 不在 $200M-$50B 范围`);
           continue;
         }
 
