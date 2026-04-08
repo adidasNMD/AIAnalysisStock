@@ -48,7 +48,7 @@ export const NarrativeTopicSchema = z.object({
   description: z.string(),
   relatedEventIds: z.array(z.string()),
   impactScore: z.number().min(0).max(100), // 影响力/热度评分
-  narrativeType: z.enum(['Fundamental', 'Policy_Driven', 'Narrative_Hype']).optional(), // 新增：驱动力类型
+  narrativeType: z.enum(['Fundamental', 'Policy_Driven', 'Narrative_Hype']).default('Fundamental'), // 新增：驱动力类型
   createdAt: z.number(),
   updatedAt: z.number()
 });
@@ -115,3 +115,32 @@ export const TrendSnapshotSchema = z.object({
   summary: z.string(),
 });
 export type TrendSnapshot = z.infer<typeof TrendSnapshotSchema>;
+
+// 9. PositionSizeEnum — 仓位大小枚举
+export const PositionSizeEnum = z.enum(['full', 'half', 'quarter', 'trial', 'skip']);
+export type PositionSize = z.infer<typeof PositionSizeEnum>;
+
+// 10. StructuredStopLossSchema — 结构化止损条件
+export const StructuredStopLossSchema = z.object({
+  type: z.enum(['price_sma_break', 'event_failure', 'sector_collapse', 'custom']),
+  condition: z.string(),            // 人类可读条件描述
+  ticker: z.string().optional(),   // 关联标的
+  smaPeriod: z.number().optional(), // 如 20, 50, 250
+  humanReadable: z.string(),       // 中文说明
+});
+export type StructuredStopLoss = z.infer<typeof StructuredStopLossSchema>;
+
+// 11. TradeDecisionSchema — 共识仲裁后的结构化决策（辅助判断核心：必须包含推理链）
+export const TradeDecisionSchema = z.object({
+  ticker: z.string(),
+  verdict: z.enum(['BUY', 'HOLD', 'SELL', 'SKIP', 'VETO_BUY']),
+  driverType: z.enum(['Fundamental', 'Policy_Driven', 'Narrative_Hype']),
+  positionSize: PositionSizeEnum,
+  stopLosses: z.array(StructuredStopLossSchema),
+  bullCase: z.string(),             // 为什么买 / 为什么是它 — 核心看多逻辑（必填）
+  bearCase: z.string(),             // 为什么不买 / 为什么不是它 — 核心风险与看空逻辑（必填）
+  vetoed: z.boolean().default(false),
+  vetoReason: z.string().optional(),
+  agreement: z.enum(['agree', 'disagree', 'partial', 'pending', 'blocked']),
+});
+export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
