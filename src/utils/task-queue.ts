@@ -19,10 +19,13 @@ export interface QueueTask {
 const MAX_TASK_AGE_MS = 2 * 60 * 60 * 1000; 
 
 export class TaskQueue {
-  private isProcessing = false;
+  private concurrency: number;
+  private runningCount = 0;
   private processCallback: ((task: QueueTask) => Promise<void>) | null = null;
 
-  constructor() {}
+  constructor() {
+    this.concurrency = Number(process.env.TASK_QUEUE_CONCURRENCY) || 3;
+  }
 
   onProcess(callback: (task: QueueTask) => Promise<void>) {
     this.processCallback = callback;
@@ -90,18 +93,19 @@ export class TaskQueue {
   }
 
   async processNext(): Promise<void> {
-    if (this.isProcessing || !this.processCallback) return;
+    if (this.runningCount >= this.concurrency || !this.processCallback) return;
 
     const pending = await this.getPending();
     if (pending.length === 0) return;
 
     const task = pending[0]!;
-    this.isProcessing = true;
+    this.runningCount++;
 
     task.status = 'running';
     task.startedAt = Date.now();
     await this.saveTask(task);
 
+    console.log(`[TaskQueue] 🔄 并发: ${this.runningCount}/${this.concurrency}`);
     console.log(`[TaskQueue] ▶️ 开始处理: "${task.query}" [${task.depth}] (队列剩余: ${pending.length - 1})`);
 
     try {
@@ -116,12 +120,9 @@ export class TaskQueue {
       task.completedAt = Date.now();
       await this.saveTask(task);
       console.error(`[TaskQueue] ❌ 失败: "${task.query}" — ${e.message}`);
-    }
-
-    this.isProcessing = false;
-
-    if ((await this.getPending()).length > 0) {
-      setTimeout(() => this.processNext(), 1000);
+    } finally {
+      this.runningCount--;
+      this.processNext();
     }
   }
 
