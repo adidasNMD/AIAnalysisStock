@@ -14,8 +14,6 @@
  */
 
 import { eventBus } from '../utils/event-bus';
-import { sendStopLossAlert, sendEntrySignal, sendMessage } from '../utils/telegram';
-import { NarrativeLifecycleEngine } from '../agents/lifecycle/engine';
 import { analyzeTicker, checkTAHealth, type TAAnalysisResult } from '../utils/ta-client';
 import { fetchTickerFullData, fetchMacroEnvironment, checkOpenBBHealth, type OpenBBTickerData } from '../utils/openbb-provider';
 import * as fs from 'fs';
@@ -77,9 +75,6 @@ export interface TickerConsensus {
   taVerdict: 'BUY' | 'HOLD' | 'SELL' | 'UNKNOWN' | null;
   agreement: 'agree' | 'disagree' | 'partial' | 'pending';
   openbbVerdict: 'PASS' | 'WARN' | 'FAIL' | null;
-  // Veto state for this ticker, derived from consensus rules
-  vetoed: boolean;
-  vetoReason: string | null;
 }
 
 // ===== Mission 存储 =====
@@ -236,59 +231,7 @@ export async function dispatchMission(
     }
 
     // Step Final: 计算双大脑共识
-    // Task 5: 防卖飞 — 检查龙头叙事健康状态
-    let antiSellGuards: Array<{ ticker: string; reason: string }> = [];
-    try {
-      const lifecycleEngine = new NarrativeLifecycleEngine();
-      const lifecycleResult = await lifecycleEngine.evaluateAllActiveNarratives();
-      antiSellGuards = lifecycleResult.antiSellGuards;
-    } catch (e: any) {
-      console.error(`[Dispatcher] Lifecycle evaluation failed: ${e.message}`);
-    }
-
     mission.consensus = computeConsensus(mission);
-    // Emit veto alerts for any tickers that were vetoed
-    const vetoedTickers = mission.consensus.filter(c => c.vetoed);
-    for (const v of vetoedTickers) {
-      // Use 'info' level to maintain compatibility with event-bus API
-      eventBus.emitSystem('info', `🚫 Ticker vetoed: ${v.ticker} — ${v.vetoReason ?? ''}`);
-    }
-
-    // Task 5: 防卖飞修正 — 龙头健康时阻断 SELL
-    for (const consensus of mission.consensus) {
-      const guard = antiSellGuards.find(g => g.ticker === consensus.ticker);
-      if (guard && (consensus.taVerdict === 'SELL' || consensus.openclawVerdict === 'SELL')) {
-        consensus.vetoed = true;
-        consensus.vetoReason = `🛡️ 防卖飞: ${guard.reason}`;
-        eventBus.emitSystem('info', `🛡️ [ANTI_SELL] ${consensus.ticker}: TA/OC 发出 SELL 但龙头健康 → 否决清仓`);
-      }
-    }
-
-    // 新增：针对共识结果发送入场信号或风控预警
-    for (const c of mission.consensus) {
-      // 入场信号： agreement === 'agree' 且未被否决，且 OC/TA 双 BUY
-      if (c.agreement === 'agree' && c.vetoed === false && c.openclawVerdict === 'BUY' && c.taVerdict === 'BUY') {
-        try {
-          await sendEntrySignal(c.ticker, '双脑共识一致看多 — 入场信号');
-        } catch (err) {
-          eventBus.emitSystem('error', `Failed to send entry signal for ${c.ticker}: ${err}`);
-        }
-      }
-
-      // 风控预警：OpenBBVerdict === 'FAIL'
-      if (c.openbbVerdict === 'FAIL') {
-        try {
-          await sendStopLossAlert(c.ticker, 'OpenBB 数据评级 FAIL — 风控预警');
-        } catch (err) {
-          eventBus.emitSystem('error', `Failed to send stop loss alert for ${c.ticker}: ${err}`);
-        }
-      }
-    }
-
-    // 第三方通知：Telegram 否决报告（若存在）
-    if (typeof vetoedTickers !== 'undefined' && vetoedTickers.length > 0) {
-      await sendMessage(`⚠️ *双脑共识否决报告*\n\n${vetoedTickers.map(v => `🚫 *${v.ticker}*: ${v.vetoReason ?? ''}`).join('\n')}\n\n_右侧跟风纪律: 双脑冲突时不行动_`);
-    }
     mission.totalDurationMs = Date.now() - startTime;
     if (mission.status !== 'main_only') {
       mission.status = 'fully_enriched';
@@ -299,10 +242,7 @@ export async function dispatchMission(
     eventBus.emitSystem('info',
       `✅ Mission ${missionId} 完成 (${Math.round(mission.totalDurationMs / 1000)}s) — ` +
       `OC: ${mission.openclawReport ? '✅' : '❌'} | TA: ${mission.taResults.length} 只 | ` +
-      `共识: ${mission.consensus.map(c => {
-        const vetoNote = c.vetoed ? ` (veto: ${c.vetoReason ?? ''})` : '';
-        return `${c.ticker}:${c.agreement}${vetoNote}`;
-      }).join(', ')}`
+      `共识: ${mission.consensus.map(c => `${c.ticker}:${c.agreement}`).join(', ')}`
     );
 
   } catch (e: any) {
@@ -503,17 +443,6 @@ function computeConsensus(mission: UnifiedMission): TickerConsensus[] {
       agreement = 'partial';
     }
 
-    // Veto logic: per-task requirements
-    let vetoed = false;
-    let vetoReason: string | null = null;
-    if (agreement === 'disagree') {
-      vetoed = true;
-      vetoReason = '共识冲突（disagree）';
-    } else if (openbbVerdict === 'FAIL') {
-      vetoed = true;
-      vetoReason = 'OpenBB verdict === FAIL';
-    }
-
-    return { ticker, openclawVerdict: ocVerdict, taVerdict, agreement, openbbVerdict, vetoed, vetoReason };
+    return { ticker, openclawVerdict: ocVerdict, taVerdict, agreement, openbbVerdict };
   });
 }

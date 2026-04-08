@@ -19,23 +19,6 @@ import { startServer } from './server/app';
 import { dispatchMission } from './workflows/mission-dispatcher';
 import { eventBus } from './utils/event-bus';
 
-// Latency cooldown for TrendRadar (T4) to avoid redundant work
-const TREND_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-const trendCooldown = new Map<string, number>();
-
-// Simple string hash to identify unique TrendRadar outputs
-// Task 3: 板块龙头列表（可配置）
-const LEADER_TICKERS = ['NVDA', 'AVGO'];
-
-function simpleHash(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h) + str.charCodeAt(i);
-    h |= 0; // convert to 32bit integer
-  }
-  return h.toString();
-}
-
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
 // 多级触发哨兵模式 + TrendRadar 趋势雷达 + 实时交互(Interactive Bot)
@@ -102,10 +85,7 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
       // 记录 Mission 共识到日志
       if (mission.consensus.length > 0) {
         const consensusSummary = mission.consensus
-          .map(c => {
-            const vetoNote = c.vetoed ? ` (vetoed: ${c.vetoReason ?? ''})` : '';
-            return `${c.ticker}: OC=${c.openclawVerdict ?? '-'} TA=${c.taVerdict ?? '-'} → ${c.agreement}${vetoNote}`;
-          })
+          .map(c => `${c.ticker}: OC=${c.openclawVerdict || '-'} TA=${c.taVerdict || '-'} → ${c.agreement}`)
           .join(' | ');
         eventBus.emitSystem('info', `📊 双大脑共识: ${consensusSummary}`);
       }
@@ -255,47 +235,13 @@ cron.schedule('30 08 * * 1-5', async () => {
   }
 
   try {
-    const { messages, antiSellGuards } = await lifecycleEngine.evaluateAllActiveNarratives();
+    const { messages } = await lifecycleEngine.evaluateAllActiveNarratives();
     if (messages.length > 0) {
       snapshot += `\n## 🛡️ 叙事生命周期干预引擎 (防卖飞/逃顶)\n\n`;
       messages.forEach(m => snapshot += `> ${m}\n\n`);
     }
-
-    // Task 3: 叙事生命周期止损触发检测
-    if (messages.length > 0) {
-      for (const msg of messages) {
-        if (msg.includes('STOP_LOSS_TRIGGER')) {
-          const tickerMatch = msg.match(/龙头\s+(\$?[A-Z]{1,5})/);
-          if (tickerMatch) {
-            const ticker = tickerMatch[1]!.replace('$', '');
-            await sendStopLossAlert(ticker, `叙事生命周期引擎警告:\n${msg}`);
-          }
-        }
-      }
-    }
   } catch (e: any) {
     console.error(`[Sentinel] Lifecycle evaluation failed: ${e.message}`);
-  }
-
-  // Task 3: 龙头 SMA50 板块止损检测
-  try {
-    const { checkSMACross } = await import('./tools/market-data.js');
-    for (const leader of LEADER_TICKERS) {
-      const smaResults = await checkSMACross(leader, [50]);
-      const sma50 = smaResults.find((r: any) => r.period === 50);
-      if (sma50 && sma50.position === 'below') {
-        const dropPercent = ((sma50.sma - sma50.price) / sma50.sma) * 100;
-        if (dropPercent >= 5) {
-          await sendStopLossAlert(leader,
-            `🔴 [板块止损红线] 龙头 ${leader} 放量跌破 50日均线 ${dropPercent.toFixed(1)}%!\n` +
-            `当前: $${sma50.price} | SMA50: $${sma50.sma}\n` +
-            `画像纪律: 板块全线防御减仓！`
-          );
-        }
-      }
-    }
-  } catch (e: any) {
-    console.error(`[Sentinel] Leader SMA50 check failed: ${e.message}`);
   }
 
   await sendReportSummary('Watchlist 盘前扫描', snapshot);
@@ -314,12 +260,12 @@ cron.schedule('30 08 * * 1-5', async () => {
 // ==========================================
 // TRIGGER 4: 趋势雷达媒体扫描 (每小时的整点触发: 寻找新的交易机会)
 // ==========================================
-// Updated to run every 15 minutes to align with cooldown window
-cron.schedule('*/15 * * * *', async () => {
+cron.schedule('0 * * * *', async () => {
   console.log(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
+  
   try {
     const analysis = await trendRadar.scan();
-
+    
     // 推送趋势概览到 Telegram
     const telegramMsg = trendRadar.formatForTelegram(analysis);
     await sendMessage(telegramMsg);
@@ -329,15 +275,7 @@ cron.schedule('*/15 * * * *', async () => {
       console.log(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，排队标准分析...`);
       const topicSummary = analysis.report.substring(0, 200).replace(/\n/g, ' ');
       // T4 趋势轮换使用 'standard' 深度
-      // 引入去重/冷却逻辑，避免重复分析同一组标的
-      const hash = simpleHash(analysis.report);
-      const last = trendCooldown.get(hash);
-      if (!last || Date.now() - last >= TREND_COOLDOWN_MS) {
-        trendCooldown.set(hash, Date.now());
-        await taskQueue.enqueue(`趋势雷达洞察 — ${topicSummary}`, 'standard', 'T4_Trend_Radar', 30);
-      } else {
-        console.log(`[Sentinel] T4 TrendRadar cooldown active for this report. Skipping enqueue.`);
-      }
+      await taskQueue.enqueue(`趋势雷达洞察 — ${topicSummary}`, 'standard', 'T4_Trend_Radar', 30);
     }
   } catch (e: any) {
     console.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
