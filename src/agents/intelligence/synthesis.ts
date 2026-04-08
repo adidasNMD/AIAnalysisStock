@@ -1,6 +1,4 @@
 import { generateTextCompletion } from '../../utils/llm';
-import { MAX_SINGLE_POSITION_PCT, PROBE_POSITION_PCT } from '../../utils/position-guard';
-import { validateReport } from '../../utils/report-validator';
 
 /**
  * SynthesisAgent — 报告合成智能体
@@ -82,38 +80,7 @@ ${debateReport}`;
 ## 📊 操作建议
 仓位建议、入场/止盈时机、风险提示`;
 
-    let report = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
-    // Position Sizing Discipline Guard integration: annotate final report with gate guidance
-    try {
-      // Gather tickers from all sources to assess concentration risk (best-effort heuristic)
-      const combinedSources = `${analysisMemo} ${strategyReport} ${debateReport}`;
-      const tickerMatches = combinedSources.match(/\$[A-Z]{1,5}/g) || [];
-      const counts = new Map<string, number>();
-      for (const tk of tickerMatches) {
-        const t = tk.trim();
-        counts.set(t, (counts.get(t) ?? 0) + 1);
-      }
-      const crowded = Array.from(counts.entries()).filter(([, c]) => c >= 3);
-      const crowdedText = crowded.length > 0
-        ? crowded.map(([t, c]) => `${t}(${c}次)`).join(', ')
-        : '无显著聚集';
-      const riskNote = crowded.length > 0 ? `高集中风险: ${crowdedText}` : '无显著聚集风险';
-      const positionSection = `
-## 💹 Position Sizing Guard
-- 最大单笔仓位占比: ${MAX_SINGLE_POSITION_PCT}%
-- 入场探针仓位: ${PROBE_POSITION_PCT}%
-- 风险注记: ${riskNote}
-`;
-      // Append to the report to surface to downstream consumers
-      report += positionSection;
-    } catch {
-      // best-effort only; do not fail the synthesis if this annotation cannot be added
-    }
-    const validation = validateReport(report);
-    if (!validation.valid) {
-      const warningLines = validation.warnings.map(w => `- ${w}`).join("\n");
-      report += `\n\nWarnings:\n${warningLines}`;
-    }
+    const report = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
 
     console.log(`[SynthesisAgent] ✅ 最终研报生成完成 (${report.length} 字)`);
     return report;

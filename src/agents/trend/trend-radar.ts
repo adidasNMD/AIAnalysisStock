@@ -8,10 +8,7 @@ import { scanAllSectorETFs, sectorSignalsToRawSignals, SectorSignal } from '../.
 import { RawSignal } from '../../models/types';
 import { TickerDiscoveryEngine } from '../discovery/ticker-discovery';
 import { addDiscoveredTickers, getActiveTickers } from '../../utils/dynamic-watchlist';
-import { isMarketCapWithinGate } from '../../utils/market-cap-gate';
-import { getQuote } from '../../tools/market-data';
 import { saveTrendReport } from '../../utils/agent-logger';
-import { eventBus } from '../../utils/event-bus';
 
 // ==========================================
 // TrendRadar 趋势雷达模块 (Free-form Text Flow 版本)
@@ -72,7 +69,6 @@ export class TrendRadar {
   }
 
   async scan(): Promise<TrendAnalysis> {
-    const t0 = Date.now();
     console.log(`\n[TrendRadar] 📡 =====================================`);
     console.log(`[TrendRadar] 📡 开始全方位趋势扫描...`);
     console.log(`[TrendRadar] 📡 =====================================\n`);
@@ -194,23 +190,7 @@ ${investorContext}
     // [已移除] 之前这里会用简单的 Regex 把报告中带 $ 的 Ticker (如 $NVDA) 直接丢进 dynamic_watchlist.json。
     // 这导致观察池被大量的巨头和 ETF (如 $XLE, $SMH) 污染，完全绕过了 TradingAgents 与市值卡点的筛选。
     // 现在，标的发现将全权交由 OpenClaw 海选机制驱动。
-    // Gate-filter the mentioned tickers by market cap
-    const gatedTickers: string[] = [];
-    for (const t of mentionedTickers) {
-      if (existingTickers.includes(t)) continue;
-      try {
-        const quote = await getQuote(t);
-        const cap = (quote as any)?.marketCap;
-        if (typeof cap === 'number' && isMarketCapWithinGate(cap)) {
-          gatedTickers.push(t);
-        } else {
-          console.log(`[TrendRadar] 跳过标的 ${t}，市值不在门限范围 (marketCap=${cap ?? 'unknown'})`);
-        }
-      } catch {
-        // ignore quote fetch failures
-      }
-    }
-    const newTickers = gatedTickers;
+    const newTickers = mentionedTickers.filter(t => !existingTickers.includes(t));
 
     // 保存情报报告（兼容旧接口）
     try {
@@ -223,18 +203,7 @@ ${investorContext}
       console.error(`[TrendRadar] 报告保存失败: ${e.message}`);
     }
 
-    const t1 = Date.now();
-    const latencyMs = t1 - t0;
-    console.log(`\n[TrendRadar] ✅ 趋势扫描完成 — 情绪: ${marketSentiment}, 提及 ${mentionedTickers.length} 个 ticker, latency=${latencyMs}ms`);
-    // Emit latency metric for observability
-    try {
-      eventBus.emitSystem('info', `TrendRadar.scan latency=${latencyMs}ms`, {
-        latencyMs,
-        tickerCount: mentionedTickers.length
-      });
-    } catch {
-      // ignore metrics emission failures to avoid impacting flow
-    }
+    console.log(`\n[TrendRadar] ✅ 趋势扫描完成 — 情绪: ${marketSentiment}, 提及 ${mentionedTickers.length} 个 ticker`);
     console.log(`[TrendRadar] 💡 ${report.substring(0, 200)}...\n`);
 
     return {
