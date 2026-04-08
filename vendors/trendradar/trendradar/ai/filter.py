@@ -466,12 +466,15 @@ class AIFilter:
                     skipped_tag_ids += 1
                     continue
 
-                score = tag_match.get("score", 0.5)
+                score = tag_match.get("score", 0.0)
                 try:
                     score = float(score)
                     score = max(0.0, min(1.0, score))
                 except (ValueError, TypeError):
-                    score = 0.5
+                    score = 0.0
+
+                if score <= 0.0:
+                    continue  # 0分强杀 — 无关新闻直接跳过
 
                 if score > best_score:
                     best_score = score
