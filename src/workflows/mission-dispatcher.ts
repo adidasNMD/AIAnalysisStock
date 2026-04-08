@@ -16,6 +16,8 @@
 import { eventBus } from '../utils/event-bus';
 import { analyzeTicker, checkTAHealth, type TAAnalysisResult } from '../utils/ta-client';
 import { fetchTickerFullData, fetchMacroEnvironment, checkOpenBBHealth, type OpenBBTickerData } from '../utils/openbb-provider';
+import { checkSMACross } from '../tools/market-data';
+import { sendStopLossAlert } from '../utils/telegram';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -73,8 +75,12 @@ export interface TickerConsensus {
   ticker: string;
   openclawVerdict: 'BUY' | 'HOLD' | 'SELL' | 'SKIP' | null;
   taVerdict: 'BUY' | 'HOLD' | 'SELL' | 'UNKNOWN' | null;
-  agreement: 'agree' | 'disagree' | 'partial' | 'pending';
+  agreement: 'agree' | 'disagree' | 'partial' | 'pending' | 'blocked';
   openbbVerdict: 'PASS' | 'WARN' | 'FAIL' | null;
+  vetoed: boolean;
+  vetoReason?: string;
+  bullCase?: string;
+  bearCase?: string;
 }
 
 // ===== Mission 存储 =====
@@ -155,6 +161,29 @@ export function listMissions(limit = 50): UnifiedMission[] {
 
 // ===== 核心调度逻辑 =====
 
+export async function triggerConsensusAlerts(consensus: TickerConsensus[]): Promise<void> {
+  const alertEnabled = process.env.AUTO_ALERT_ENABLED !== 'false';
+  if (!alertEnabled) return;
+
+  for (const c of consensus) {
+    const reasoningBlock = [
+      c.bullCase ? `📈 看多理由: ${c.bullCase}` : '',
+      c.bearCase ? `📉 看空理由: ${c.bearCase}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (c.agreement === 'disagree') {
+      await sendStopLossAlert(c.ticker,
+        `⚠️ 双大脑冲突\nOpenClaw: ${c.openclawVerdict}\nTradingAgents: ${c.taVerdict}\n${reasoningBlock}\n建议: 暂不操作，等待共识\n${c.vetoReason || ''}`
+      );
+    }
+    if (c.vetoed) {
+      await sendStopLossAlert(c.ticker,
+        `🚫 SMA250 否决\n${c.vetoReason}\n${reasoningBlock}\n建议: 右侧趋势未确认，禁止建仓`
+      );
+    }
+  }
+}
+
 /**
  * 启动一个统一 Mission
  *
@@ -195,7 +224,7 @@ export async function dispatchMission(
     if (input.mode === 'explore') {
       // ━━━ 场景A: 探索模式 ━━━
       // Step 1: OpenClaw 先推导标的
-      await runOpenClawPhase(mission, input, executeOpenClaw, startTime);
+      await runOpenClawPhase(mission, input, executeOpenClaw);
 
       // Step 2: 从报告中提取 Tickers
       const tickers = extractTickersFromReport(mission.openclawReport || '');
@@ -215,7 +244,7 @@ export async function dispatchMission(
 
       // Step 1: 三个系统同时启动
       await Promise.all([
-        runOpenClawPhase(mission, input, executeOpenClaw, startTime),
+        runOpenClawPhase(mission, input, executeOpenClaw),
         runParallelEnrichment(mission, tickers, input.date),
       ]);
 
@@ -225,13 +254,14 @@ export async function dispatchMission(
       mission.openclawTickers = tickers;
 
       await Promise.all([
-        runOpenClawPhase(mission, input, executeOpenClaw, startTime),
+        runOpenClawPhase(mission, input, executeOpenClaw),
         runParallelEnrichment(mission, tickers, input.date),
       ]);
     }
 
     // Step Final: 计算双大脑共识
-    mission.consensus = computeConsensus(mission);
+    mission.consensus = await computeConsensus(mission);
+    await triggerConsensusAlerts(mission.consensus);
     mission.totalDurationMs = Date.now() - startTime;
     if (mission.status !== 'main_only') {
       mission.status = 'fully_enriched';
@@ -263,7 +293,6 @@ async function runOpenClawPhase(
   mission: UnifiedMission,
   input: MissionInput,
   executeOpenClaw: (query: string, depth: string, missionId: string) => Promise<string | null>,
-  globalStart: number,
 ) {
   mission.status = 'main_running';
   mission.updatedAt = new Date().toISOString();
@@ -400,17 +429,45 @@ function extractTickersFromReport(report: string): string[] {
 /**
  * 计算双大脑共识
  */
-function computeConsensus(mission: UnifiedMission): TickerConsensus[] {
+function extractBullCase(ocReport: string | null, taReport: string | null): string | undefined {
+  const combined = [ocReport || '', taReport || ''].join(' ');
+  const sentences = combined
+    .split(/[。！？\n.!?]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const bullSentences = sentences
+    .filter(s => /看多|bullish|upside|catalyst|做多|建仓/i.test(s))
+    .slice(0, 3);
+  return bullSentences.length > 0 ? bullSentences.join('；') : undefined;
+}
+
+function extractBearCase(ocReport: string | null, taReport: string | null): string | undefined {
+  const combined = [ocReport || '', taReport || ''].join(' ');
+  const sentences = combined
+    .split(/[。！？\n.!?]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const bearSentences = sentences
+    .filter(s => /看空|bearish|downside|risk|风险|止损/i.test(s))
+    .slice(0, 3);
+  return bearSentences.length > 0 ? bearSentences.join('；') : undefined;
+}
+
+export async function computeConsensus(mission: UnifiedMission): Promise<TickerConsensus[]> {
   const tickers = mission.openclawTickers;
   if (!tickers.length) return [];
 
-  return tickers.map(ticker => {
+  const results = await Promise.all(tickers.map(async ticker => {
     // OpenClaw 从报告中推断态度
     let ocVerdict: TickerConsensus['openclawVerdict'] = null;
     if (mission.openclawReport) {
       const report = mission.openclawReport.toUpperCase();
       const tickerContext = report.split(ticker).slice(1).join('').slice(0, 200);
-      if (tickerContext.includes('BUY') || tickerContext.includes('做多') || tickerContext.includes('✅') || tickerContext.includes('建仓')) {
+      const negationPatterns = ['NOT ', "DON'T ", '不建议', '不推荐', '避免', '远离'];
+      const hasNegation = negationPatterns.some(neg => tickerContext.includes(neg));
+      if (hasNegation) {
+        ocVerdict = 'SKIP';
+      } else if (tickerContext.includes('BUY') || tickerContext.includes('做多') || tickerContext.includes('✅') || tickerContext.includes('建仓')) {
         ocVerdict = 'BUY';
       } else if (tickerContext.includes('SELL') || tickerContext.includes('做空') || tickerContext.includes('离场')) {
         ocVerdict = 'SELL';
@@ -429,8 +486,25 @@ function computeConsensus(mission: UnifiedMission): TickerConsensus[] {
     const openbbResult = mission.openbbData.find(d => d.ticker === ticker);
     const openbbVerdict = openbbResult?.verdict || null;
 
+    const taReport = taResult
+      ? [
+          taResult.traderPlan,
+          taResult.portfolioManagerDecision?.reasoning,
+          taResult.investmentDebate?.judgeDecision,
+          ...(taResult.investmentDebate?.bullArguments || []),
+          ...(taResult.investmentDebate?.bearArguments || []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : null;
+    const bullCase = extractBullCase(mission.openclawReport, taReport);
+    const bearCase = extractBearCase(mission.openclawReport, taReport);
+
     // 共识判断
     let agreement: TickerConsensus['agreement'] = 'pending';
+    let vetoed = false;
+    let vetoReason: string | undefined;
+
     if (ocVerdict && taVerdict) {
       if (ocVerdict === 'BUY' && taVerdict === 'BUY') agreement = 'agree';
       else if (ocVerdict === 'SELL' && taVerdict === 'SELL') agreement = 'agree';
@@ -443,6 +517,46 @@ function computeConsensus(mission: UnifiedMission): TickerConsensus[] {
       agreement = 'partial';
     }
 
-    return { ticker, openclawVerdict: ocVerdict, taVerdict, agreement, openbbVerdict };
-  });
+    if (agreement === 'disagree') {
+      vetoReason = `双大脑冲突: OpenClaw=${ocVerdict} vs TradingAgents=${taVerdict}，强制 HOLD`;
+      console.log(`[Consensus] ⚠️ ${vetoReason}`);
+    }
+
+    const smaVetoEnabled = process.env.SMA250_VETO_ENABLED !== 'false';
+    if (
+      smaVetoEnabled
+      && (agreement === 'agree' || agreement === 'partial')
+      && (ocVerdict === 'BUY' || taVerdict === 'BUY')
+    ) {
+      try {
+        const smaResults = await checkSMACross(ticker, [250]);
+        const sma250 = smaResults.find(r => r.period === 250);
+        if (sma250?.position === 'below') {
+          vetoed = true;
+          vetoReason = `${ticker} 处于 250日均线下方 (价格 ${sma250.price} < SMA250 ${sma250.sma})，右侧趋势未确认，否决 BUY`;
+          agreement = 'blocked';
+          console.log(`[Consensus] 🚫 SMA250 否决: ${vetoReason}`);
+        }
+      } catch (e: any) {
+        console.warn(`[Consensus] SMA250 检查失败 ${ticker}: ${e.message}，跳过否决`);
+      }
+    }
+
+    const consensus: TickerConsensus = {
+      ticker,
+      openclawVerdict: ocVerdict,
+      taVerdict,
+      agreement,
+      openbbVerdict,
+      vetoed,
+    };
+
+    if (vetoReason) consensus.vetoReason = vetoReason;
+    if (bullCase) consensus.bullCase = bullCase;
+    if (bearCase) consensus.bearCase = bearCase;
+
+    return consensus;
+  }));
+
+  return results;
 }

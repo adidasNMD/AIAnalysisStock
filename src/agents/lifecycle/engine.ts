@@ -1,5 +1,6 @@
 import { NarrativeRecord, updateNarrative, loadNarratives } from '../../utils/narrative-store';
 import { checkSMACross } from '../../tools/market-data';
+import { sendStopLossAlert } from '../../utils/telegram';
 
 // ==========================================
 // NarrativeLifecycleEngine — 叙事生命周期引擎 (Free-form Text Flow 版本)
@@ -64,6 +65,11 @@ export class NarrativeLifecycleEngine {
                 stage: newStage,
                 eventSummary: `生命周期引擎判定: 从 ${record.stage} 跃迁至 ${newStage}`
             });
+            if (newStage === 'narrativeFatigue' || newStage === 'postCollapse') {
+              await sendStopLossAlert(coreTicker,
+                `📉 叙事阶段降级: ${record.stage} → ${newStage}\n💡 ${reason}`
+              );
+            }
             messages.push(`📌 [${record.title}] 阶段变更: ${newStage}\n   💡 推演逻辑: ${reason}`);
             updatedCount++;
         } else if (record.stage === 'mainExpansion' && isHealthy) {
