@@ -119,7 +119,8 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     // Yahoo Finance 验证
     const validatedTickers: DiscoveredTicker[] = [];
-    const MEGA_CAP_THRESHOLD = 500_000_000_000;
+    const MEGA_CAP_THRESHOLD = Number(process.env.MARKET_CAP_MAX) || 50_000_000_000;
+    const MARKET_CAP_MIN = Number(process.env.MARKET_CAP_MIN) || 200_000_000;
 
     for (const symbol of extractedTickers) {
       try {
@@ -131,6 +132,11 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
         if (quote.marketCap > MEGA_CAP_THRESHOLD) {
           console.log(`[TickerDiscovery] 🚫 排除巨头: ${symbol} ($${(quote.marketCap / 1e9).toFixed(0)}B)`);
+          continue;
+        }
+
+        if (quote.marketCap < MARKET_CAP_MIN) {
+          console.log(`[TickerDiscovery] 🚫 排除微型股: ${symbol} ($${(quote.marketCap / 1e6).toFixed(0)}M)`);
           continue;
         }
 
