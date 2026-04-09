@@ -68,11 +68,19 @@ describe('computeConsensus', () => {
     expect(result).toBeDefined();
     if (!result) throw new Error('Expected consensus result');
 
-    expect(result.agreement).toBe('blocked');
-    expect(result.vetoed).toBe(true);
-    expect(result.vetoReason).toContain('250日均线下方');
-    expect(result.bullCase).toBeTruthy();
-    expect(result.bearCase).toBeTruthy();
+    expect(result.overallAction).toBe('HOLD');
+    expect(result.sma250Vetoed).toBe(true);
+    expect(result.confidence).toBe(10);
+    expect(result.reasoning).toContain('250日均线下方');
+    expect(result.reasoning).toContain('Bull:');
+    expect(result.reasoning).toContain('Bear:');
+
+    const tc = mission.consensus[0]!;
+    expect(tc.agreement).toBe('blocked');
+    expect(tc.vetoed).toBe(true);
+    expect(tc.vetoReason).toContain('250日均线下方');
+    expect(tc.bullCase).toBeTruthy();
+    expect(tc.bearCase).toBeTruthy();
   });
 
   it('adds conflict vetoReason when OC and TA disagree', async () => {
@@ -83,9 +91,16 @@ describe('computeConsensus', () => {
     expect(result).toBeDefined();
     if (!result) throw new Error('Expected consensus result');
 
-    expect(result.agreement).toBe('disagree');
-    expect(result.vetoed).toBe(false);
-    expect(result.vetoReason).toContain('双大脑冲突');
+    expect(result.overallAction).toBe('HOLD');
+    expect(result.sma250Vetoed).toBe(false);
+    expect(result.confidence).toBe(20);
+    expect(result.entrySignalAligned).toBe(false);
+    expect(result.reasoning).toContain('双大脑冲突');
+
+    const tc = mission.consensus[0]!;
+    expect(tc.agreement).toBe('disagree');
+    expect(tc.vetoed).toBe(false);
+    expect(tc.vetoReason).toContain('双大脑冲突');
   });
 
   it('treats negated BUY phrasing as SKIP', async () => {
@@ -96,8 +111,11 @@ describe('computeConsensus', () => {
     expect(result).toBeDefined();
     if (!result) throw new Error('Expected consensus result');
 
-    expect(result.openclawVerdict).toBe('SKIP');
-    expect(result.openclawVerdict).not.toBe('BUY');
+    expect(result.overallAction).toBe('HOLD');
+
+    const tc = mission.consensus[0]!;
+    expect(tc.openclawVerdict).toBe('SKIP');
+    expect(tc.openclawVerdict).not.toBe('BUY');
   });
 
   it('falls back gracefully when checkSMACross throws', async () => {
@@ -108,8 +126,14 @@ describe('computeConsensus', () => {
     expect(result).toBeDefined();
     if (!result) throw new Error('Expected consensus result');
 
-    expect(result.agreement).toBe('agree');
-    expect(result.vetoed).toBe(false);
+    expect(result.overallAction).toBe('BUY');
+    expect(result.sma250Vetoed).toBe(false);
+    expect(result.confidence).toBe(85);
+    expect(result.entrySignalAligned).toBe(true);
+
+    const tc = mission.consensus[0]!;
+    expect(tc.agreement).toBe('agree');
+    expect(tc.vetoed).toBe(false);
   });
 
   it('disables veto when SMA250_VETO_ENABLED=false', async () => {
@@ -123,9 +147,15 @@ describe('computeConsensus', () => {
     expect(result).toBeDefined();
     if (!result) throw new Error('Expected consensus result');
 
-    expect(result.agreement).toBe('agree');
-    expect(result.vetoed).toBe(false);
-    expect(result.vetoReason).toBeUndefined();
+    expect(result.overallAction).toBe('BUY');
+    expect(result.sma250Vetoed).toBe(false);
+    expect(result.confidence).toBe(85);
+    expect(result.entrySignalAligned).toBe(true);
+
+    const tc = mission.consensus[0]!;
+    expect(tc.agreement).toBe('agree');
+    expect(tc.vetoed).toBe(false);
+    expect(tc.vetoReason).toBeUndefined();
   });
 
   it('keeps agree when BUY is above SMA250', async () => {
@@ -138,8 +168,16 @@ describe('computeConsensus', () => {
     expect(result).toBeDefined();
     if (!result) throw new Error('Expected consensus result');
 
-    expect(result.agreement).toBe('agree');
-    expect(result.vetoed).toBe(false);
-    expect(result.vetoReason).toBeUndefined();
+    expect(result.overallAction).toBe('BUY');
+    expect(result.sma250Vetoed).toBe(false);
+    expect(result.confidence).toBe(85);
+    expect(result.entrySignalAligned).toBe(true);
+    expect(result.taSignal).toBe('BUY');
+    expect(result.decisionTrail).toEqual([]);
+
+    const tc = mission.consensus[0]!;
+    expect(tc.agreement).toBe('agree');
+    expect(tc.vetoed).toBe(false);
+    expect(tc.vetoReason).toBeUndefined();
   });
 });

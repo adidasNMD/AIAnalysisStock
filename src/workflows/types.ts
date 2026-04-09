@@ -60,6 +60,19 @@ export interface TickerConsensus {
   bearCase?: string;
 }
 
+export interface ConsensusResult {
+  ticker: string;
+  overallAction: 'BUY' | 'SELL' | 'HOLD' | 'AVOID';
+  confidence: number;           // 0-100
+  taSignal: string;             // TradingAgents signal
+  openbbSignal: string;         // OpenBB signal
+  sma250Vetoed: boolean;
+  antiSellGuardTriggered: boolean;
+  entrySignalAligned: boolean;
+  reasoning: string;
+  decisionTrail: DecisionTrailEntry[];
+}
+
 export interface DecisionTrailEntry {
   ticker: string;
   stage: 'discovery_filter' | 'consensus' | 'sma_veto';

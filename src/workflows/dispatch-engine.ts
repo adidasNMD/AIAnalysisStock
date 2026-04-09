@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { saveTrailReport } from '../utils/trail-renderer';
 import { buildDecisionTrail, computeConsensus, triggerConsensusAlerts } from './consensus';
-import type { MissionInput, UnifiedMission } from './types';
+import type { ConsensusResult, MissionInput, UnifiedMission } from './types';
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
 const missionCache = new Map<string, UnifiedMission>();
@@ -106,7 +106,7 @@ export async function dispatchMission(
       await Promise.all([runOpenClawPhase(mission, input, executeOpenClaw), runParallelEnrichment(mission, tickers, input.date)]);
     }
 
-    mission.consensus = await computeConsensus(mission);
+    const _consensusResults: ConsensusResult[] = await computeConsensus(mission);
     const lifecycleEngine = new NarrativeLifecycleEngine();
     let antiSellGuards: Array<{ ticker: string; reason: string }> = [];
     try {

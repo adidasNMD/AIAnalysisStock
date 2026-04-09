@@ -1,7 +1,7 @@
 import { checkSMACross } from '../tools/market-data';
 import { sendStopLossAlert } from '../utils/telegram';
 import { logger } from '../utils/logger';
-import type { DecisionTrailEntry, TickerConsensus, UnifiedMission } from './types';
+import type { ConsensusResult, DecisionTrailEntry, TickerConsensus, UnifiedMission } from './types';
 
 export async function triggerConsensusAlerts(consensus: TickerConsensus[]): Promise<void> {
   const alertEnabled = process.env.AUTO_ALERT_ENABLED !== 'false';
@@ -132,11 +132,11 @@ export function buildDecisionTrail(mission: UnifiedMission): DecisionTrailEntry[
   });
 }
 
-export async function computeConsensus(mission: UnifiedMission): Promise<TickerConsensus[]> {
+export async function computeConsensus(mission: UnifiedMission): Promise<ConsensusResult[]> {
   const tickers = mission.openclawTickers;
   if (!tickers.length) return [];
 
-  const results = await Promise.all(tickers.map(async ticker => {
+  const tickerConsensusResults = await Promise.all(tickers.map(async ticker => {
     let ocVerdict: TickerConsensus['openclawVerdict'] = null;
     if (mission.openclawReport) {
       const report = mission.openclawReport.toUpperCase();
@@ -233,5 +233,46 @@ export async function computeConsensus(mission: UnifiedMission): Promise<TickerC
     return consensus;
   }));
 
-  return results;
+  mission.consensus = tickerConsensusResults;
+
+  return tickerConsensusResults.map(tc => mapToConsensusResult(tc));
+}
+
+function deriveOverallAction(tc: TickerConsensus): ConsensusResult['overallAction'] {
+  if (tc.agreement === 'agree' && tc.taVerdict === 'BUY' && !tc.vetoed) return 'BUY';
+  if (tc.agreement === 'agree' && tc.taVerdict === 'SELL' && !tc.vetoed) return 'SELL';
+  if (tc.vetoed) return 'HOLD';
+  if (tc.agreement === 'disagree') return 'HOLD';
+  return 'HOLD';
+}
+
+const CONFIDENCE_BY_AGREEMENT: Record<TickerConsensus['agreement'], number> = {
+  agree: 85,
+  partial: 55,
+  disagree: 20,
+  blocked: 10,
+  pending: 0,
+};
+
+function buildReasoning(tc: TickerConsensus): string {
+  const parts: string[] = [];
+  if (tc.bullCase) parts.push(`Bull: ${tc.bullCase}`);
+  if (tc.bearCase) parts.push(`Bear: ${tc.bearCase}`);
+  if (tc.vetoReason) parts.push(`Veto: ${tc.vetoReason}`);
+  return parts.join(' | ') || 'No reasoning available';
+}
+
+function mapToConsensusResult(tc: TickerConsensus): ConsensusResult {
+  return {
+    ticker: tc.ticker,
+    overallAction: deriveOverallAction(tc),
+    confidence: CONFIDENCE_BY_AGREEMENT[tc.agreement],
+    taSignal: tc.taVerdict ?? 'UNKNOWN',
+    openbbSignal: tc.openbbVerdict ?? 'UNKNOWN',
+    sma250Vetoed: tc.vetoed,
+    antiSellGuardTriggered: false,
+    entrySignalAligned: tc.agreement === 'agree',
+    reasoning: buildReasoning(tc),
+    decisionTrail: [],
+  };
 }
