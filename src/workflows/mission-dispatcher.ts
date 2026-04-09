@@ -20,6 +20,7 @@ import { checkSMACross } from '../tools/market-data';
 import { sendStopLossAlert } from '../utils/telegram';
 import * as fs from 'fs';
 import * as path from 'path';
+import { type RejectedTicker } from '../agents/discovery/ticker-discovery';
 
 // ===== 类型定义 =====
 
@@ -66,6 +67,9 @@ export interface UnifiedMission {
 
   // 双大脑共识
   consensus: TickerConsensus[];
+
+  discoveryRejections?: RejectedTicker[];
+  decisionTrail?: DecisionTrailEntry[];
 
   // 完整耗时
   totalDurationMs: number;
@@ -292,6 +296,7 @@ export async function dispatchMission(
     // Step Final: 计算双大脑共识
     mission.consensus = await computeConsensus(mission);
     await triggerConsensusAlerts(mission.consensus);
+    mission.decisionTrail = buildDecisionTrail(mission);
     mission.totalDurationMs = Date.now() - startTime;
     if (mission.status !== 'main_only') {
       mission.status = 'fully_enriched';

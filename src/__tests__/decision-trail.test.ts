@@ -258,3 +258,27 @@ describe('buildDecisionTrail', () => {
     ]);
   });
 });
+
+describe('UnifiedMission serialization', () => {
+  it('serializes and deserializes decisionTrail via JSON round-trip', () => {
+    const mission = makeMission({
+      consensus: [{
+        ticker: 'AAA',
+        openclawVerdict: 'BUY',
+        taVerdict: 'BUY',
+        agreement: 'agree',
+        openbbVerdict: 'PASS',
+        vetoed: false,
+      }],
+      taResults: [makeTAResult('AAA')],
+    });
+
+    (mission as any).decisionTrail = [
+      { ticker: 'AAA', stage: 'consensus', verdict: 'pass', reason: '双大脑共识: agree' },
+    ];
+
+    const roundTripped = JSON.parse(JSON.stringify(mission)) as typeof mission;
+    expect((roundTripped as any).decisionTrail).toHaveLength(1);
+    expect((roundTripped as any).decisionTrail[0].ticker).toBe('AAA');
+  });
+});
