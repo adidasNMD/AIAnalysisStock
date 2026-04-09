@@ -1,4 +1,5 @@
 import Parser from 'rss-parser';
+import { rssLimiter } from '../utils/rate-limiter';
 
 const parser = new Parser({
   timeout: 10000,
@@ -32,6 +33,7 @@ export async function pollFeed(
   const alerts: RSSAlert[] = [];
 
   try {
+    await rssLimiter.acquire();
     const feed = await parser.parseURL(url);
     const items = feed.items || [];
 

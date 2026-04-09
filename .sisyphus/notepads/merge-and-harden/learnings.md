@@ -87,3 +87,19 @@
 - `GET /api/config/models` already exists for model config — new runtime config at `/api/config` (no collision)
 - Pattern: `allowed` array whitelist in PATCH handler prevents arbitrary field injection
 - Runtime config is intentionally in-memory only — reboot resets to defaults from constants.ts
+
+## T13 — Rate Limiter
+
+- Token-bucket pattern is simple and effective: refill tokens based on elapsed time, wait if depleted.
+- Yahoo Finance uses `yahoo-finance2` library (not raw `fetch`), so rate limiting wraps `yahooFinance.quote()` and `yahooFinance.chart()` calls.
+- RSS monitoring uses `rss-parser` library's `parseURL()`, rate limiting wraps that.
+- `getQuote()` is called from both `market-data.ts` (internal) and `trend-radar.ts` (external). Adding limiter at both points provides defense-in-depth but double-acquires on the same singleton limiter — acceptable since it just makes calls slightly more conservative.
+- No test changes needed — rate limiter is transparent to existing test mocks.
+
+## T15 — Narrative DB Schema Upgrade
+- Added 6 ALTER TABLE migrations (title, stage, status, impactScore, coreTicker, lastUpdatedAt) using same try/catch pattern as existing tasks table migration
+- `loadNarratives()` now reads from proper columns with `??` fallback to meta JSON for backward compat with pre-migration rows
+- `createNarrative()` writes all 12 columns (6 original + 6 new) in a single INSERT
+- `updateNarrative()` writes stage, status, coreTicker, lastUpdatedAt to proper columns alongside meta JSON
+- `meta` column preserved — never dropped — old rows still readable via fallback chain
+- The `Database` import in narrative-store.ts was already unused (pre-existing hint) — left untouched to avoid scope creep

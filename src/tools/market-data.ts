@@ -1,4 +1,5 @@
 import YahooFinance from 'yahoo-finance2';
+import { yahooLimiter } from '../utils/rate-limiter';
 const yahooFinance = new YahooFinance();
 
 export interface QuoteSnapshot {
@@ -34,6 +35,7 @@ export interface AlertSignal {
  */
 export async function getQuote(symbol: string): Promise<QuoteSnapshot | null> {
   try {
+    await yahooLimiter.acquire();
     const quote: any = await yahooFinance.quote(symbol);
     if (!quote || !quote.regularMarketPrice) return null;
 
@@ -65,6 +67,7 @@ export async function calculateSMA(symbol: string, period: number): Promise<numb
     const startDate = new Date();
     startDate.setDate(endDate.getDate() - Math.ceil(period * 2.0)); // extra buffer for weekends/holidays
 
+    await yahooLimiter.acquire();
     const chartResult: any = await yahooFinance.chart(symbol, {
       period1: startDate,
       period2: endDate,

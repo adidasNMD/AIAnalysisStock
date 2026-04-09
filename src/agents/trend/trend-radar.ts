@@ -10,6 +10,7 @@ import { TickerDiscoveryEngine } from '../discovery/ticker-discovery';
 import { addDiscoveredTickers, getActiveTickers } from '../../utils/dynamic-watchlist';
 import { isMarketCapWithinGate } from '../../utils/market-cap-gate';
 import { getQuote } from '../../tools/market-data';
+import { yahooLimiter } from '../../utils/rate-limiter';
 import { saveTrendReport } from '../../utils/agent-logger';
 import { eventBus } from '../../utils/event-bus';
 
@@ -199,6 +200,7 @@ ${investorContext}
     for (const t of mentionedTickers) {
       if (existingTickers.includes(t)) continue;
       try {
+        await yahooLimiter.acquire();
         const quote = await getQuote(t);
         const cap = (quote as any)?.marketCap;
         if (typeof cap === 'number' && isMarketCapWithinGate(cap)) {
