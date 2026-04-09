@@ -26,10 +26,20 @@ function loadInvestorProfile(): string {
 /**
  * 从文本中提取 ticker 代码
  */
+const TICKER_BLACKLIST = new Set([
+  'USD', 'EUR', 'GBP', 'CHF', 'JPY',
+  'BTC', 'ETH', 'SOL', 'USDT', 'USDC',
+]);
+
 function extractTickersFromText(text: string): string[] {
-  const matches = text.match(/\$([A-Z]{1,5})\b/g);
+  const matches = text.match(/\$([A-Z]{2,5})\b/g);
   if (!matches) return [];
-  return [...new Set(matches.map(m => m.replace('$', '')))];
+
+  return [...new Set(
+    matches
+      .map(m => m.slice(1))
+      .filter(symbol => !TICKER_BLACKLIST.has(symbol)),
+  )];
 }
 
 // 保持导出兼容

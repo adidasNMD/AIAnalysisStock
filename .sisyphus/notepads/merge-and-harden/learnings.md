@@ -111,6 +111,11 @@
 - `missionId` is passed as `undefined` for now — threading it through the full call chain is a separate concern
 - `GET /api/token-usage` added to `src/server/app.ts`, follows same pattern as existing `/api/config` routes
 
+## [2026-04-09] T18: ticker extraction hardening
+- Hardened `extractTickersFromText()` in both `src/utils/narrative-store.ts` and `src/agents/discovery/ticker-discovery.ts` with a shared explicit blacklist for non-stock symbols (`USD`, `EUR`, `GBP`, `CHF`, `JPY`, `BTC`, `ETH`, `SOL`, `USDT`, `USDC`).
+- Tightened the capture pattern to `\$([A-Z]{2,5})\b`, which keeps valid tickers like `NVDA`, `AAOI`, `SMR`, `CRWV` while avoiding single-letter noise and money-like strings.
+- Vitest stayed green after the change: `NODE_OPTIONS="--max-old-space-size=8192" npx vitest run` → 78/78 passing.
+
 ## T14: Structured Logger
 
 - Created `src/utils/logger.ts` with structured JSON output (timestamp, level, msg, meta)
