@@ -18,13 +18,51 @@ import { taskQueue } from './utils/task-queue';
 import { startServer } from './server/app';
 import { dispatchMission } from './workflows';
 import { eventBus } from './utils/event-bus';
+import { getDb } from './db';
 import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
+import { getRuntimeConfig } from './config';
 
 const TREND_COOLDOWN_MS = 30 * 60 * 1000;
 const T4_CRON_EXPRESSION = T4_INTERVAL_MS === 15 * 60 * 1000
   ? '*/15 * * * *'
   : `*/${Math.max(1, Math.floor(T4_INTERVAL_MS / 60000))} * * * *`;
 const trendCooldown = new Map<string, number>();
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`[Shutdown] Received ${signal}, draining...`);
+
+  const maxWait = 30_000;
+  const pollInterval = 1_000;
+  let waited = 0;
+  while (taskQueue.getRunningCount() > 0 && waited < maxWait) {
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+    waited += pollInterval;
+  }
+
+  if (taskQueue.getRunningCount() > 0) {
+    console.log(`[Shutdown] Timed out waiting for ${taskQueue.getRunningCount()} tasks to drain`);
+  } else {
+    console.log(`[Shutdown] All tasks drained`);
+  }
+
+  try {
+    const db = await getDb();
+    await db.close();
+    console.log(`[Shutdown] Database closed`);
+  } catch (e: any) {
+    console.error(`[Shutdown] Error closing database: ${e.message}`);
+  }
+
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -195,6 +233,8 @@ export function cleanupCooldown() {
 
 if (T1_ENABLED) {
   cron.schedule('*/5 * * * *', async () => {
+    if (isShuttingDown) return;
+    if (!getRuntimeConfig().t1Enabled) return;
     cleanupCooldown();
     const watchlist = loadWatchlist();
     const targets = watchlist.tickers.filter(t => t.role === 'target');
@@ -238,6 +278,7 @@ if (T1_ENABLED) {
 // TRIGGER 2: 媒体资讯与公告 (每小时的第30分钟触发)
 // ==========================================
 cron.schedule('30 * * * *', async () => {
+  if (isShuttingDown) return;
   const watchlist = loadWatchlist();
   
   // RSS 政府公告轮询
@@ -284,6 +325,7 @@ cron.schedule('30 * * * *', async () => {
 // TRIGGER 3: 每天 08:30 AM — 全量 Watchlist 日报
 // ==========================================
 cron.schedule('30 08 * * 1-5', async () => {
+  if (isShuttingDown) return;
   const watchlist = loadWatchlist();
   console.log(`\n[Sentinel] 📊 执行每日全量技术面快照...`);
 
@@ -387,6 +429,7 @@ cron.schedule('30 08 * * 1-5', async () => {
 // TRIGGER 4: 趋势雷达媒体扫描 (每小时的整点触发: 寻找新的交易机会)
 // ==========================================
 cron.schedule(T4_CRON_EXPRESSION, async () => {
+  if (isShuttingDown) return;
   console.log(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
   
   try {

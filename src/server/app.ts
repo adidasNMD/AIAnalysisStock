@@ -7,6 +7,7 @@ import { loadNarratives } from '../utils/narrative-store';
 import { getActiveTickers } from '../utils/dynamic-watchlist';
 import { eventBus } from '../utils/event-bus';
 import { getFullConfig, saveModelsConfig, reloadConfig } from '../utils/model-config';
+import { getRuntimeConfig, updateRuntimeConfig } from '../config';
 import { checkOpenBBHealth } from '../utils/openbb-provider';
 import { checkTAHealth } from '../utils/ta-client';
 import { listMissions, getMission, dispatchMission, type MissionInput } from '../workflows';
@@ -515,6 +516,21 @@ app.put('/api/config/models', (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// API: 运行时特性配置 (T1 开关 / leader tickers / SMA250 veto)
+app.get('/api/config', (req: Request, res: Response) => {
+  res.json(getRuntimeConfig());
+});
+
+app.patch('/api/config', (req: Request, res: Response) => {
+  const allowed = ['t1Enabled', 'leaderTickers', 'sma250VetoEnabled'];
+  const patch: Record<string, any> = {};
+  for (const key of allowed) {
+    if (key in req.body) patch[key] = req.body[key];
+  }
+  const updated = updateRuntimeConfig(patch);
+  res.json(updated);
 });
 
 // ================================================================
