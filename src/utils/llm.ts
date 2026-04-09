@@ -11,6 +11,36 @@ export interface LLMConfig {
   tier?: 'primary' | 'secondary';
 }
 
+// ── Token Usage Metering (in-memory, no enforcement) ──
+
+interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalCalls: number;
+}
+
+const globalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalCalls: 0 };
+const missionUsage = new Map<string, TokenUsage>();
+
+export function trackTokenUsage(missionId: string | undefined, usage: { prompt_tokens?: number; completion_tokens?: number }) {
+  const prompt = usage.prompt_tokens || 0;
+  const completion = usage.completion_tokens || 0;
+  globalUsage.promptTokens += prompt;
+  globalUsage.completionTokens += completion;
+  globalUsage.totalCalls++;
+  if (missionId) {
+    const existing = missionUsage.get(missionId) || { promptTokens: 0, completionTokens: 0, totalCalls: 0 };
+    existing.promptTokens += prompt;
+    existing.completionTokens += completion;
+    existing.totalCalls++;
+    missionUsage.set(missionId, existing);
+  }
+}
+
+export function getTokenUsage(): { global: TokenUsage; missions: Record<string, TokenUsage> } {
+  return { global: { ...globalUsage }, missions: Object.fromEntries(missionUsage) };
+}
+
 /**
  * 通用大模型请求封装工具：
  * 不依赖任何特定厂商的 SDK（如 openai包），采用纯粹的 fetch 协议请求标准的 /v1/chat/completions 接口。
@@ -291,12 +321,13 @@ export async function generateStructuredOutput<T>(
         } else {
           rawContent = responseData.choices?.[0]?.message?.content;
         }
+        trackTokenUsage(undefined, responseData?.usage || {});
       }
 
       if (!rawContent) {
         console.warn(`[DEBUG LLM] Response data dumping:`, JSON.stringify(responseData || {}, null, 2));
         console.warn(`\n⚠️ [LLM Utility] 检测到大模型返回了彻底空的数据 (可能是 Proxy 抛弃或被 0 token 截断)。`);
-        console.warn(`💡 [系统指令] 根据“不因为格式化阻断”要求，将采用【纯文本对话穿透兜底】向下流转。`);
+        console.warn(`💡 [系统指令] 根据"不因为格式化阻断"要求，将采用【纯文本对话穿透兜底】向下流转。`);
         return createGracefulFallback('[模型此次请求没有返回任何实质文字]') as T;
       }
 
@@ -480,6 +511,7 @@ export async function generateTextCompletion(
         } else {
           rawContent = responseData.choices?.[0]?.message?.content;
         }
+        trackTokenUsage(undefined, responseData?.usage || {});
 
         if (!rawContent) {
           console.error(`[DEBUG LLM Text] Response data dumping:`, JSON.stringify(responseData || {}, null, 2));

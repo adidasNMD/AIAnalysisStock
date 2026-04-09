@@ -103,3 +103,10 @@
 - `updateNarrative()` writes stage, status, coreTicker, lastUpdatedAt to proper columns alongside meta JSON
 - `meta` column preserved — never dropped — old rows still readable via fallback chain
 - The `Database` import in narrative-store.ts was already unused (pre-existing hint) — left untouched to avoid scope creep
+
+## T16: Token Usage Metering
+- Added `trackTokenUsage()` / `getTokenUsage()` to `src/utils/llm.ts` — in-memory accumulation of `prompt_tokens` and `completion_tokens` from LLM API responses
+- Both `generateStructuredOutput` and `generateTextCompletion` call `trackTokenUsage(undefined, responseData?.usage || {})` after non-streaming response parsing
+- Streaming responses don't return `usage` in the standard OpenAI SSE format, so tracking only applies to non-streaming calls
+- `missionId` is passed as `undefined` for now — threading it through the full call chain is a separate concern
+- `GET /api/token-usage` added to `src/server/app.ts`, follows same pattern as existing `/api/config` routes

@@ -10,6 +10,7 @@ import { getFullConfig, saveModelsConfig, reloadConfig } from '../utils/model-co
 import { getRuntimeConfig, updateRuntimeConfig } from '../config';
 import { checkOpenBBHealth } from '../utils/openbb-provider';
 import { checkTAHealth } from '../utils/ta-client';
+import { getTokenUsage } from '../utils/llm';
 import { listMissions, getMission, dispatchMission, type MissionInput } from '../workflows';
 import { diagnosticsHandler } from './routes/diagnostics';
 import { rssProxyHandler } from './routes/rss-proxy';
@@ -531,6 +532,10 @@ app.patch('/api/config', (req: Request, res: Response) => {
   }
   const updated = updateRuntimeConfig(patch);
   res.json(updated);
+});
+
+app.get('/api/token-usage', (req: Request, res: Response) => {
+  res.json(getTokenUsage());
 });
 
 // ================================================================
