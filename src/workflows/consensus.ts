@@ -263,7 +263,7 @@ function buildReasoning(tc: TickerConsensus): string {
 }
 
 function mapToConsensusResult(tc: TickerConsensus): ConsensusResult {
-  return {
+  const result: ConsensusResult = {
     ticker: tc.ticker,
     overallAction: deriveOverallAction(tc),
     confidence: CONFIDENCE_BY_AGREEMENT[tc.agreement],
@@ -275,4 +275,9 @@ function mapToConsensusResult(tc: TickerConsensus): ConsensusResult {
     reasoning: buildReasoning(tc),
     decisionTrail: [],
   };
+  if (tc.agreement !== undefined) result.agreement = tc.agreement;
+  if (tc.vetoed !== undefined) result.vetoed = tc.vetoed;
+  if (tc.vetoReason !== undefined) result.vetoReason = tc.vetoReason;
+  if (tc.openclawVerdict !== undefined) result.openclawVerdict = tc.openclawVerdict;
+  return result;
 }

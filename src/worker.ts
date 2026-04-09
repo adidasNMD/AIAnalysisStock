@@ -3,12 +3,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentSwarmOrchestrator } from './workflows/swarm-pipeline';
 import { scanTicker, AlertSignal, generateTechSnapshot } from './tools/market-data';
-import { sendAlertBatch, sendStopLossAlert, sendEntrySignal, sendReportSummary, sendMessage } from './utils/telegram';
-import { pollAllFeeds, alertsToContext, RSSAlert } from './tools/rss-monitor';
-import { watchIPO, filingsToContext } from './tools/edgar-monitor';
+import { sendAlertBatch, sendStopLossAlert, sendReportSummary, sendMessage } from './utils/telegram';
+import { pollAllFeeds } from './tools/rss-monitor';
+import { watchIPO } from './tools/edgar-monitor';
 import { TrendRadar } from './agents/trend/trend-radar';
 import { scanAllSectorETFs, generateSectorOverview } from './tools/sector-scanner';
-import { getActiveTickers, promoteTicker, generateDynamicWatchlistOverview, DynamicTicker } from './utils/dynamic-watchlist';
+import { getActiveTickers, generateDynamicWatchlistOverview } from './utils/dynamic-watchlist';
 import { startInteractiveBot } from './agents/telegram/interactive-bot';
 import { MacroContextEngine } from './agents/macro/macro-context';
 import { updatePerformance, formatPerformanceReport } from './utils/performance-tracker';
@@ -74,7 +74,10 @@ function simpleHash(str: string): string {
   return h.toString();
 }
 
-const LEADER_TICKERS = [...DEFAULT_LEADER_TICKERS];
+function getLeaderTickers(): string[] {
+  const runtimeTickers = getRuntimeConfig().leaderTickers;
+  return runtimeTickers.length > 0 ? [...runtimeTickers] : [...DEFAULT_LEADER_TICKERS];
+}
 
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
@@ -395,7 +398,7 @@ cron.schedule('30 08 * * 1-5', async () => {
 
   try {
     const { checkSMACross } = await import('./tools/market-data.js');
-    for (const leader of LEADER_TICKERS) {
+    for (const leader of getLeaderTickers()) {
       const smaResults = await checkSMACross(leader, [50]);
       const sma50 = smaResults.find((r: any) => r.period === 50);
       if (sma50 && sma50.position === 'below') {

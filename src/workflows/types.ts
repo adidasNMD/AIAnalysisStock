@@ -62,6 +62,10 @@ export interface TickerConsensus {
 
 export interface ConsensusResult {
   ticker: string;
+  agreement?: TickerConsensus['agreement'];
+  vetoed?: boolean;
+  vetoReason?: string;
+  openclawVerdict?: TickerConsensus['openclawVerdict'];
   overallAction: 'BUY' | 'SELL' | 'HOLD' | 'AVOID';
   confidence: number;           // 0-100
   taSignal: string;             // TradingAgents signal
