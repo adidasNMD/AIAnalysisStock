@@ -57,3 +57,10 @@
 - `isMarketCapWithinGate(cap)` accepts `number | null | undefined`, so ticker-discovery can gate directly on `quote.marketCap` without local min/max constants.
 - Unified market-cap rejection keeps `rejectedTickers` intact by mapping out-of-range values to `'mega_cap'` when `marketCap > 50_000_000_000`, otherwise `'micro_cap'`.
 - Removing the unused `GoogleNewsItem` import cleaned the file without touching the ticker discovery contract.
+
+## [2026-04-09] T9 dispatcher split
+
+- mission-dispatcher.ts was split into exactly 3 modules + barrel: types.ts, consensus.ts, dispatch-engine.ts, index.ts.
+- computeConsensus remains async and preserves SMA250 veto flow and vetoReason as optional string (undefined when absent).
+- All workflow import sites were moved to the workflows barrel path and mission-dispatcher.ts was removed.
+- Verification passed: vitest 78/78 green, grep for mission-dispatcher in src/**/*.ts returned no matches, split files exist.

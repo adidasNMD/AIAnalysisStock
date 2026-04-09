@@ -26,7 +26,7 @@ vi.mock('../utils/performance-tracker', () => ({ updatePerformance: vi.fn(), for
 vi.mock('../agents/lifecycle/engine', () => ({ NarrativeLifecycleEngine: vi.fn().mockImplementation(() => ({ evaluateAllActiveNarratives: vi.fn().mockResolvedValue({ messages: [] }) })) }));
 vi.mock('../utils/health-monitor', () => ({ healthMonitor: { checkConnectivity: vi.fn(), recordSuccess: vi.fn(), recordFailure: vi.fn() } }));
 vi.mock('../server/app', () => ({ startServer: vi.fn() }));
-vi.mock('../workflows/mission-dispatcher', () => ({ dispatchMission: vi.fn() }));
+vi.mock('../workflows', () => ({ dispatchMission: vi.fn() }));
 vi.mock('../utils/event-bus', () => ({ eventBus: { emitSystem: vi.fn() } }));
 vi.mock('../workflows/swarm-pipeline', () => ({ AgentSwarmOrchestrator: vi.fn().mockImplementation(() => ({ executeMission: vi.fn() })) }));
 vi.mock('../db', () => ({ getDb: vi.fn().mockResolvedValue({ get: vi.fn(), run: vi.fn(), all: vi.fn().mockResolvedValue([]) }) }));

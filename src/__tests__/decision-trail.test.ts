@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildDecisionTrail, type DecisionTrailEntry, type UnifiedMission } from '../workflows/mission-dispatcher';
+import { buildDecisionTrail, type DecisionTrailEntry, type UnifiedMission } from '../workflows';
 import { saveTrailReport } from '../utils/trail-renderer';
 
 const { mkdirSync, writeFileSync } = vi.hoisted(() => ({

@@ -16,7 +16,7 @@ import { NarrativeLifecycleEngine } from './agents/lifecycle/engine';
 import { healthMonitor } from './utils/health-monitor';
 import { taskQueue } from './utils/task-queue';
 import { startServer } from './server/app';
-import { dispatchMission } from './workflows/mission-dispatcher';
+import { dispatchMission } from './workflows';
 import { eventBus } from './utils/event-bus';
 import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
 

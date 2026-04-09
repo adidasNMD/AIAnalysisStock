@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { computeConsensus, type UnifiedMission } from '../workflows/mission-dispatcher';
+import { computeConsensus, type UnifiedMission } from '../workflows';
 import { checkSMACross } from '../tools/market-data';
 
 vi.mock('../tools/market-data', () => ({

@@ -14,7 +14,7 @@ vi.mock('../tools/market-data', () => ({
 }));
 
 import { sendStopLossAlert } from '../utils/telegram';
-import { triggerConsensusAlerts, type TickerConsensus } from '../workflows/mission-dispatcher';
+import { triggerConsensusAlerts, type TickerConsensus } from '../workflows';
 import { NarrativeLifecycleEngine } from '../agents/lifecycle/engine';
 import { loadNarratives, updateNarrative } from '../utils/narrative-store';
 import { checkSMACross } from '../tools/market-data';

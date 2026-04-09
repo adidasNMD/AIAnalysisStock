@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { renderTrailMarkdown, saveTrailReport } from '../utils/trail-renderer';
-import type { DecisionTrailEntry } from '../workflows/mission-dispatcher';
+import type { DecisionTrailEntry } from '../workflows';
 
 const { mkdirSync, writeFileSync } = vi.hoisted(() => ({
   mkdirSync: vi.fn(),

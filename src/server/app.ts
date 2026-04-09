@@ -9,7 +9,7 @@ import { eventBus } from '../utils/event-bus';
 import { getFullConfig, saveModelsConfig, reloadConfig } from '../utils/model-config';
 import { checkOpenBBHealth } from '../utils/openbb-provider';
 import { checkTAHealth } from '../utils/ta-client';
-import { listMissions, getMission, dispatchMission, type MissionInput } from '../workflows/mission-dispatcher';
+import { listMissions, getMission, dispatchMission, type MissionInput } from '../workflows';
 import { diagnosticsHandler } from './routes/diagnostics';
 import { rssProxyHandler } from './routes/rss-proxy';
 import * as fs from 'fs';

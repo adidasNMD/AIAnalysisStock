@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { DecisionTrailEntry } from '../workflows/mission-dispatcher';
+import type { DecisionTrailEntry } from '../workflows';
 
 function stageLabel(stage: DecisionTrailEntry['stage']): string {
   switch (stage) {
