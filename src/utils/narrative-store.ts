@@ -34,22 +34,24 @@ export async function loadNarratives(): Promise<NarrativeRecord[]> {
     const rows = await db.all('SELECT * FROM narratives');
     
     return rows.map(r => {
-      let meta = {};
+      let meta: Record<string, any> = {};
       try { meta = JSON.parse(r.meta || '{}'); } catch {}
       
       const record: NarrativeRecord = {
         id: r.id,
-        title: r.symbol, // using symbol column for title due to legacy table structure in Phase 4
-        description: (meta as any).description || '',
-        impactScore: 0,
+        title: r.title ?? r.symbol,
+        description: meta.description || '',
+        impactScore: r.impactScore ?? meta.impactScore ?? 0,
         createdAt: new Date(r.timestamp).toISOString(),
-        lastUpdatedAt: new Date(r.timestamp).toISOString(), // simple approximation
+        lastUpdatedAt: r.lastUpdatedAt
+          ? new Date(r.lastUpdatedAt).toISOString()
+          : new Date(r.timestamp).toISOString(),
         analysisText: r.content,
-        debateText: (meta as any).debateText || '',
-        coreTicker: (meta as any).coreTicker || undefined,
-        eventHistory: (meta as any).eventHistory || [],
-        stage: (meta as any).stage || 'earlyFermentation',
-        status: (meta as any).status || 'active'
+        debateText: meta.debateText || '',
+        coreTicker: r.coreTicker ?? meta.coreTicker ?? undefined,
+        eventHistory: meta.eventHistory || [],
+        stage: r.stage ?? meta.stage ?? 'earlyFermentation',
+        status: r.status ?? meta.status ?? 'active'
       };
       
       return record;
@@ -106,11 +108,14 @@ export async function createNarrative(
   };
 
   const id = `topic_${Date.now()}`;
+  const nowMs = now.getTime();
   
   const db = await getDb();
   await db.run(
-    'INSERT INTO narratives (id, symbol, timestamp, category, content, meta) VALUES (?, ?, ?, ?, ?, ?)',
-    id, title, now.getTime(), 'narrative', analysisText, JSON.stringify(meta)
+    `INSERT INTO narratives (id, symbol, timestamp, category, content, meta, title, stage, status, impactScore, coreTicker, lastUpdatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    id, title, nowMs, 'narrative', analysisText, JSON.stringify(meta),
+    title, 'earlyFermentation', 'active', 0, coreTicker ?? null, nowMs
   );
 
   console.log(`[NarrativeStore] 🆕 新建叙事记录: "${title}" ${coreTicker ? `(龙头: $${coreTicker})` : ''}`);
@@ -164,10 +169,11 @@ export async function updateNarrative(
     status: record.status
   };
 
+  const nowMs = Date.now();
   const db = await getDb();
   await db.run(
-    'UPDATE narratives SET content = ?, meta = ?, timestamp = ? WHERE id = ?',
-    newAnalysis, JSON.stringify(meta), Date.now(), id
+    `UPDATE narratives SET content = ?, meta = ?, timestamp = ?, stage = ?, status = ?, coreTicker = ?, lastUpdatedAt = ? WHERE id = ?`,
+    newAnalysis, JSON.stringify(meta), nowMs, newStage, record.status, newCore ?? null, nowMs, id
   );
 
   console.log(`[NarrativeStore] ♻️ 更新叙事记录: "${record.title}" (事件数: ${newHistory.length})`);

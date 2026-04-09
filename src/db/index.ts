@@ -58,4 +58,10 @@ async function initDb(db: Database) {
       meta TEXT
     );
   `);
+  try { await db.exec(`ALTER TABLE narratives ADD COLUMN title TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE narratives ADD COLUMN stage TEXT DEFAULT 'earlyFermentation';`); } catch {}
+  try { await db.exec(`ALTER TABLE narratives ADD COLUMN status TEXT DEFAULT 'active';`); } catch {}
+  try { await db.exec(`ALTER TABLE narratives ADD COLUMN impactScore REAL DEFAULT 0;`); } catch {}
+  try { await db.exec(`ALTER TABLE narratives ADD COLUMN coreTicker TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE narratives ADD COLUMN lastUpdatedAt INTEGER;`); } catch {}
 }
