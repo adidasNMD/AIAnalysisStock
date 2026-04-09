@@ -83,6 +83,36 @@ export interface TickerConsensus {
   bearCase?: string;
 }
 
+export interface DecisionTrailEntry {
+  ticker: string;
+  stage: 'discovery_filter' | 'consensus' | 'sma_veto';
+  verdict: 'pass' | 'reject';
+  reason: string;
+  details?: {
+    marketCap?: number;
+    thresholdMin?: number;
+    thresholdMax?: number;
+    openclawVerdict?: string | null;
+    taVerdict?: string | null;
+    agreement?: string | undefined;
+    bullCase?: string | undefined;
+    bearCase?: string | undefined;
+    bullArguments?: string[] | undefined;
+    bearArguments?: string[] | undefined;
+    judgeDecision?: string | undefined;
+    pmAction?: string | undefined;
+    pmReasoning?: string | undefined;
+    pmConfidence?: number | undefined;
+    riskAggressiveView?: string | undefined;
+    riskConservativeView?: string | undefined;
+    riskNeutralView?: string | undefined;
+    openbbVerdict?: string | null;
+    price?: number | undefined;
+    sma250?: number | undefined;
+    position?: string | undefined;
+  };
+}
+
 // ===== Mission 存储 =====
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
@@ -451,6 +481,88 @@ function extractBearCase(ocReport: string | null, taReport: string | null): stri
     .filter(s => /看空|bearish|downside|risk|风险|止损/i.test(s))
     .slice(0, 3);
   return bearSentences.length > 0 ? bearSentences.join('；') : undefined;
+}
+
+export function buildDecisionTrail(mission: UnifiedMission): DecisionTrailEntry[] {
+  const entries: DecisionTrailEntry[] = [];
+  const discoveryRejections = (mission as any).discoveryRejections ?? [];
+
+  for (const rej of discoveryRejections) {
+    const reason = rej.reason === 'mega_cap'
+      ? `市值过大: $${(rej.marketCap! / 1e9).toFixed(1)}B > $${(rej.thresholdMax! / 1e9).toFixed(0)}B阈值`
+      : rej.reason === 'micro_cap'
+      ? `市值过小: $${(rej.marketCap! / 1e6).toFixed(1)}M < $${(rej.thresholdMin! / 1e6).toFixed(0)}M阈值`
+      : rej.reason === 'invalid'
+      ? '无效报价 (price <= 0)'
+      : '数据错误';
+
+    entries.push({
+      ticker: rej.symbol,
+      stage: 'discovery_filter',
+      verdict: 'reject',
+      reason,
+      details: {
+        marketCap: rej.marketCap,
+        thresholdMin: rej.thresholdMin,
+        thresholdMax: rej.thresholdMax,
+      },
+    });
+  }
+
+  for (const c of mission.consensus ?? []) {
+    const taResult = mission.taResults?.find(r => r.ticker === c.ticker);
+
+    entries.push({
+      ticker: c.ticker,
+      stage: 'consensus',
+      verdict: c.agreement === 'disagree' ? 'reject' : 'pass',
+      reason: c.vetoReason ?? `双大脑共识: ${c.agreement}`,
+      details: {
+        openclawVerdict: c.openclawVerdict,
+        taVerdict: c.taVerdict,
+        agreement: c.agreement,
+        bullCase: c.bullCase,
+        bearCase: c.bearCase,
+        bullArguments: taResult?.investmentDebate?.bullArguments,
+        bearArguments: taResult?.investmentDebate?.bearArguments,
+        judgeDecision: taResult?.investmentDebate?.judgeDecision,
+        pmAction: taResult?.portfolioManagerDecision?.action,
+        pmReasoning: taResult?.portfolioManagerDecision?.reasoning,
+        pmConfidence: taResult?.portfolioManagerDecision?.confidence,
+        riskAggressiveView: taResult?.riskDebate?.aggressiveView,
+        riskConservativeView: taResult?.riskDebate?.conservativeView,
+        riskNeutralView: taResult?.riskDebate?.neutralView,
+        openbbVerdict: c.openbbVerdict,
+      },
+    });
+
+    if (c.vetoed === true) {
+      const match = c.vetoReason?.match(/价格\s+([\d.]+)\s*<\s*SMA250\s+([\d.]+)/);
+      entries.push({
+        ticker: c.ticker,
+        stage: 'sma_veto',
+        verdict: 'reject',
+        reason: c.vetoReason || 'SMA250 veto',
+        details: {
+          price: match ? Number(match[1]) : undefined,
+          sma250: match ? Number(match[2]) : undefined,
+          position: 'below',
+        },
+      });
+    }
+  }
+
+  const stageOrder: Record<DecisionTrailEntry['stage'], number> = {
+    discovery_filter: 0,
+    consensus: 1,
+    sma_veto: 2,
+  };
+
+  return entries.sort((a, b) => {
+    const stageDiff = stageOrder[a.stage] - stageOrder[b.stage];
+    if (stageDiff !== 0) return stageDiff;
+    return a.ticker.localeCompare(b.ticker);
+  });
 }
 
 export async function computeConsensus(mission: UnifiedMission): Promise<TickerConsensus[]> {
