@@ -14,6 +14,7 @@ import { getTokenUsage } from '../utils/llm';
 import { listMissions, getMission, dispatchMission, type MissionInput } from '../workflows';
 import { diagnosticsHandler } from './routes/diagnostics';
 import { rssProxyHandler } from './routes/rss-proxy';
+import { logger } from '../utils/logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -711,6 +712,6 @@ app.post('/api/missions', async (req: Request, res: Response) => {
 // 监听端口，供 worker.ts 调用
 export function startServer(port = 3000) {
   app.listen(port, () => {
-    console.log(`\n[API Server] 📡 Intelligence Desk API is running on http://localhost:${port}`);
+    logger.info(`[API Server] 📡 Intelligence Desk API is running on http://localhost:${port}`);
   });
 }

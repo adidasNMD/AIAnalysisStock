@@ -1,4 +1,5 @@
 import { getDb } from '../db';
+import { logger } from './logger';
 import type { AnalysisDepth } from '../models/handoff';
 
 export interface QueueTask {
@@ -39,7 +40,7 @@ export class TaskQueue {
       query, 'pending', 'running'
     );
     if (existing) {
-      console.log(`[TaskQueue] ⏭️ 跳过重复任务: "${query}" (已存在 ${existing.status} 任务 ${existing.id})`);
+      logger.info(`[TaskQueue] ⏭️ 跳过重复任务: "${query}" (已存在 ${existing.status} 任务 ${existing.id})`);
       return false;
     }
 
@@ -54,7 +55,7 @@ export class TaskQueue {
     };
 
     await this.saveTask(task);
-    console.log(`[TaskQueue] 📥 入队: "${query}" [${depth}] 来源=${source} 优先级=${priority}`);
+    logger.info(`[TaskQueue] 📥 入队: "${query}" [${depth}] 来源=${source} 优先级=${priority}`);
     
     this.processNext();
     return true;
@@ -83,7 +84,7 @@ export class TaskQueue {
     const res = await db.run(`UPDATE tasks SET status = 'pending', startedAt = NULL WHERE status = 'running'`);
     if (res.changes && res.changes > 0) {
       recovered += res.changes;
-      console.log(`[TaskQueue] 🔄 恢复中断任务: ${res.changes} 个`);
+      logger.info(`[TaskQueue] 🔄 恢复中断任务: ${res.changes} 个`);
     }
 
     const pendingCount = (await db.get('SELECT COUNT(*) as c FROM tasks WHERE status = ?', 'pending'))?.c || 0;
@@ -105,21 +106,21 @@ export class TaskQueue {
     task.startedAt = Date.now();
     await this.saveTask(task);
 
-    console.log(`[TaskQueue] 🔄 并发: ${this.runningCount}/${this.concurrency}`);
-    console.log(`[TaskQueue] ▶️ 开始处理: "${task.query}" [${task.depth}] (队列剩余: ${pending.length - 1})`);
+    logger.info(`[TaskQueue] 🔄 并发: ${this.runningCount}/${this.concurrency}`);
+    logger.info(`[TaskQueue] ▶️ 开始处理: "${task.query}" [${task.depth}] (队列剩余: ${pending.length - 1})`);
 
     try {
       await this.processCallback(task);
       task.status = 'done';
       task.completedAt = Date.now();
       await this.saveTask(task);
-      console.log(`[TaskQueue] ✅ 完成: "${task.query}" (${((task.completedAt - (task.startedAt || task.createdAt)) / 1000).toFixed(1)}s)`);
+      logger.info(`[TaskQueue] ✅ 完成: "${task.query}" (${((task.completedAt - (task.startedAt || task.createdAt)) / 1000).toFixed(1)}s)`);
     } catch (e: any) {
       task.status = 'failed';
       task.error = e.message;
       task.completedAt = Date.now();
       await this.saveTask(task);
-      console.error(`[TaskQueue] ❌ 失败: "${task.query}" — ${e.message}`);
+      logger.error(`[TaskQueue] ❌ 失败: "${task.query}" — ${e.message}`);
     } finally {
       this.runningCount--;
       this.processNext();
@@ -136,7 +137,7 @@ export class TaskQueue {
     const task = await db.get('SELECT id, status, query FROM tasks WHERE id = ?', id);
     if (task && (task.status === 'pending' || task.status === 'running')) {
       await db.run("UPDATE tasks SET status = 'canceled' WHERE id = ?", id);
-      console.log(`[TaskQueue] 🛑 强制中止任务: "${task.query}" (id=${task.id})`);
+      logger.info(`[TaskQueue] 🛑 强制中止任务: "${task.query}" (id=${task.id})`);
     }
   }
 

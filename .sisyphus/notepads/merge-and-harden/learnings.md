@@ -110,3 +110,13 @@
 - Streaming responses don't return `usage` in the standard OpenAI SSE format, so tracking only applies to non-streaming calls
 - `missionId` is passed as `undefined` for now — threading it through the full call chain is a separate concern
 - `GET /api/token-usage` added to `src/server/app.ts`, follows same pattern as existing `/api/config` routes
+
+## T14: Structured Logger
+
+- Created `src/utils/logger.ts` with structured JSON output (timestamp, level, msg, meta)
+- Replaced 76 console.log/warn/error calls across 6 files with logger.* calls
+- Remaining 0 console calls in target files (100% replacement)
+- 57 logger.* usages across worker.ts and workflows/*.ts
+- The `.catch(console.error)` pattern needs special handling — can't just find-replace, need to wrap in arrow function
+- `swarm-pipeline.ts` has 17 console.log calls but was NOT in scope (T14 only targets 6 specific files)
+- All 78 tests pass — logger output visible as structured JSON in test stdout

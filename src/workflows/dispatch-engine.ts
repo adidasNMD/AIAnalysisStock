@@ -1,4 +1,5 @@
 import { eventBus } from '../utils/event-bus';
+import { logger } from '../utils/logger';
 import { analyzeTicker, checkTAHealth, type TAAnalysisResult } from '../utils/ta-client';
 import { fetchTickerFullData, fetchMacroEnvironment, checkOpenBBHealth, type OpenBBTickerData } from '../utils/openbb-provider';
 import { sendEntrySignal, sendMessage, sendStopLossAlert } from '../utils/telegram';
@@ -112,7 +113,7 @@ export async function dispatchMission(
       const lifecycleResult = await lifecycleEngine.evaluateAllActiveNarratives();
       antiSellGuards = lifecycleResult.antiSellGuards;
     } catch (e: any) {
-      console.error(`[Dispatcher] Lifecycle evaluation failed: ${e.message}`);
+      logger.error(`[Dispatcher] Lifecycle evaluation failed: ${e.message}`);
     }
 
     for (const consensus of mission.consensus) {
@@ -153,9 +154,9 @@ export async function dispatchMission(
     if (mission.decisionTrail.length > 0) {
       try {
         const trailPath = saveTrailReport(mission.decisionTrail, mission.id);
-        console.log(`[Dispatcher] 📋 Decision trail saved: ${trailPath}`);
+        logger.info(`[Dispatcher] 📋 Decision trail saved: ${trailPath}`);
       } catch (e: any) {
-        console.warn(`[Dispatcher] ⚠️ Trail report save failed: ${e.message}`);
+        logger.warn(`[Dispatcher] ⚠️ Trail report save failed: ${e.message}`);
       }
     }
     mission.totalDurationMs = Date.now() - startTime;
@@ -195,7 +196,7 @@ async function runOpenClawPhase(
     eventBus.emitSystem('info', `🔵 OpenClaw 完成 (${Math.round(mission.openclawDurationMs / 1000)}s)`);
   } catch (e: any) {
     mission.openclawDurationMs = Date.now() - t0;
-    console.error(`[Dispatcher] OpenClaw 失败: ${e.message}`);
+    logger.error(`[Dispatcher] OpenClaw 失败: ${e.message}`);
   }
 }
 
@@ -210,7 +211,7 @@ async function runParallelEnrichment(
       const isOnline = await checkOpenBBHealth();
       if (!isOnline) {
         const msg = '[Dispatcher] ⚠️ OpenBB 数据引擎离线或鉴权拒绝，强行跳过量化数据收集。请前往诊断中心查看详细原因。';
-        console.warn(msg);
+        logger.warn(msg);
         eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] ${msg}`);
         return [] as OpenBBTickerData[];
       }
@@ -224,7 +225,7 @@ async function runParallelEnrichment(
           results.push(data);
         } catch (e: any) {
           const msg = `OpenBB ${ticker} 查询崩溃: ${e.message}`;
-          console.error(`[Dispatcher] ${msg}`);
+          logger.error(`[Dispatcher] ${msg}`);
           eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] ${msg}`);
         }
       }
@@ -236,7 +237,7 @@ async function runParallelEnrichment(
       saveMission(mission);
       const isOnline = await checkTAHealth();
       if (!isOnline) {
-        console.log('[Dispatcher] ⚠️ TradingAgents 离线，跳过第二大脑分析');
+        logger.info('[Dispatcher] ⚠️ TradingAgents 离线，跳过第二大脑分析');
         return [] as TAAnalysisResult[];
       }
       const t0 = Date.now();

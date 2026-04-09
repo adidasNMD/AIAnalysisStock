@@ -1,5 +1,6 @@
 import { checkSMACross } from '../tools/market-data';
 import { sendStopLossAlert } from '../utils/telegram';
+import { logger } from '../utils/logger';
 import type { DecisionTrailEntry, TickerConsensus, UnifiedMission } from './types';
 
 export async function triggerConsensusAlerts(consensus: TickerConsensus[]): Promise<void> {
@@ -193,7 +194,7 @@ export async function computeConsensus(mission: UnifiedMission): Promise<TickerC
 
     if (agreement === 'disagree') {
       vetoReason = `双大脑冲突: OpenClaw=${ocVerdict} vs TradingAgents=${taVerdict}，强制 HOLD`;
-      console.log(`[Consensus] ⚠️ ${vetoReason}`);
+      logger.warn(`[Consensus] ⚠️ ${vetoReason}`);
     }
 
     const smaVetoEnabled = process.env.SMA250_VETO_ENABLED !== 'false';
@@ -209,10 +210,10 @@ export async function computeConsensus(mission: UnifiedMission): Promise<TickerC
           vetoed = true;
           vetoReason = `${ticker} 处于 250日均线下方 (价格 ${sma250.price} < SMA250 ${sma250.sma})，右侧趋势未确认，否决 BUY`;
           agreement = 'blocked';
-          console.log(`[Consensus] 🚫 SMA250 否决: ${vetoReason}`);
+          logger.warn(`[Consensus] 🚫 SMA250 否决: ${vetoReason}`);
         }
       } catch (e: any) {
-        console.warn(`[Consensus] SMA250 检查失败 ${ticker}: ${e.message}，跳过否决`);
+        logger.warn(`[Consensus] SMA250 检查失败 ${ticker}: ${e.message}，跳过否决`);
       }
     }
 

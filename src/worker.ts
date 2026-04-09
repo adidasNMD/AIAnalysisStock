@@ -18,6 +18,7 @@ import { taskQueue } from './utils/task-queue';
 import { startServer } from './server/app';
 import { dispatchMission } from './workflows';
 import { eventBus } from './utils/event-bus';
+import { logger } from './utils/logger';
 import { getDb } from './db';
 import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
 import { getRuntimeConfig } from './config';
@@ -34,7 +35,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  console.log(`[Shutdown] Received ${signal}, draining...`);
+  logger.info(`[Shutdown] Received ${signal}, draining...`);
 
   const maxWait = 30_000;
   const pollInterval = 1_000;
@@ -45,17 +46,17 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   if (taskQueue.getRunningCount() > 0) {
-    console.log(`[Shutdown] Timed out waiting for ${taskQueue.getRunningCount()} tasks to drain`);
+    logger.warn(`[Shutdown] Timed out waiting for ${taskQueue.getRunningCount()} tasks to drain`);
   } else {
-    console.log(`[Shutdown] All tasks drained`);
+    logger.info(`[Shutdown] All tasks drained`);
   }
 
   try {
     const db = await getDb();
     await db.close();
-    console.log(`[Shutdown] Database closed`);
+    logger.info(`[Shutdown] Database closed`);
   } catch (e: any) {
-    console.error(`[Shutdown] Error closing database: ${e.message}`);
+    logger.error(`[Shutdown] Error closing database: ${e.message}`);
   }
 
   process.exit(0);
@@ -80,11 +81,11 @@ const LEADER_TICKERS = [...DEFAULT_LEADER_TICKERS];
 // 多级触发哨兵模式 + TrendRadar 趋势雷达 + 实时交互(Interactive Bot)
 // ==========================================
 
-console.log(`\n==================================================================`);
-console.log(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
-console.log(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
-console.log(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
-console.log(`==================================================================\n`);
+logger.info(`\n==================================================================`);
+logger.info(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
+logger.info(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
+logger.info(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
+logger.info(`==================================================================\n`);
 
 const orchestrator = new AgentSwarmOrchestrator();
 const trendRadar = new TrendRadar();
@@ -99,7 +100,7 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
   await healthMonitor.checkConnectivity();
   // 2. 恢复积压的任务
   const recovered = await taskQueue.recover();
-  if (recovered > 0) console.log(`[Sentinel] 🔄 恢复了 ${recovered} 个积压任务`);
+  if (recovered > 0) logger.info(`[Sentinel] 🔄 恢复了 ${recovered} 个积压任务`);
   // 3. 注册队列处理器
   taskQueue.onProcess(async (task) => {
     try {
@@ -192,7 +193,7 @@ interface WatchlistConfig {
 function loadWatchlist(): WatchlistConfig {
   const watchlistPath = path.join(process.cwd(), 'data', 'watchlist.json');
   if (!fs.existsSync(watchlistPath)) {
-    console.error('[Sentinel] ❌ watchlist.json not found!');
+    logger.error('[Sentinel] ❌ watchlist.json not found!');
     return { tickers: [], eventSources: [] };
   }
   const config: WatchlistConfig = JSON.parse(fs.readFileSync(watchlistPath, 'utf-8'));
@@ -217,7 +218,7 @@ const COOLDOWN_MS = Number(process.env.T1_COOLDOWN_MS) || T1_COOLDOWN_MS;
 export function shouldAlert(ticker: string): boolean {
   const lastAlert = alertCooldown.get(ticker);
   if (lastAlert && Date.now() - lastAlert < COOLDOWN_MS) {
-    console.log(`[T1] ⏳ ${ticker} 在冷却期内，跳过 (${Math.round((Date.now() - lastAlert) / 60000)}min ago)`);
+    logger.info(`[T1] ⏳ ${ticker} 在冷却期内，跳过 (${Math.round((Date.now() - lastAlert) / 60000)}min ago)`);
     return false;
   }
   alertCooldown.set(ticker, Date.now());
@@ -253,7 +254,7 @@ if (T1_ENABLED) {
           }
         }
       } catch (e: any) {
-        console.error(`[T1] 扫描 ${t.symbol} 失败: ${e.message}`);
+        logger.error(`[T1] 扫描 ${t.symbol} 失败: ${e.message}`);
       }
     }
 
@@ -269,9 +270,9 @@ if (T1_ENABLED) {
       }
     }
   });
-  console.log('[Sentinel] ✅ T1 价量哨兵已启用 (每5分钟, cooldown=' + COOLDOWN_MS / 60000 + 'min)');
+  logger.info('[Sentinel] ✅ T1 价量哨兵已启用 (每5分钟, cooldown=' + COOLDOWN_MS / 60000 + 'min)');
 } else {
-  console.log('[Sentinel] ⏸️ T1 价量哨兵已禁用 (T1_ENABLED=false)');
+  logger.info('[Sentinel] ⏸️ T1 价量哨兵已禁用 (T1_ENABLED=false)');
 }
 
 // ==========================================
@@ -296,7 +297,7 @@ cron.schedule('30 * * * *', async () => {
       // 高优先级事件自动触发分析
       for (const alert of rssAlerts) {
         if (alert.matchedKeywords.length >= 2) {
-          console.log(`[Sentinel] 🧠 高命中率事件排队分析: ${alert.title}`);
+          logger.info(`[Sentinel] 🧠 高命中率事件排队分析: ${alert.title}`);
           // T2 事件驱动使用 'standard' 深度
           await taskQueue.enqueue(alert.title, 'standard', 'T2_RSS_Event', 50);
         }
@@ -327,7 +328,7 @@ cron.schedule('30 * * * *', async () => {
 cron.schedule('30 08 * * 1-5', async () => {
   if (isShuttingDown) return;
   const watchlist = loadWatchlist();
-  console.log(`\n[Sentinel] 📊 执行每日全量技术面快照...`);
+  logger.info(`\n[Sentinel] 📊 执行每日全量技术面快照...`);
 
   let snapshot = '📊 *每日 Watchlist 技术面快照*\n\n';
   for (const ticker of watchlist.tickers) {
@@ -344,7 +345,7 @@ cron.schedule('30 08 * * 1-5', async () => {
     const sectorSignals = await scanAllSectorETFs();
     snapshot += `\n${generateSectorOverview(sectorSignals)}`;
   } catch (e: any) {
-    console.error(`[Sentinel] Sector scan failed: ${e.message}`);
+    logger.error(`[Sentinel] Sector scan failed: ${e.message}`);
   }
 
   // 新增：动态观察池概览
@@ -359,14 +360,14 @@ cron.schedule('30 08 * * 1-5', async () => {
     const macroAnalysis = await macroEngine.analyze();
     snapshot += `\n${macroEngine.formatForReport(macroAnalysis)}`;
   } catch (e: any) {
-    console.error(`[Sentinel] Macro analysis failed: ${e.message}`);
+    logger.error(`[Sentinel] Macro analysis failed: ${e.message}`);
   }
 
   try {
     const perfSummary = await updatePerformance();
     snapshot += `\n${formatPerformanceReport(perfSummary)}`;
   } catch (e: any) {
-    console.error(`[Sentinel] Performance tracking failed: ${e.message}`);
+    logger.error(`[Sentinel] Performance tracking failed: ${e.message}`);
   }
 
   try {
@@ -389,7 +390,7 @@ cron.schedule('30 08 * * 1-5', async () => {
       antiSellGuards.forEach((g: any) => snapshot += `> ${typeof g === 'string' ? g : `${g.ticker}: ${g.reason}`}\n\n`);
     }
   } catch (e: any) {
-    console.error(`[Sentinel] Lifecycle evaluation failed: ${e.message}`);
+    logger.error(`[Sentinel] Lifecycle evaluation failed: ${e.message}`);
   }
 
   try {
@@ -409,7 +410,7 @@ cron.schedule('30 08 * * 1-5', async () => {
       }
     }
   } catch (e: any) {
-    console.error(`[Sentinel] Leader SMA50 check failed: ${e.message}`);
+    logger.error(`[Sentinel] Leader SMA50 check failed: ${e.message}`);
   }
 
   await sendReportSummary('Watchlist 盘前扫描', snapshot);
@@ -419,7 +420,7 @@ cron.schedule('30 08 * * 1-5', async () => {
   for (const sector of sectors) {
     const sectorTickers = watchlist.tickers.filter(t => t.sector === sector);
     const narrative = sectorTickers[0]?.narrative || sector;
-    console.log(`[Sentinel] 🧠 赛道每日深度分析排队: ${sector} — ${narrative}`);
+    logger.info(`[Sentinel] 🧠 赛道每日深度分析排队: ${sector} — ${narrative}`);
     // T3 盘前日报使用 'deep' 深度，但不占用最高优先级
     await taskQueue.enqueue(narrative, 'deep', 'T3_Daily_Sector', 10);
   }
@@ -430,7 +431,7 @@ cron.schedule('30 08 * * 1-5', async () => {
 // ==========================================
 cron.schedule(T4_CRON_EXPRESSION, async () => {
   if (isShuttingDown) return;
-  console.log(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
+  logger.info(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
   
   try {
     const analysis = await trendRadar.scan();
@@ -441,7 +442,7 @@ cron.schedule(T4_CRON_EXPRESSION, async () => {
 
     // 新版：如果趋势报告中提及了大量 ticker，自动排队触发分析
     if (analysis.mentionedTickers && analysis.mentionedTickers.length >= 5) {
-      console.log(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，排队标准分析...`);
+      logger.info(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，排队标准分析...`);
       const topicSummary = analysis.report.substring(0, 200).replace(/\n/g, ' ');
       const hash = simpleHash(analysis.report);
       const last = trendCooldown.get(hash);
@@ -449,11 +450,11 @@ cron.schedule(T4_CRON_EXPRESSION, async () => {
         trendCooldown.set(hash, Date.now());
         await taskQueue.enqueue(`趋势雷达洞察 — ${topicSummary}`, 'standard', 'T4_Trend_Radar', 30);
       } else {
-        console.log(`[Sentinel] T4 TrendRadar cooldown active for this report. Skipping enqueue.`);
+        logger.info(`[Sentinel] T4 TrendRadar cooldown active for this report. Skipping enqueue.`);
       }
     }
   } catch (e: any) {
-    console.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
+    logger.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
   }
 });
 
@@ -461,73 +462,73 @@ cron.schedule(T4_CRON_EXPRESSION, async () => {
 // 手动触发模式
 // ==========================================
 if (process.argv.includes('--run-now')) {
-  console.log(`[Sentinel] '--run-now' detected. Executing immediate Watchlist scan...\n`);
+  logger.info(`[Sentinel] '--run-now' detected. Executing immediate Watchlist scan...\n`);
 
   (async () => {
     const watchlist = loadWatchlist();
 
     // 先执行一轮技术面快照
-    console.log(`[Sentinel] 📊 技术面快照:`);
+    logger.info(`[Sentinel] 📊 技术面快照:`);
     for (const ticker of watchlist.tickers) {
       try {
         const tech = await generateTechSnapshot(ticker.symbol);
-        console.log(`  ${tech}`);
+        logger.info(`  ${tech}`);
       } catch (e: any) {
-        console.log(`  [${ticker.symbol}] 数据获取失败: ${e.message}`);
+        logger.info(`  [${ticker.symbol}] 数据获取失败: ${e.message}`);
       }
     }
 
     // 板块 ETF 概览
-    console.log(`\n[Sentinel] 📊 板块 ETF 概览:`);
+    logger.info(`\n[Sentinel] 📊 板块 ETF 概览:`);
     try {
       const sectorSignals = await scanAllSectorETFs();
-      console.log(generateSectorOverview(sectorSignals));
+      logger.info(generateSectorOverview(sectorSignals));
     } catch (e: any) {
-      console.log(`  板块扫描失败: ${e.message}`);
+      logger.info(`  板块扫描失败: ${e.message}`);
     }
 
     // 再执行异动检测
-    console.log(`\n[Sentinel] 🔍 价量异动扫描:`);
+    logger.info(`\n[Sentinel] 🔍 价量异动扫描:`);
     for (const ticker of watchlist.tickers) {
       try {
         const alerts = await scanTicker(ticker.symbol, ticker.alerts);
         if (alerts.length > 0) {
-          alerts.forEach(a => console.log(`  ⚡ ${a.details}`));
+          alerts.forEach(a => logger.info(`  ⚡ ${a.details}`));
         } else {
-          console.log(`  ✅ ${ticker.symbol}: 无异动`);
+          logger.info(`  ✅ ${ticker.symbol}: 无异动`);
         }
       } catch (e: any) {
-        console.log(`  ❌ ${ticker.symbol}: 扫描失败 — ${e.message}`);
+        logger.info(`  ❌ ${ticker.symbol}: 扫描失败 — ${e.message}`);
       }
     }
 
     // 动态观察池概览
     const dynamicTickers = getActiveTickers();
     if (dynamicTickers.length > 0) {
-      console.log(`\n[Sentinel] 📋 动态观察池 (${dynamicTickers.length} 只标的):`);
+      logger.info(`\n[Sentinel] 📋 动态观察池 (${dynamicTickers.length} 只标的):`);
       for (const dt of dynamicTickers) {
-        console.log(`  ${dt.status === 'focused' ? '🎯' : '👀'} ${dt.symbol} (${dt.name}) | ${dt.chainLevel} | 评分${dt.multibaggerScore} | 来源: ${dt.discoverySource}`);
+        logger.info(`  ${dt.status === 'focused' ? '🎯' : '👀'} ${dt.symbol} (${dt.name}) | ${dt.chainLevel} | 评分${dt.multibaggerScore} | 来源: ${dt.discoverySource}`);
       }
     } else {
-      console.log(`\n[Sentinel] 📋 动态观察池为空（运行 --trend 触发标的发现）`);
+      logger.info(`\n[Sentinel] 📋 动态观察池为空（运行 --trend 触发标的发现）`);
     }
 
     // TrendRadar 扫描
     if (process.argv.includes('--trend')) {
-      console.log(`\n[Sentinel] 📡 执行 TrendRadar 趋势扫描...`);
+      logger.info(`\n[Sentinel] 📡 执行 TrendRadar 趋势扫描...`);
       try {
         const analysis = await trendRadar.scan();
-        console.log(trendRadar.formatForTelegram(analysis));
+        logger.info(trendRadar.formatForTelegram(analysis));
       } catch (e: any) {
-        console.log(`  TrendRadar 扫描失败: ${e.message}`);
+        logger.info(`  TrendRadar 扫描失败: ${e.message}`);
       }
     }
 
     // 可选深度分析
     if (process.argv.includes('--deep')) {
       const query = process.argv[process.argv.indexOf('--deep') + 1] || watchlist.tickers[0]?.narrative || 'AI Infrastructure';
-      console.log(`\n[Sentinel] 🧠 手动触发深度分析: ${query}`);
+      logger.info(`\n[Sentinel] 🧠 手动触发深度分析: ${query}`);
       await taskQueue.enqueue(query, 'deep', 'manual', 100);
     }
-  })().catch(console.error);
+  })().catch((e: any) => logger.error(e.message || String(e)));
 }
