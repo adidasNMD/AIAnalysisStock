@@ -145,6 +145,10 @@ export class TaskQueue {
     await db.run('UPDATE tasks SET statePayload = ? WHERE id = ?', payload, id);
   }
 
+  getRunningCount(): number {
+    return this.runningCount;
+  }
+
   async getStatusSummary(): Promise<string> {
     const db = await getDb();
     const rows = await db.all('SELECT status, COUNT(*) as count FROM tasks GROUP BY status');

@@ -70,3 +70,20 @@
 - `SwarmEventBus` now tracks listeners in `listenerRegistry`, making per-mission cleanup explicit instead of relying only on process shutdown.
 - Lowering `setMaxListeners` to 50 keeps warnings meaningful while cleanupMission/dispose handle lifecycle cleanup.
 - `dispatchMission()` now calls `eventBus.cleanupMission(mission.id)` in `finally`, so mission-scoped listeners are released even on failures.
+
+## T10: Graceful Shutdown
+
+- `TaskQueue.runningCount` was already private; exposed via `getRunningCount()` — single line addition
+- `gracefulShutdown()` uses a 30s poll loop (1s interval) to wait for task drain before DB close
+- `isShuttingDown` flag guards all 4 cron callbacks (T1, T2, T3, T4) to prevent new work during shutdown
+- `getDb()` imported from `../db` — same pattern used in task-queue.ts already
+- Double-invocation guard (`if (isShuttingDown) return`) prevents race between SIGTERM and SIGINT
+- T11 will add `eventBus.dispose()` separately — not included here per task boundaries
+
+## T12 — Runtime Config API (2026-04-09)
+- `app.ts` already has `express.json()` middleware — no need to add body parsing
+- T10 added `isShuttingDown` guard and `getDb` import to worker.ts — T12 check placed right after shutdown guard
+- Existing file convention: every API route group in `app.ts` gets a `// API:` comment prefix
+- `GET /api/config/models` already exists for model config — new runtime config at `/api/config` (no collision)
+- Pattern: `allowed` array whitelist in PATCH handler prevents arbitrary field injection
+- Runtime config is intentionally in-memory only — reboot resets to defaults from constants.ts
