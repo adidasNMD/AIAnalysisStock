@@ -64,3 +64,9 @@
 - computeConsensus remains async and preserves SMA250 veto flow and vetoReason as optional string (undefined when absent).
 - All workflow import sites were moved to the workflows barrel path and mission-dispatcher.ts was removed.
 - Verification passed: vitest 78/78 green, grep for mission-dispatcher in src/**/*.ts returned no matches, split files exist.
+
+## [2026-04-09] T11 event-bus cleanup
+
+- `SwarmEventBus` now tracks listeners in `listenerRegistry`, making per-mission cleanup explicit instead of relying only on process shutdown.
+- Lowering `setMaxListeners` to 50 keeps warnings meaningful while cleanupMission/dispose handle lifecycle cleanup.
+- `dispatchMission()` now calls `eventBus.cleanupMission(mission.id)` in `finally`, so mission-scoped listeners are released even on failures.

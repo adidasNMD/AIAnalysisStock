@@ -170,6 +170,8 @@ export async function dispatchMission(
     saveMission(mission);
     eventBus.emitSystem('error', `❌ Mission ${missionId} 失败: ${e.message}`);
     throw e;
+  } finally {
+    eventBus.cleanupMission(mission.id);
   }
 
   return mission;
