@@ -17,7 +17,8 @@ import { eventBus } from '../utils/event-bus';
 import { analyzeTicker, checkTAHealth, type TAAnalysisResult } from '../utils/ta-client';
 import { fetchTickerFullData, fetchMacroEnvironment, checkOpenBBHealth, type OpenBBTickerData } from '../utils/openbb-provider';
 import { checkSMACross } from '../tools/market-data';
-import { sendStopLossAlert } from '../utils/telegram';
+import { sendStopLossAlert, sendEntrySignal, sendMessage } from '../utils/telegram';
+import { NarrativeLifecycleEngine } from '../agents/lifecycle/engine';
 import * as fs from 'fs';
 import * as path from 'path';
 import { saveTrailReport } from '../utils/trail-renderer';
@@ -296,7 +297,56 @@ export async function dispatchMission(
 
     // Step Final: 计算双大脑共识
     mission.consensus = await computeConsensus(mission);
+
+    const lifecycleEngine = new NarrativeLifecycleEngine();
+    let antiSellGuards: Array<{ ticker: string; reason: string }> = [];
+    try {
+      const lifecycleResult = await lifecycleEngine.evaluateAllActiveNarratives();
+      antiSellGuards = lifecycleResult.antiSellGuards;
+    } catch (e: any) {
+      console.error(`[Dispatcher] Lifecycle evaluation failed: ${e.message}`);
+    }
+
+    for (const consensus of mission.consensus) {
+      const guard = antiSellGuards.find(g => g.ticker === consensus.ticker);
+      if (guard && (consensus.taVerdict === 'SELL' || consensus.openclawVerdict === 'SELL')) {
+        consensus.vetoed = true;
+        consensus.vetoReason = `🛡️ 防卖飞: ${guard.reason}`;
+        eventBus.emitSystem('info', `🛡️ [ANTI_SELL] ${consensus.ticker}: TA/OC 发出 SELL 但龙头健康 → 否决清仓`);
+      }
+    }
+
+    for (const c of mission.consensus) {
+      if (c.agreement === 'agree' && !c.vetoed && c.openclawVerdict === 'BUY' && c.taVerdict === 'BUY') {
+        try {
+          await sendEntrySignal(c.ticker, '双脑共识一致看多 — 入场信号');
+        } catch (err) {
+          eventBus.emitSystem('error', `Failed to send entry signal for ${c.ticker}: ${err}`);
+        }
+      }
+
+      if (c.openbbVerdict === 'FAIL') {
+        try {
+          await sendStopLossAlert(c.ticker, 'OpenBB 数据评级 FAIL — 风控预警');
+        } catch (err) {
+          eventBus.emitSystem('error', `Failed to send stop loss alert for ${c.ticker}: ${err}`);
+        }
+      }
+    }
+
     await triggerConsensusAlerts(mission.consensus);
+
+    const vetoedTickers = mission.consensus.filter(c => c.vetoed);
+    if (vetoedTickers.length > 0) {
+      try {
+        await sendMessage(
+          `⚠️ *双脑共识否决报告*\n\n${vetoedTickers.map(v => `🚫 *${v.ticker}*: ${v.vetoReason ?? ''}`).join('\n')}\n\n_右侧跟风纪律: 双脑冲突时不行动_`
+        );
+      } catch (err) {
+        eventBus.emitSystem('error', `Failed to send veto summary: ${err}`);
+      }
+    }
+
     mission.decisionTrail = buildDecisionTrail(mission);
     if (mission.decisionTrail.length > 0) {
       try {
