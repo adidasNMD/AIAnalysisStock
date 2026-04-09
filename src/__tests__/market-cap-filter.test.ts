@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TickerDiscoveryEngine } from '../agents/discovery/ticker-discovery';
 import * as marketData from '../tools/market-data';
+import { generateTextCompletion } from '../utils/llm';
 
 // Mock all external dependencies so tests run without real network calls
 vi.mock('../tools/market-data', () => ({
@@ -115,5 +116,35 @@ describe('market cap filtering in TickerDiscoveryEngine', () => {
     const result = await engine.discoverFromTrend('AI数据中心');
 
     expect(result.tickers).toHaveLength(1);
+  });
+
+  it('returns rejected tickers with reasons', async () => {
+    vi.mocked(generateTextCompletion).mockResolvedValue('分析报告: $HUGE $TINY $GOOD');
+
+    const quotes: Record<string, number> = {
+      HUGE: 100_000_000_000,
+      TINY: 50_000_000,
+      GOOD: 5_000_000_000,
+    };
+
+    vi.mocked(marketData.getQuote).mockImplementation(async (symbol: string) => ({
+      ...makeQuote(quotes[symbol] ?? 5_000_000_000),
+      symbol,
+    }));
+
+    const result = await engine.discoverFromTrend('test theme');
+
+    expect(result.rejectedTickers).toBeDefined();
+    expect(result.rejectedTickers).toHaveLength(2);
+
+    const megaRej = result.rejectedTickers!.find((r) => r.symbol === 'HUGE');
+    expect(megaRej?.reason).toBe('mega_cap');
+    expect(megaRej?.marketCap).toBe(100_000_000_000);
+    expect(megaRej?.thresholdMax).toBe(50_000_000_000);
+
+    const microRej = result.rejectedTickers!.find((r) => r.symbol === 'TINY');
+    expect(microRej?.reason).toBe('micro_cap');
+    expect(microRej?.marketCap).toBe(50_000_000);
+    expect(microRej?.thresholdMin).toBe(200_000_000);
   });
 });

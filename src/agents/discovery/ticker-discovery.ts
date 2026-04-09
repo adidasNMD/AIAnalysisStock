@@ -46,6 +46,14 @@ export interface DiscoveredTicker {
   risks: string[];
 }
 
+export interface RejectedTicker {
+  symbol: string;
+  reason: 'mega_cap' | 'micro_cap' | 'invalid' | 'error';
+  marketCap?: number;
+  thresholdMin?: number;
+  thresholdMax?: number;
+}
+
 export class TickerDiscoveryEngine {
   private investorProfile: string;
 
@@ -60,7 +68,7 @@ export class TickerDiscoveryEngine {
     trendName: string,
     trendDescription?: string,
     existingTickers?: string[],
-  ): Promise<{ tickers: DiscoveredTicker[]; supplyChainLogic: string }> {
+  ): Promise<{ tickers: DiscoveredTicker[]; supplyChainLogic: string; rejectedTickers?: RejectedTicker[] }> {
     console.log(`\n[TickerDiscovery] 🔍 开始从趋势中发现标的: "${trendName}"`);
 
     // 多源数据采集
@@ -119,6 +127,7 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     // Yahoo Finance 验证
     const validatedTickers: DiscoveredTicker[] = [];
+    const rejectedTickers: RejectedTicker[] = [];
     const MEGA_CAP_THRESHOLD = Number(process.env.MARKET_CAP_MAX) || 50_000_000_000;
     const MARKET_CAP_MIN = Number(process.env.MARKET_CAP_MIN) || 200_000_000;
 
@@ -127,16 +136,19 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
         const quote = await getQuote(symbol);
         if (!quote || quote.price <= 0) {
           console.log(`[TickerDiscovery] ⚠️ 跳过无效标的: ${symbol}`);
+          rejectedTickers.push({ symbol, reason: 'invalid' });
           continue;
         }
 
         if (quote.marketCap > MEGA_CAP_THRESHOLD) {
           console.log(`[TickerDiscovery] 🚫 排除巨头: ${symbol} ($${(quote.marketCap / 1e9).toFixed(0)}B)`);
+          rejectedTickers.push({ symbol, reason: 'mega_cap', marketCap: quote.marketCap, thresholdMax: MEGA_CAP_THRESHOLD });
           continue;
         }
 
         if (quote.marketCap < MARKET_CAP_MIN) {
           console.log(`[TickerDiscovery] 🚫 排除微型股: ${symbol} ($${(quote.marketCap / 1e6).toFixed(0)}M)`);
+          rejectedTickers.push({ symbol, reason: 'micro_cap', marketCap: quote.marketCap, thresholdMin: MARKET_CAP_MIN });
           continue;
         }
 
@@ -160,6 +172,7 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
         });
       } catch (e: any) {
         console.log(`[TickerDiscovery] ⚠️ 跳过无效标的: ${symbol} (${e.message})`);
+        rejectedTickers.push({ symbol, reason: 'error' });
       }
     }
 
@@ -169,7 +182,7 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
       console.log(`  ${levelIcon} ${t.symbol} (${t.name}) | ${t.chainLevel} | 评分${t.multibaggerScore}`);
     }
 
-    return { tickers: validatedTickers, supplyChainLogic: analysisReport.substring(0, 500) };
+    return { tickers: validatedTickers, supplyChainLogic: analysisReport.substring(0, 500), rejectedTickers };
   }
 
   private async collectRedditTickers(trendName: string): Promise<Map<string, number>> {
