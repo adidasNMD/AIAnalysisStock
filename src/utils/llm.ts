@@ -341,7 +341,7 @@ export async function generateStructuredOutput<T>(
       let parsedJson: any;
       try {
         parsedJson = JSON.parse(cleanedContent);
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.warn(`\n====== [RAW OUTPUT PARSE ERROR] ======`);
         console.warn(`AI 没有按机器格式排版，而是输出了对话文本:\n${cleanedContent}`);
         console.warn(`💡 [系统指令] 按照“非强制格式化”原则，系统不进行报错阻断，已自动将对话原意通过 Proxy 发放给下游 Agent 继续深度推进！`);
@@ -354,17 +354,16 @@ export async function generateStructuredOutput<T>(
         console.warn(`\n⚠️ [LLM Utility] 宽松模式: AI 输出与预期结构不完全匹配 (缺失或类型错误)，已强制放行。\n不匹配细节: ${parsedResult.error.issues.map((err: any) => `${err.path.join('.')}: ${err.message}`).join(', ')}\n`);
       }
       return parsedJson as T;
-    } catch (err: any) {
-      lastError = err;
-      const isTimeout = err.name === 'AbortError';
-      const isParseError = err instanceof SyntaxError || (err.issues && Array.isArray(err.issues)); // ZodError checking
-      const isRetryable = isTimeout || isParseError || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503')));
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const isTimeout = lastError.name === 'AbortError';
+      const isParseError = lastError instanceof SyntaxError || ('issues' in lastError && Array.isArray((lastError as Record<string, unknown>).issues));
+      const isRetryable = isTimeout || isParseError || (lastError.message && (lastError.message.includes('429') || lastError.message.includes('500') || lastError.message.includes('503')));
 
-      console.error(`[LLM Utility] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
+      console.error(`[LLM Utility] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : lastError.message}`);
 
       if (!isRetryable && attempt === 0) {
-        // 非可重试错误，直接抛出
-        throw err;
+        throw lastError;
       }
     }
   }
@@ -526,15 +525,15 @@ export async function generateTextCompletion(
 
       return rawContent;
 
-    } catch (err: any) {
-      lastError = err;
-      const isTimeout = err.name === 'AbortError';
-      const isRetryable = isTimeout || (err.message && (err.message.includes('429') || err.message.includes('500') || err.message.includes('503') || err.message.includes('空数据') || err.message.includes('空文本')));
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const isTimeout = lastError.name === 'AbortError';
+      const isRetryable = isTimeout || (lastError.message && (lastError.message.includes('429') || lastError.message.includes('500') || lastError.message.includes('503') || lastError.message.includes('空数据') || lastError.message.includes('空文本')));
 
-      console.error(`[LLM Text] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : err.message}`);
+      console.error(`[LLM Text] ❌ 请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}): ${isTimeout ? '超时' : lastError.message}`);
 
       if (!isRetryable && attempt === 0) {
-        throw err;
+        throw lastError;
       }
     }
   }

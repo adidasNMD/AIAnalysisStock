@@ -212,8 +212,9 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
           agreement = 'blocked';
           logger.warn(`[Consensus] 🚫 SMA250 否决: ${vetoReason}`);
         }
-      } catch (e: any) {
-        logger.warn(`[Consensus] SMA250 检查失败 ${ticker}: ${e.message}，跳过否决`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.warn(`[Consensus] SMA250 检查失败 ${ticker}: ${msg}，跳过否决`);
       }
     }
 

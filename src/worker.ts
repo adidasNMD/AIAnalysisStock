@@ -55,8 +55,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
     const db = await getDb();
     await db.close();
     logger.info(`[Shutdown] Database closed`);
-  } catch (e: any) {
-    logger.error(`[Shutdown] Error closing database: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Shutdown] Error closing database: ${msg}`);
   }
 
   process.exit(0);
@@ -156,8 +157,9 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
       }
 
       healthMonitor.recordSuccess();
-    } catch (e: any) {
-      healthMonitor.recordFailure(e.message);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      healthMonitor.recordFailure(msg);
       throw e;
     }
   });
@@ -256,8 +258,9 @@ if (T1_ENABLED) {
             allAlerts.push(alert);
           }
         }
-      } catch (e: any) {
-        logger.error(`[T1] 扫描 ${t.symbol} 失败: ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.error(`[T1] 扫描 ${t.symbol} 失败: ${msg}`);
       }
     }
 
@@ -338,7 +341,7 @@ cron.schedule('30 08 * * 1-5', async () => {
     try {
       const tech = await generateTechSnapshot(ticker.symbol);
       snapshot += `${tech}\n`;
-    } catch (e: any) {
+    } catch (e: unknown) {
       snapshot += `[${ticker.symbol}] 数据获取失败\n`;
     }
   }
@@ -347,8 +350,9 @@ cron.schedule('30 08 * * 1-5', async () => {
   try {
     const sectorSignals = await scanAllSectorETFs();
     snapshot += `\n${generateSectorOverview(sectorSignals)}`;
-  } catch (e: any) {
-    logger.error(`[Sentinel] Sector scan failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Sector scan failed: ${msg}`);
   }
 
   // 新增：动态观察池概览
@@ -362,15 +366,17 @@ cron.schedule('30 08 * * 1-5', async () => {
   try {
     const macroAnalysis = await macroEngine.analyze();
     snapshot += `\n${macroEngine.formatForReport(macroAnalysis)}`;
-  } catch (e: any) {
-    logger.error(`[Sentinel] Macro analysis failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Macro analysis failed: ${msg}`);
   }
 
   try {
     const perfSummary = await updatePerformance();
     snapshot += `\n${formatPerformanceReport(perfSummary)}`;
-  } catch (e: any) {
-    logger.error(`[Sentinel] Performance tracking failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Performance tracking failed: ${msg}`);
   }
 
   try {
@@ -392,8 +398,9 @@ cron.schedule('30 08 * * 1-5', async () => {
       snapshot += `\n## 🚦 防卖飞守卫 (Anti-Sell Guards)\n\n`;
       antiSellGuards.forEach((g: any) => snapshot += `> ${typeof g === 'string' ? g : `${g.ticker}: ${g.reason}`}\n\n`);
     }
-  } catch (e: any) {
-    logger.error(`[Sentinel] Lifecycle evaluation failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Lifecycle evaluation failed: ${msg}`);
   }
 
   try {
@@ -412,8 +419,9 @@ cron.schedule('30 08 * * 1-5', async () => {
         }
       }
     }
-  } catch (e: any) {
-    logger.error(`[Sentinel] Leader SMA50 check failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Leader SMA50 check failed: ${msg}`);
   }
 
   await sendReportSummary('Watchlist 盘前扫描', snapshot);
@@ -456,8 +464,9 @@ cron.schedule(T4_CRON_EXPRESSION, async () => {
         logger.info(`[Sentinel] T4 TrendRadar cooldown active for this report. Skipping enqueue.`);
       }
     }
-  } catch (e: any) {
-    logger.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] TrendRadar scan failed: ${msg}`);
   }
 });
 
@@ -476,8 +485,9 @@ if (process.argv.includes('--run-now')) {
       try {
         const tech = await generateTechSnapshot(ticker.symbol);
         logger.info(`  ${tech}`);
-      } catch (e: any) {
-        logger.info(`  [${ticker.symbol}] 数据获取失败: ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.info(`  [${ticker.symbol}] 数据获取失败: ${msg}`);
       }
     }
 
@@ -486,8 +496,9 @@ if (process.argv.includes('--run-now')) {
     try {
       const sectorSignals = await scanAllSectorETFs();
       logger.info(generateSectorOverview(sectorSignals));
-    } catch (e: any) {
-      logger.info(`  板块扫描失败: ${e.message}`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.info(`  板块扫描失败: ${msg}`);
     }
 
     // 再执行异动检测
@@ -500,8 +511,9 @@ if (process.argv.includes('--run-now')) {
         } else {
           logger.info(`  ✅ ${ticker.symbol}: 无异动`);
         }
-      } catch (e: any) {
-        logger.info(`  ❌ ${ticker.symbol}: 扫描失败 — ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.info(`  ❌ ${ticker.symbol}: 扫描失败 — ${msg}`);
       }
     }
 
@@ -522,8 +534,9 @@ if (process.argv.includes('--run-now')) {
       try {
         const analysis = await trendRadar.scan();
         logger.info(trendRadar.formatForTelegram(analysis));
-      } catch (e: any) {
-        logger.info(`  TrendRadar 扫描失败: ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.info(`  TrendRadar 扫描失败: ${msg}`);
       }
     }
 
@@ -533,5 +546,5 @@ if (process.argv.includes('--run-now')) {
       logger.info(`\n[Sentinel] 🧠 手动触发深度分析: ${query}`);
       await taskQueue.enqueue(query, 'deep', 'manual', 100);
     }
-  })().catch((e: any) => logger.error(e.message || String(e)));
+  })().catch((e: unknown) => logger.error(e instanceof Error ? e.message : String(e)));
 }

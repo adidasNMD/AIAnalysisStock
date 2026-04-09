@@ -46,8 +46,9 @@ app.get('/api/queue', async (req: Request, res: Response) => {
       summary,
       tasks: tasks.sort((a, b) => b.createdAt - a.createdAt)
     });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -69,8 +70,9 @@ app.delete('/api/queue/:id', async (req: Request, res: Response) => {
   try {
     await taskQueue.cancelTask(req.params.id as string);
     res.json({ success: true, message: 'Mission canceled' });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -79,8 +81,9 @@ app.get('/api/narratives', async (req: Request, res: Response) => {
   try {
     const narratives = await loadNarratives();
     res.json(narratives);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -89,8 +92,9 @@ app.get('/api/watchlist/dynamic', (req: Request, res: Response) => {
   try {
     const dynamicTickers = getActiveTickers();
     res.json(dynamicTickers);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -104,8 +108,9 @@ app.get('/api/watchlist/static', (req: Request, res: Response) => {
     } else {
       res.json([]);
     }
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -145,8 +150,9 @@ app.get('/api/reports', (req: Request, res: Response) => {
       }
     }
     res.json(reports.sort((a, b) => (b.date + b.filename).localeCompare(a.date + a.filename)));
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -164,8 +170,9 @@ app.get('/api/reports/content', (req: Request, res: Response) => {
     
     const content = fs.readFileSync(reportPath, 'utf-8');
     res.json({ content });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -186,8 +193,9 @@ app.get('/api/traces', (req: Request, res: Response) => {
       }
     }
     res.json(traces.sort((a, b) => (b.date + b.filename).localeCompare(a.date + a.filename)));
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -205,8 +213,9 @@ app.get('/api/traces/content', (req: Request, res: Response) => {
     
     const content = fs.readFileSync(tracePath, 'utf-8');
     res.json({ content: JSON.parse(content) });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -233,8 +242,9 @@ app.get('/api/traces/byMission/:missionId', (req: Request, res: Response) => {
       }
     }
     res.status(404).json({ error: 'Trace not found for mission' });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -255,8 +265,9 @@ app.get('/api/trendradar/dates', (req: Request, res: Response) => {
       .sort()
       .reverse();
     res.json(dates);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -282,8 +293,9 @@ app.get('/api/trendradar/reports', (req: Request, res: Response) => {
       }
     }
     res.json(reports);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -300,8 +312,9 @@ app.get('/api/trendradar/reports/:date/:filename', (req: Request, res: Response)
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     const content = fs.readFileSync(reportPath, 'utf-8');
     res.send(content);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -377,8 +390,9 @@ app.get('/api/trendradar/latest', (req: Request, res: Response) => {
       executeQuery();
     }
     
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -489,8 +503,9 @@ app.get('/api/trendradar/raw', async (req: Request, res: Response) => {
     });
 
     res.json({ date: `最近七天 (${dateRangeStr})`, items: allItems });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -504,8 +519,9 @@ app.get('/api/config/models', (req: Request, res: Response) => {
   try {
     const config = getFullConfig();
     res.json(config);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -515,8 +531,9 @@ app.put('/api/config/models', (req: Request, res: Response) => {
     saveModelsConfig(req.body);
     const updated = reloadConfig();
     res.json({ success: true, config: updated });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -527,7 +544,7 @@ app.get('/api/config', (req: Request, res: Response) => {
 
 app.patch('/api/config', (req: Request, res: Response) => {
   const allowed = ['t1Enabled', 'leaderTickers', 'sma250VetoEnabled'];
-  const patch: Record<string, any> = {};
+  const patch: Record<string, unknown> = {};
   for (const key of allowed) {
     if (key in req.body) patch[key] = req.body[key];
   }
@@ -593,7 +610,7 @@ async function checkTrendRadarHealth(): Promise<{status: string, note: string}> 
     }
 
     return { status: 'running', note: '爬虫运作正常，无报错' };
-  } catch (e: any) {
+  } catch (e: unknown) {
     return { status: 'unknown', note: '读取监控日志失败' };
   }
 }
@@ -612,8 +629,9 @@ app.get('/api/health/services', async (req: Request, res: Response) => {
       tradingAgents: { status: taOk ? 'running' : 'offline', port: 8001 },
       trendradar: trHealth,
     });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -640,8 +658,9 @@ app.get('/api/missions', (req: Request, res: Response) => {
       totalDurationMs: m.totalDurationMs,
     }));
     res.json(summaries);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -678,8 +697,9 @@ app.get('/api/missions/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Mission not found' });
     }
     res.json(mission);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -704,8 +724,9 @@ app.post('/api/missions', async (req: Request, res: Response) => {
 
     // 同时也向旧的 taskQueue 入队（保持向后兼容）
     await taskQueue.enqueue(query, depth || 'deep', source || 'manual', 100);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
   }
 });
 
