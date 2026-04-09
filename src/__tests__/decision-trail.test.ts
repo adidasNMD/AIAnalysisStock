@@ -1,5 +1,21 @@
-import { describe, expect, it } from 'vitest';
-import { buildDecisionTrail, type UnifiedMission } from '../workflows/mission-dispatcher';
+import { describe, expect, it, vi } from 'vitest';
+import { buildDecisionTrail, type DecisionTrailEntry, type UnifiedMission } from '../workflows/mission-dispatcher';
+import { saveTrailReport } from '../utils/trail-renderer';
+
+const { mkdirSync, writeFileSync } = vi.hoisted(() => ({
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+}));
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    mkdirSync,
+    writeFileSync,
+    default: { ...actual, mkdirSync, writeFileSync },
+  };
+});
 
 function makeTAResult(ticker: string, overrides: Partial<UnifiedMission['taResults'][number]> = {}) {
   return {
@@ -256,6 +272,27 @@ describe('buildDecisionTrail', () => {
       'consensus:BBB',
       'sma_veto:AAA',
     ]);
+  });
+});
+
+describe('saveTrailReport integration', () => {
+  it('calls writeFileSync with a path containing out/trails/', () => {
+    mkdirSync.mockImplementation(() => undefined as any);
+    writeFileSync.mockImplementation(() => undefined);
+
+    const trail: DecisionTrailEntry[] = [
+      { ticker: 'AAA', stage: 'consensus', verdict: 'pass', reason: '通过' },
+    ];
+
+    const filePath = saveTrailReport(trail, 'test-mission-id');
+
+    expect(filePath).toMatch(/out[/\\]trails[/\\]/);
+    expect(filePath).toContain('test-mission-id-trail.md');
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('test-mission-id-trail.md'),
+      expect.any(String),
+      'utf-8',
+    );
   });
 });
 

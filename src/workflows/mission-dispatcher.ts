@@ -20,6 +20,7 @@ import { checkSMACross } from '../tools/market-data';
 import { sendStopLossAlert } from '../utils/telegram';
 import * as fs from 'fs';
 import * as path from 'path';
+import { saveTrailReport } from '../utils/trail-renderer';
 import { type RejectedTicker } from '../agents/discovery/ticker-discovery';
 
 // ===== 类型定义 =====
@@ -297,6 +298,14 @@ export async function dispatchMission(
     mission.consensus = await computeConsensus(mission);
     await triggerConsensusAlerts(mission.consensus);
     mission.decisionTrail = buildDecisionTrail(mission);
+    if (mission.decisionTrail.length > 0) {
+      try {
+        const trailPath = saveTrailReport(mission.decisionTrail, mission.id);
+        console.log(`[Dispatcher] 📋 Decision trail saved: ${trailPath}`);
+      } catch (e: any) {
+        console.warn(`[Dispatcher] ⚠️ Trail report save failed: ${e.message}`);
+      }
+    }
     mission.totalDurationMs = Date.now() - startTime;
     if (mission.status !== 'main_only') {
       mission.status = 'fully_enriched';
