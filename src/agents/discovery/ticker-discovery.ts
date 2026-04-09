@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { generateTextCompletion } from '../../utils/llm';
 import { searchPosts, extractTickersFromPosts } from '../../tools/reddit';
-import { fetchGoogleNewsRSS, GoogleNewsItem } from '../../tools/google-news';
+import { fetchGoogleNewsRSS } from '../../tools/google-news';
 import { getQuote } from '../../tools/market-data';
+import { isMarketCapWithinGate, MARKET_CAP_MAX, MARKET_CAP_MIN } from '../../utils/market-cap-gate';
 
 // ==========================================
 // TickerDiscoveryEngine — (Free-form Text Flow 版本)
@@ -128,8 +129,8 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
     // Yahoo Finance 验证
     const validatedTickers: DiscoveredTicker[] = [];
     const rejectedTickers: RejectedTicker[] = [];
-    const MEGA_CAP_THRESHOLD = Number(process.env.MARKET_CAP_MAX) || 50_000_000_000;
-    const MARKET_CAP_MIN = Number(process.env.MARKET_CAP_MIN) || 200_000_000;
+    const marketCapMax = Number(process.env.MARKET_CAP_MAX) || MARKET_CAP_MAX;
+    const marketCapMin = Number(process.env.MARKET_CAP_MIN) || MARKET_CAP_MIN;
 
     for (const symbol of extractedTickers) {
       try {
@@ -140,15 +141,11 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
           continue;
         }
 
-        if (quote.marketCap > MEGA_CAP_THRESHOLD) {
-          console.log(`[TickerDiscovery] 🚫 排除巨头: ${symbol} ($${(quote.marketCap / 1e9).toFixed(0)}B)`);
-          rejectedTickers.push({ symbol, reason: 'mega_cap', marketCap: quote.marketCap, thresholdMax: MEGA_CAP_THRESHOLD });
-          continue;
-        }
-
-        if (quote.marketCap < MARKET_CAP_MIN) {
-          console.log(`[TickerDiscovery] 🚫 排除微型股: ${symbol} ($${(quote.marketCap / 1e6).toFixed(0)}M)`);
-          rejectedTickers.push({ symbol, reason: 'micro_cap', marketCap: quote.marketCap, thresholdMin: MARKET_CAP_MIN });
+        if (!isMarketCapWithinGate(quote.marketCap) && (quote.marketCap > marketCapMax || quote.marketCap < marketCapMin)) {
+          const reason: 'mega_cap' | 'micro_cap' = quote.marketCap > marketCapMax ? 'mega_cap' : 'micro_cap';
+          const label = reason === 'mega_cap' ? '巨头' : '微型股';
+          console.log(`[TickerDiscovery] 🚫 排除${label}: ${symbol} ($${(quote.marketCap / 1e9).toFixed(1)}B)`);
+          rejectedTickers.push({ symbol, reason, marketCap: quote.marketCap, thresholdMin: marketCapMin, thresholdMax: marketCapMax });
           continue;
         }
 

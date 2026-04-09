@@ -3,13 +3,23 @@
 export const MARKET_CAP_MIN = 200_000_000;
 export const MARKET_CAP_MAX = 50_000_000_000;
 
+function resolveMarketCapMin(): number {
+  const value = Number(process.env.MARKET_CAP_MIN);
+  return Number.isFinite(value) && value > 0 ? value : MARKET_CAP_MIN;
+}
+
+function resolveMarketCapMax(): number {
+  const value = Number(process.env.MARKET_CAP_MAX);
+  return Number.isFinite(value) && value > 0 ? value : MARKET_CAP_MAX;
+}
+
 /**
  * Check if a numeric market cap value falls within the gate.
  * @param cap market capitalization in USD
  */
 export function isMarketCapWithinGate(cap: number | null | undefined): boolean {
   if (typeof cap !== 'number' || Number.isNaN(cap)) return false;
-  return cap >= MARKET_CAP_MIN && cap <= MARKET_CAP_MAX;
+  return cap >= resolveMarketCapMin() && cap <= resolveMarketCapMax();
 }
 
 /**
