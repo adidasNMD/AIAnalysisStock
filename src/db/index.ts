@@ -20,6 +20,9 @@ export async function getDb(): Promise<Database> {
 }
 
 async function initDb(db: Database) {
+  await db.exec(`PRAGMA journal_mode = WAL;`);
+  await db.exec(`PRAGMA busy_timeout = 5000;`);
+
   // === Tasks Table ===
   await db.exec(`
     CREATE TABLE IF NOT EXISTS tasks (
