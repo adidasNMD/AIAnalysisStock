@@ -296,6 +296,90 @@ describe('saveTrailReport integration', () => {
   });
 });
 
+describe('buildDecisionTrail with structuredVerdicts', () => {
+  it('trail entries contain bullCase/bearCase from structured verdict path', () => {
+    const mission = makeMission({
+      openclawTickers: ['AAOI'],
+      consensus: [{
+        ticker: 'AAOI',
+        openclawVerdict: 'BUY',
+        taVerdict: 'BUY',
+        agreement: 'agree',
+        openbbVerdict: 'PASS',
+        vetoed: false,
+        bullCase: 'AI datacenter demand — from structured verdict',
+        bearCase: 'Competition risk — from structured verdict',
+      }],
+      taResults: [],
+      structuredVerdicts: {
+        AAOI: {
+          ticker: 'AAOI',
+          verdict: 'BUY',
+          bullCase: 'AI datacenter demand — from structured verdict',
+          bearCase: 'Competition risk — from structured verdict',
+        },
+      },
+    });
+
+    const trail = buildDecisionTrail(mission);
+    expect(trail).toHaveLength(1);
+    const entry = trail[0]!;
+    expect(entry.ticker).toBe('AAOI');
+    expect(entry.stage).toBe('consensus');
+    expect(entry.verdict).toBe('pass');
+    expect(entry.details?.bullCase).toBe('AI datacenter demand — from structured verdict');
+    expect(entry.details?.bearCase).toBe('Competition risk — from structured verdict');
+  });
+
+  it('trail still works for mission WITHOUT structuredVerdicts (legacy path)', () => {
+    const mission = makeMission({
+      consensus: [{
+        ticker: 'WDC',
+        openclawVerdict: 'HOLD',
+        taVerdict: 'BUY',
+        agreement: 'partial',
+        openbbVerdict: null,
+        vetoed: false,
+      }],
+      taResults: [],
+    });
+
+    const trail = buildDecisionTrail(mission);
+    expect(trail).toHaveLength(1);
+    const entry = trail[0]!;
+    expect(entry.ticker).toBe('WDC');
+    expect(entry.stage).toBe('consensus');
+    expect(entry.verdict).toBe('pass');
+    expect(entry.details?.agreement).toBe('partial');
+  });
+
+  it('trail veto entry still generated correctly for SMA250 veto case', () => {
+    const mission = makeMission({
+      consensus: [{
+        ticker: 'AAOI',
+        openclawVerdict: 'BUY',
+        taVerdict: 'BUY',
+        agreement: 'blocked',
+        openbbVerdict: 'PASS',
+        vetoed: true,
+        vetoReason: 'AAOI 处于 250日均线下方 (价格 50 < SMA250 100)，右侧趋势未确认，否决 BUY',
+      }],
+      taResults: [],
+    });
+
+    const trail = buildDecisionTrail(mission);
+    expect(trail).toHaveLength(2);
+    const consensusEntry = trail[0]!;
+    const vetoEntry = trail[1]!;
+    expect(consensusEntry.stage).toBe('consensus');
+    expect(consensusEntry.verdict).toBe('pass');
+    expect(vetoEntry.stage).toBe('sma_veto');
+    expect(vetoEntry.verdict).toBe('reject');
+    expect(vetoEntry.details?.price).toBe(50);
+    expect(vetoEntry.details?.sma250).toBe(100);
+  });
+});
+
 describe('UnifiedMission serialization', () => {
   it('serializes and deserializes decisionTrail via JSON round-trip', () => {
     const mission = makeMission({
@@ -368,5 +452,62 @@ describe('UnifiedMission serialization', () => {
     expect(roundTripped.structuredVerdicts).toBeUndefined();
     expect(roundTripped.consensus).toHaveLength(1);
     expect(roundTripped.consensus[0]!.ticker).toBe('BBB');
+  });
+
+  it('round-trips mission with both structuredVerdicts AND decisionTrail together', () => {
+    const mission = makeMission({
+      consensus: [{
+        ticker: 'AAOI',
+        openclawVerdict: 'BUY',
+        taVerdict: 'BUY',
+        agreement: 'agree',
+        openbbVerdict: 'PASS',
+        vetoed: false,
+        bullCase: 'AI datacenter demand — from structured verdict',
+        bearCase: 'Competition risk — from structured verdict',
+      }],
+      structuredVerdicts: {
+        AAOI: {
+          ticker: 'AAOI',
+          verdict: 'BUY',
+          bullCase: 'AI datacenter demand — from structured verdict',
+          bearCase: 'Competition risk — from structured verdict',
+          confidence: 'high',
+        },
+      },
+      decisionTrail: [
+        {
+          ticker: 'AAOI',
+          stage: 'consensus',
+          verdict: 'pass',
+          reason: '双大脑共识: agree',
+          details: {
+            openclawVerdict: 'BUY',
+            taVerdict: 'BUY',
+            agreement: 'agree',
+            bullCase: 'AI datacenter demand — from structured verdict',
+            bearCase: 'Competition risk — from structured verdict',
+          },
+        },
+      ],
+    });
+
+    const roundTripped = JSON.parse(JSON.stringify(mission)) as typeof mission;
+
+    expect(roundTripped.structuredVerdicts).toBeDefined();
+    const sv = roundTripped.structuredVerdicts!['AAOI']!;
+    expect(sv.verdict).toBe('BUY');
+    expect(sv.bullCase).toBe('AI datacenter demand — from structured verdict');
+
+    expect(roundTripped.decisionTrail).toHaveLength(1);
+    const entry = roundTripped.decisionTrail![0]!;
+    expect(entry.ticker).toBe('AAOI');
+    expect(entry.stage).toBe('consensus');
+    expect(entry.verdict).toBe('pass');
+    expect(entry.details?.bullCase).toBe('AI datacenter demand — from structured verdict');
+    expect(entry.details?.bearCase).toBe('Competition risk — from structured verdict');
+
+    expect(roundTripped.consensus).toHaveLength(1);
+    expect(roundTripped.consensus[0]!.bullCase).toBe('AI datacenter demand — from structured verdict');
   });
 });
