@@ -318,4 +318,55 @@ describe('UnifiedMission serialization', () => {
     expect((roundTripped as any).decisionTrail).toHaveLength(1);
     expect((roundTripped as any).decisionTrail[0].ticker).toBe('AAA');
   });
+
+  it('round-trips mission WITH structuredVerdicts', () => {
+    const mission = makeMission({
+      consensus: [{
+        ticker: 'AAOI',
+        openclawVerdict: 'BUY',
+        taVerdict: 'BUY',
+        agreement: 'agree',
+        openbbVerdict: 'PASS',
+        vetoed: false,
+      }],
+      structuredVerdicts: {
+        AAOI: {
+          ticker: 'AAOI',
+          verdict: 'BUY',
+          bullCase: 'AI datacenter demand',
+          bearCase: 'Competition risk',
+          confidence: 'high',
+        },
+      },
+    });
+
+    const roundTripped = JSON.parse(JSON.stringify(mission)) as typeof mission;
+    expect(roundTripped.structuredVerdicts).toBeDefined();
+    const aaoi = roundTripped.structuredVerdicts!['AAOI']!;
+    expect(aaoi.ticker).toBe('AAOI');
+    expect(aaoi.verdict).toBe('BUY');
+    expect(aaoi.bullCase).toBe('AI datacenter demand');
+    expect(aaoi.bearCase).toBe('Competition risk');
+    expect(aaoi.confidence).toBe('high');
+  });
+
+  it('round-trips mission WITHOUT structuredVerdicts', () => {
+    const mission = makeMission({
+      consensus: [{
+        ticker: 'BBB',
+        openclawVerdict: 'HOLD',
+        taVerdict: 'HOLD',
+        agreement: 'agree',
+        openbbVerdict: 'PASS',
+        vetoed: false,
+      }],
+    });
+
+    expect(mission.structuredVerdicts).toBeUndefined();
+
+    const roundTripped = JSON.parse(JSON.stringify(mission)) as typeof mission;
+    expect(roundTripped.structuredVerdicts).toBeUndefined();
+    expect(roundTripped.consensus).toHaveLength(1);
+    expect(roundTripped.consensus[0]!.ticker).toBe('BBB');
+  });
 });

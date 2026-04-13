@@ -1,6 +1,7 @@
 import type { TAAnalysisResult } from '../utils/ta-client';
 import type { OpenBBTickerData } from '../utils/openbb-provider';
 import type { RejectedTicker } from '../agents/discovery/ticker-discovery';
+import type { OpenClawStructuredVerdict } from '../models/types';
 
 export type MissionStatus =
   | 'triggered'
@@ -44,6 +45,7 @@ export interface UnifiedMission {
 
   discoveryRejections?: RejectedTicker[];
   decisionTrail?: DecisionTrailEntry[];
+  structuredVerdicts?: Record<string, OpenClawStructuredVerdict>;
 
   totalDurationMs: number;
 }

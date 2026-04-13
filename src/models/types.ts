@@ -144,3 +144,13 @@ export const TradeDecisionSchema = z.object({
   agreement: z.enum(['agree', 'disagree', 'partial', 'pending', 'blocked']),
 });
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
+
+// 12. OpenClawStructuredVerdictSchema — LLM 原始结构化判决（无 VETO_BUY，纯模型输出）
+export const OpenClawStructuredVerdictSchema = z.object({
+  ticker: z.string(),
+  verdict: z.enum(['BUY', 'HOLD', 'SELL', 'SKIP']),
+  bullCase: z.string(),
+  bearCase: z.string(),
+  confidence: z.enum(['high', 'medium', 'low']).optional(),
+});
+export type OpenClawStructuredVerdict = z.infer<typeof OpenClawStructuredVerdictSchema>;

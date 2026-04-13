@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TradeDecisionSchema, NarrativeTopicSchema, PositionSizeEnum, StructuredStopLossSchema } from '../models/types';
+import { TradeDecisionSchema, NarrativeTopicSchema, PositionSizeEnum, StructuredStopLossSchema, OpenClawStructuredVerdictSchema } from '../models/types';
 
 const validTradeDecision = {
   ticker: 'AAOI',
@@ -88,5 +88,56 @@ describe('StructuredStopLossSchema', () => {
       humanReadable: '20日均线跌破止损',
     };
     expect(() => StructuredStopLossSchema.parse(sl)).not.toThrow();
+  });
+});
+
+describe('OpenClawStructuredVerdict', () => {
+  const validVerdict = {
+    ticker: 'AAOI',
+    verdict: 'BUY' as const,
+    bullCase: '光模块需求受AI数据中心驱动',
+    bearCase: '竞争对手进入，毛利率承压',
+  };
+
+  it('parses valid payload with all required fields', () => {
+    const result = OpenClawStructuredVerdictSchema.parse(validVerdict);
+    expect(result.ticker).toBe('AAOI');
+    expect(result.verdict).toBe('BUY');
+    expect(result.bullCase).toBe('光模块需求受AI数据中心驱动');
+    expect(result.bearCase).toBe('竞争对手进入，毛利率承压');
+    expect(result.confidence).toBeUndefined();
+  });
+
+  it('rejects invalid verdict enum value', () => {
+    const bad = { ...validVerdict, verdict: 'STRONG_BUY' };
+    expect(() => OpenClawStructuredVerdictSchema.parse(bad)).toThrow();
+  });
+
+  it('throws ZodError when bullCase is missing', () => {
+    const bad = { ...validVerdict };
+    delete (bad as any).bullCase;
+    expect(() => OpenClawStructuredVerdictSchema.parse(bad)).toThrow();
+  });
+
+  it('throws ZodError when bearCase is missing', () => {
+    const bad = { ...validVerdict };
+    delete (bad as any).bearCase;
+    expect(() => OpenClawStructuredVerdictSchema.parse(bad)).toThrow();
+  });
+
+  it('accepts optional confidence when omitted', () => {
+    const result = OpenClawStructuredVerdictSchema.parse(validVerdict);
+    expect(result.confidence).toBeUndefined();
+  });
+
+  it('accepts optional confidence when provided', () => {
+    const withConfidence = { ...validVerdict, confidence: 'high' as const };
+    const result = OpenClawStructuredVerdictSchema.parse(withConfidence);
+    expect(result.confidence).toBe('high');
+  });
+
+  it('rejects invalid confidence enum value', () => {
+    const bad = { ...validVerdict, confidence: 'very_high' };
+    expect(() => OpenClawStructuredVerdictSchema.parse(bad)).toThrow();
   });
 });
