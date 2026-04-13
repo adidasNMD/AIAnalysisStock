@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { saveTrailReport } from '../utils/trail-renderer';
 import { buildDecisionTrail, computeConsensus, triggerConsensusAlerts } from './consensus';
+import { parseStructuredVerdicts } from '../utils/report-validator';
 import type { ConsensusResult, MissionInput, UnifiedMission } from './types';
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
@@ -104,6 +105,14 @@ export async function dispatchMission(
       const tickers = input.tickers || [];
       mission.openclawTickers = tickers;
       await Promise.all([runOpenClawPhase(mission, input, executeOpenClaw), runParallelEnrichment(mission, tickers, input.date)]);
+    }
+
+    if (mission.openclawReport) {
+      try {
+        mission.structuredVerdicts = parseStructuredVerdicts(mission.openclawReport, mission.openclawTickers);
+      } catch (err) {
+        logger.warn(`[Dispatcher] ⚠️ parseStructuredVerdicts failed: ${err}`);
+      }
     }
 
     const _consensusResults: ConsensusResult[] = await computeConsensus(mission);

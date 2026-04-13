@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { TradeDecisionSchema, NarrativeTopicSchema, PositionSizeEnum, StructuredStopLossSchema, OpenClawStructuredVerdictSchema } from '../models/types';
+import { parseStructuredVerdicts } from '../utils/report-validator';
+import { emitStructuredVerdictBlock } from '../agents/intelligence/synthesis';
 
 const validTradeDecision = {
   ticker: 'AAOI',
@@ -139,5 +141,80 @@ describe('OpenClawStructuredVerdict', () => {
   it('rejects invalid confidence enum value', () => {
     const bad = { ...validVerdict, confidence: 'very_high' };
     expect(() => OpenClawStructuredVerdictSchema.parse(bad)).toThrow();
+  });
+});
+
+describe('parseStructuredVerdicts', () => {
+  const validBlock = `Some report content about $AAOI
+
+## STRUCTURED_VERDICTS
+\`\`\`json
+[
+  { "ticker": "AAOI", "verdict": "BUY", "bullCase": "AI数据中心驱动", "bearCase": "竞争风险" },
+  { "ticker": "LITE", "verdict": "HOLD", "bullCase": "稳定增长", "bearCase": "估值偏高" }
+]
+\`\`\``;
+
+  it('parses valid structured verdict block into Record', () => {
+    const result = parseStructuredVerdicts(validBlock, ['AAOI', 'LITE']);
+    expect(Object.keys(result)).toHaveLength(2);
+    expect(result['AAOI']?.verdict).toBe('BUY');
+    expect(result['AAOI']?.bullCase).toBe('AI数据中心驱动');
+    expect(result['LITE']?.verdict).toBe('HOLD');
+    expect(result['LITE']?.bearCase).toBe('估值偏高');
+  });
+
+  it('returns empty object when report has no STRUCTURED_VERDICTS section', () => {
+    const report = 'Just a plain report with no structured block.';
+    const result = parseStructuredVerdicts(report, ['AAOI']);
+    expect(result).toEqual({});
+  });
+
+  it('returns empty object when JSON is malformed', () => {
+    const report = `Report text\n\n## STRUCTURED_VERDICTS\n\`\`\`json\n{not valid json\n\`\`\``;
+    const result = parseStructuredVerdicts(report, ['AAOI']);
+    expect(result).toEqual({});
+  });
+
+  it('skips individual items with invalid verdict enum (safeParse rejection)', () => {
+    const report = `Report\n\n## STRUCTURED_VERDICTS
+\`\`\`json
+[
+  { "ticker": "AAOI", "verdict": "STRONG_BUY", "bullCase": "x", "bearCase": "y" },
+  { "ticker": "LITE", "verdict": "SELL", "bullCase": "a", "bearCase": "b" }
+]
+\`\`\``;
+    const result = parseStructuredVerdicts(report, ['AAOI', 'LITE']);
+    expect(result['AAOI']).toBeUndefined();
+    expect(result['LITE']?.verdict).toBe('SELL');
+  });
+});
+
+describe('emitStructuredVerdictBlock', () => {
+  it('appends STRUCTURED_VERDICTS section when tickers have verdicts', () => {
+    const report = '$AAOI 建议 BUY 买入，催化剂是AI需求。风险是竞争加剧。';
+    const result = emitStructuredVerdictBlock(report, ['AAOI']);
+    expect(result).toContain('## STRUCTURED_VERDICTS');
+    expect(result).toContain('```json');
+    const jsonMatch = result.match(/```json\s*\n([\s\S]*?)\n```/);
+    expect(jsonMatch).toBeTruthy();
+    const parsed = JSON.parse(jsonMatch![1]!);
+    expect(parsed).toBeInstanceOf(Array);
+    expect(parsed[0].ticker).toBe('AAOI');
+    expect(parsed[0].verdict).toBe('BUY');
+  });
+
+  it('returns string with empty verdicts array when no tickers provided', () => {
+    const report = 'Some report without tickers.';
+    const result = emitStructuredVerdictBlock(report, []);
+    expect(result).toContain('## STRUCTURED_VERDICTS');
+    expect(result).toContain('[]');
+  });
+
+  it('preserves original report content before the appended block', () => {
+    const report = '# Original Report\n\n$MU is a HOLD. 风险较高。';
+    const result = emitStructuredVerdictBlock(report, ['MU']);
+    expect(result.startsWith('# Original Report')).toBe(true);
+    expect(result).toContain('## STRUCTURED_VERDICTS');
   });
 });
