@@ -138,21 +138,36 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
 
   const tickerConsensusResults = await Promise.all(tickers.map(async ticker => {
     let ocVerdict: TickerConsensus['openclawVerdict'] = null;
-    if (mission.openclawReport) {
-      const report = mission.openclawReport.toUpperCase();
-      const tickerContext = report.split(ticker).slice(1).join('').slice(0, 200);
-      const negationPatterns = ['NOT ', "DON'T ", '不建议', '不推荐', '避免', '远离'];
-      const hasNegation = negationPatterns.some(neg => tickerContext.includes(neg));
-      if (hasNegation) {
-        ocVerdict = 'SKIP';
-      } else if (tickerContext.includes('BUY') || tickerContext.includes('做多') || tickerContext.includes('✅') || tickerContext.includes('建仓')) {
-        ocVerdict = 'BUY';
-      } else if (tickerContext.includes('SELL') || tickerContext.includes('做空') || tickerContext.includes('离场')) {
-        ocVerdict = 'SELL';
-      } else if (tickerContext.includes('HOLD') || tickerContext.includes('观望')) {
-        ocVerdict = 'HOLD';
-      } else if (tickerContext.includes('跳过') || tickerContext.includes('SKIP') || tickerContext.includes('❌')) {
-        ocVerdict = 'SKIP';
+    let structuredBullCase: string | undefined;
+    let structuredBearCase: string | undefined;
+
+    // ── Structured verdict path (preferred) ──────────────────────────────────────
+    const structuredEntry = mission.structuredVerdicts?.[ticker];
+    if (structuredEntry && typeof structuredEntry === 'object' &&
+        ['BUY', 'HOLD', 'SELL', 'SKIP'].includes(structuredEntry.verdict)) {
+      ocVerdict = structuredEntry.verdict as TickerConsensus['openclawVerdict'];
+      structuredBullCase = typeof structuredEntry.bullCase === 'string' && structuredEntry.bullCase.length > 0
+        ? structuredEntry.bullCase : undefined;
+      structuredBearCase = typeof structuredEntry.bearCase === 'string' && structuredEntry.bearCase.length > 0
+        ? structuredEntry.bearCase : undefined;
+    } else {
+      // ── Legacy fallback: free-text heuristic ─────────────────────────────────
+      if (mission.openclawReport) {
+        const report = mission.openclawReport.toUpperCase();
+        const tickerContext = report.split(ticker).slice(1).join('').slice(0, 200);
+        const negationPatterns = ['NOT ', "DON'T ", '不建议', '不推荐', '避免', '远离'];
+        const hasNegation = negationPatterns.some(neg => tickerContext.includes(neg));
+        if (hasNegation) {
+          ocVerdict = 'SKIP';
+        } else if (tickerContext.includes('BUY') || tickerContext.includes('做多') || tickerContext.includes('✅') || tickerContext.includes('建仓')) {
+          ocVerdict = 'BUY';
+        } else if (tickerContext.includes('SELL') || tickerContext.includes('做空') || tickerContext.includes('离场')) {
+          ocVerdict = 'SELL';
+        } else if (tickerContext.includes('HOLD') || tickerContext.includes('观望')) {
+          ocVerdict = 'HOLD';
+        } else if (tickerContext.includes('跳过') || tickerContext.includes('SKIP') || tickerContext.includes('❌')) {
+          ocVerdict = 'SKIP';
+        }
       }
     }
 
@@ -173,8 +188,8 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
           .filter(Boolean)
           .join(' ')
       : null;
-    const bullCase = extractBullCase(mission.openclawReport, taReport);
-    const bearCase = extractBearCase(mission.openclawReport, taReport);
+    const bullCase = structuredBullCase ?? extractBullCase(mission.openclawReport, taReport);
+    const bearCase = structuredBearCase ?? extractBearCase(mission.openclawReport, taReport);
 
     let agreement: TickerConsensus['agreement'] = 'pending';
     let vetoed = false;

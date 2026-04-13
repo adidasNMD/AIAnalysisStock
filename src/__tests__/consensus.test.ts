@@ -8,7 +8,7 @@ vi.mock('../tools/market-data', () => ({
 
 const mockedCheckSMACross = vi.mocked(checkSMACross);
 
-function makeMission(ticker: string, ocReport: string, taDecision: 'BUY' | 'SELL' | 'HOLD' | 'UNKNOWN'): UnifiedMission {
+function makeMission(ticker: string, ocReport: string | null, taDecision: 'BUY' | 'SELL' | 'HOLD' | 'UNKNOWN', overrides?: Partial<UnifiedMission>): UnifiedMission {
   return {
     id: 'test',
     traceId: 'test',
@@ -49,6 +49,7 @@ function makeMission(ticker: string, ocReport: string, taDecision: 'BUY' | 'SELL
     macroData: null,
     consensus: [],
     totalDurationMs: 0,
+    ...overrides,
   };
 }
 
@@ -179,5 +180,109 @@ describe('computeConsensus', () => {
     expect(tc.agreement).toBe('agree');
     expect(tc.vetoed).toBe(false);
     expect(tc.vetoReason).toBeUndefined();
+  });
+});
+
+describe('computeConsensus with structuredVerdicts', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env.SMA250_VETO_ENABLED;
+  });
+
+  it('BUY+BUY parity via structured verdict', async () => {
+    mockedCheckSMACross.mockResolvedValue([
+      { symbol: 'AAOI', period: 250, position: 'above', price: 100, sma: 90, crossedToday: false },
+    ]);
+    const mission = makeMission('AAOI', null, 'BUY', {
+      structuredVerdicts: {
+        AAOI: { ticker: 'AAOI', verdict: 'BUY', bullCase: 'strong demand', bearCase: 'competition' },
+      },
+    });
+
+    const [result] = await computeConsensus(mission);
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected consensus result');
+
+    expect(result.agreement).toBe('agree');
+    expect(result.openclawVerdict).toBe('BUY');
+    expect(result.overallAction).toBe('BUY');
+    expect(result.confidence).toBe(85);
+
+    const tc = mission.consensus[0]!;
+    expect(tc.agreement).toBe('agree');
+    expect(tc.openclawVerdict).toBe('BUY');
+    expect(tc.bullCase).toBe('strong demand');
+    expect(tc.bearCase).toBe('competition');
+  });
+
+  it('BUY+SELL disagreement via structured verdict', async () => {
+    mockedCheckSMACross.mockResolvedValue([]);
+    const mission = makeMission('AAOI', null, 'SELL', {
+      structuredVerdicts: {
+        AAOI: { ticker: 'AAOI', verdict: 'BUY', bullCase: 'bullish', bearCase: 'risky' },
+      },
+    });
+
+    const [result] = await computeConsensus(mission);
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected consensus result');
+
+    expect(result.agreement).toBe('disagree');
+    expect(result.overallAction).toBe('HOLD');
+    expect(result.confidence).toBe(20);
+  });
+
+  it('legacy fallback when structuredVerdicts absent', async () => {
+    mockedCheckSMACross.mockResolvedValue([
+      { symbol: 'AAOI', period: 250, position: 'above', price: 100, sma: 90, crossedToday: false },
+    ]);
+    const mission = makeMission('AAOI', 'AAOI BUY 建仓', 'BUY');
+
+    const [result] = await computeConsensus(mission);
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected consensus result');
+
+    expect(result.agreement).toBe('agree');
+    expect(result.openclawVerdict).toBe('BUY');
+    expect(result.overallAction).toBe('BUY');
+  });
+
+  it('legacy fallback when structured verdict ticker missing', async () => {
+    mockedCheckSMACross.mockResolvedValue([
+      { symbol: 'AAOI', period: 250, position: 'above', price: 100, sma: 90, crossedToday: false },
+    ]);
+    const mission = makeMission('AAOI', 'AAOI BUY 建仓', 'BUY', {
+      structuredVerdicts: {
+        OTHER: { ticker: 'OTHER', verdict: 'SELL', bullCase: 'n/a', bearCase: 'n/a' },
+      },
+    });
+
+    const [result] = await computeConsensus(mission);
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected consensus result');
+
+    expect(result.agreement).toBe('agree');
+    expect(result.openclawVerdict).toBe('BUY');
+    expect(result.overallAction).toBe('BUY');
+  });
+
+  it('structured verdict HOLD yields partial agreement with BUY from TA', async () => {
+    mockedCheckSMACross.mockResolvedValue([
+      { symbol: 'AAOI', period: 250, position: 'above', price: 100, sma: 90, crossedToday: false },
+    ]);
+    const mission = makeMission('AAOI', null, 'BUY', {
+      structuredVerdicts: {
+        AAOI: { ticker: 'AAOI', verdict: 'HOLD', bullCase: 'some upside', bearCase: 'limited risk' },
+      },
+    });
+
+    const [result] = await computeConsensus(mission);
+    expect(result).toBeDefined();
+    if (!result) throw new Error('Expected consensus result');
+
+    expect(result.agreement).toBe('partial');
+    expect(result.openclawVerdict).toBe('HOLD');
+    expect(result.overallAction).toBe('HOLD');
+    expect(result.confidence).toBe(55);
   });
 });
