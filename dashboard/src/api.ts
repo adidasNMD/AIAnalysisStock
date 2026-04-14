@@ -13,9 +13,11 @@ export interface TaskQueueResponse {
   summary: string;
   tasks: Array<{
     id: string;
+    missionId?: string;
+    runId?: string;
     query: string;
     depth: 'quick' | 'standard' | 'deep';
-    status: 'pending' | 'running' | 'done' | 'failed';
+    status: 'pending' | 'running' | 'done' | 'failed' | 'canceled';
     progress?: 'scout' | 'analyst' | 'strategist' | 'council' | 'synthesis';
     source: string;
     createdAt: number;
@@ -50,8 +52,28 @@ export interface MissionConsensus {
   ticker: string;
   openclawVerdict: 'BUY' | 'HOLD' | 'SELL' | 'SKIP' | null;
   taVerdict: 'BUY' | 'HOLD' | 'SELL' | 'UNKNOWN' | null;
-  agreement: 'agree' | 'disagree' | 'partial' | 'pending';
+  agreement: 'agree' | 'disagree' | 'partial' | 'pending' | 'blocked';
   openbbVerdict: 'PASS' | 'WARN' | 'FAIL' | null;
+}
+
+export type MissionDiffCategory =
+  | 'execution'
+  | 'coverage'
+  | 'consensus'
+  | 'tradingAgents'
+  | 'openbb'
+  | 'trace';
+
+export interface MissionDiffSummary {
+  currentRunId: string;
+  baselineRunId: string;
+  currentAttempt: number;
+  baselineAttempt: number;
+  changed: boolean;
+  changeCount: number;
+  changedCategories: MissionDiffCategory[];
+  highlights: string[];
+  summary: string;
 }
 
 export interface MissionSummary {
@@ -61,10 +83,13 @@ export interface MissionSummary {
   source: string;
   status: string;
   createdAt: string;
+  updatedAt: string;
   openclawTickers: string[];
   taCount: number;
   consensus: MissionConsensus[];
   totalDurationMs: number;
+  latestRun?: MissionRun;
+  latestDiff?: MissionDiffSummary;
 }
 
 export interface MissionFull {
@@ -102,6 +127,52 @@ export interface MissionFull {
   totalDurationMs: number;
 }
 
+export interface MissionEvent {
+  id: string;
+  missionId: string;
+  timestamp: string;
+  type: 'created' | 'queued' | 'started' | 'stage' | 'completed' | 'failed' | 'canceled';
+  message: string;
+  status?: string;
+  phase?: 'scout' | 'analyst' | 'strategist' | 'council' | 'synthesis';
+  meta?: Record<string, unknown>;
+}
+
+export interface MissionRun {
+  id: string;
+  missionId: string;
+  taskId?: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+  stage: 'queued' | 'dispatch' | 'scout' | 'analyst' | 'strategist' | 'council' | 'synthesis' | 'completed' | 'failed' | 'canceled';
+  attempt: number;
+  workerLeaseId?: string;
+  createdAt: string;
+  startedAt?: string;
+  heartbeatAt?: string;
+  completedAt?: string;
+  failureMessage?: string;
+  degradedFlags?: string[];
+}
+
+export interface MissionEvidence {
+  id: string;
+  missionId: string;
+  runId: string;
+  capturedAt: string;
+  status: string;
+  completeness: 'full' | 'partial' | 'failed' | 'canceled';
+  input: { mode: string; query: string; tickers?: string[]; depth?: string; source?: string };
+  openclawReport: string | null;
+  openclawTickers: string[];
+  openclawDurationMs: number;
+  taResults: MissionFull['taResults'];
+  taDurationMs: number;
+  openbbData: MissionFull['openbbData'];
+  macroData: MissionFull['macroData'];
+  consensus: MissionConsensus[];
+  totalDurationMs: number;
+}
+
 export interface ServiceHealth {
   openclaw: { status: string; port: number };
   openbb: { status: string; port: number };
@@ -135,13 +206,17 @@ export const fetchDynamicWatchlist = async (): Promise<DynamicTicker[]> => {
   return res.json();
 };
 
-export const triggerMission = async (query: string, depth: 'quick' | 'standard' | 'deep' = 'deep'): Promise<boolean> => {
+export const triggerMission = async (query: string, depth: 'quick' | 'standard' | 'deep' = 'deep'): Promise<CreateMissionResponse> => {
   const res = await fetch(`${API_BASE}/trigger`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, depth, source: 'manual' })
   });
-  return res.ok;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to trigger mission');
+  }
+  return res.json();
 };
 
 export const cancelMission = async (id: string): Promise<boolean> => {
@@ -191,13 +266,61 @@ export const fetchMissionDetail = async (id: string): Promise<MissionFull | null
   } catch { return null; }
 };
 
-export const createMission = async (mode: string, query: string, tickers?: string[], depth = 'deep'): Promise<boolean> => {
+export const fetchMissionEvents = async (id: string): Promise<MissionEvent[]> => {
+  try {
+    const res = await fetch(`${API_BASE}/missions/${id}/events`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+};
+
+export const fetchMissionRuns = async (id: string): Promise<MissionRun[]> => {
+  try {
+    const res = await fetch(`${API_BASE}/missions/${id}/runs`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch { return []; }
+};
+
+export const fetchMissionRunEvidence = async (missionId: string, runId: string): Promise<MissionEvidence | null> => {
+  try {
+    const res = await fetch(`${API_BASE}/missions/${missionId}/runs/${runId}/evidence`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+};
+
+export interface CreateMissionResponse {
+  success: boolean;
+  message: string;
+  missionId: string;
+  runId?: string;
+}
+
+export const createMission = async (mode: string, query: string, tickers?: string[], depth = 'deep'): Promise<CreateMissionResponse> => {
   const res = await fetch(`${API_BASE}/missions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode, query, tickers, depth, source: 'manual' })
   });
-  return res.ok;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to create mission');
+  }
+  return res.json();
+};
+
+export const retryMission = async (missionId: string, depth?: 'quick' | 'standard' | 'deep'): Promise<CreateMissionResponse> => {
+  const res = await fetch(`${API_BASE}/missions/${missionId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(depth ? { depth } : {}),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to retry mission');
+  }
+  return res.json();
 };
 
 // ===== 新增 API: Config =====
@@ -283,7 +406,9 @@ export const fetchTrendRadarDates = async (): Promise<string[]> => {
 // ===== 新增 API: Trace Content =====
 
 export interface TraceContent {
+  traceId: string;
   missionId: string;
+  runId?: string;
   query: string;
   startedAt: string;
   completedAt?: string;
@@ -306,3 +431,11 @@ export const fetchTraceByMissionId = async (missionId: string): Promise<TraceCon
   } catch { return null; }
 };
 
+export const fetchTraceByMissionRun = async (missionId: string, runId: string): Promise<TraceContent | null> => {
+  try {
+    const res = await fetch(`${API_BASE}/traces/byMission/${encodeURIComponent(missionId)}/runs/${encodeURIComponent(runId)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.content;
+  } catch { return null; }
+};

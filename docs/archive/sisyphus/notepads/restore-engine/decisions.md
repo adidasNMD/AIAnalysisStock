@@ -1,0 +1,3 @@
+- Decision: Proceed with single-task focus to restore NarrativeLifecycleEngine and apply prescribed Task 5 & Task 3 enhancements without broader feature changes.
+- Rationale: Minimal surface area changes to reduce risk; reuses existing narrative-store/checkSMACross/telegram APIs.
+- Risk: Complex lifecycle logic may have edge cases; plan to run unit tests and integration checks in CI.

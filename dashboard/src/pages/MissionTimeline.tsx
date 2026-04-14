@@ -11,6 +11,7 @@ function statusIcon(status: string) {
     case 'main_only': return <CheckCircle size={14} className="icon-cyan" />;
     case 'main_running':
     case 'ta_running': return <Loader size={14} className="spin icon-amber" />;
+    case 'canceled': return <AlertTriangle size={14} className="icon-amber" />;
     case 'failed': return <XCircle size={14} className="icon-red" />;
     default: return <AlertTriangle size={14} className="icon-dim" />;
   }
@@ -23,6 +24,18 @@ function consensusLabel(agreement: string) {
     case 'partial': return <span className="consensus-badge partial">🟡 部分一致</span>;
     default: return <span className="consensus-badge pending">⏳ 待定</span>;
   }
+}
+
+function missionDiffBadge(diff?: MissionSummary['latestDiff']) {
+  if (!diff) return null;
+  return diff.changed
+    ? { label: `CHANGED ${diff.changeCount}`, tone: 'changed' as const }
+    : { label: 'STABLE', tone: 'stable' as const };
+}
+
+interface CompareTarget {
+  id: string;
+  latestDiff?: MissionSummary['latestDiff'];
 }
 
 export function MissionTimeline() {
@@ -43,6 +56,8 @@ export function MissionTimeline() {
       duration: m.totalDurationMs,
       mode: m.mode,
       source: m.source,
+      latestRun: m.latestRun,
+      latestDiff: m.latestDiff,
     })),
     ...(legacyTraces || []).map(t => ({
       type: 'trace' as const,
@@ -57,6 +72,19 @@ export function MissionTimeline() {
       source: 'legacy',
     })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  const openMissionCompare = (mission: CompareTarget) => {
+    if (!mission.latestDiff) {
+      navigate(`/missions/${mission.id}`);
+      return;
+    }
+
+    const params = new URLSearchParams({
+      run: mission.latestDiff.currentRunId,
+      compare: mission.latestDiff.baselineRunId,
+    });
+    navigate(`/missions/${mission.id}?${params.toString()}`);
+  };
 
   return (
     <div className="page mission-timeline">
@@ -73,49 +101,74 @@ export function MissionTimeline() {
             <p className="hint">在指挥中心发射一个任务开始</p>
           </div>
         ) : (
-          timelineItems.map(item => (
-            <div
-              key={item.id}
-              className="timeline-card glass-panel"
-              onClick={() => item.type === 'mission' ? navigate(`/missions/${item.id}`) : null}
-              style={{ cursor: item.type === 'mission' ? 'pointer' : 'default' }}
-            >
-              <div className="tc-left">
-                {statusIcon(item.status)}
-                <div className="tc-info">
-                  <div className="tc-query">{item.query}</div>
-                  <div className="tc-meta">
-                    <span className="tc-time">{new Date(item.createdAt).toLocaleString()}</span>
-                    {item.duration > 0 && <span className="tc-duration">{Math.round(item.duration / 1000)}s</span>}
-                    <span className={`tc-mode ${item.mode}`}>{item.mode}</span>
-                    {item.source !== 'legacy' && <span className="tc-source">{item.source}</span>}
+          timelineItems.map(item => {
+            const diffBadge = item.type === 'mission' ? missionDiffBadge(item.latestDiff) : null;
+
+            return (
+              <div
+                key={item.id}
+                className="timeline-card glass-panel"
+                onClick={() => item.type === 'mission' ? navigate(`/missions/${item.id}`) : null}
+                style={{ cursor: item.type === 'mission' ? 'pointer' : 'default' }}
+              >
+                <div className="tc-left">
+                  {statusIcon(item.status)}
+                  <div className="tc-info">
+                    <div className="tc-query">{item.query}</div>
+                    <div className="tc-meta">
+                      <span className="tc-time">{new Date(item.createdAt).toLocaleString()}</span>
+                      {item.duration > 0 && <span className="tc-duration">{Math.round(item.duration / 1000)}s</span>}
+                      <span className={`tc-mode ${item.mode}`}>{item.mode}</span>
+                      {item.source !== 'legacy' && <span className="tc-source">{item.source}</span>}
+                      {item.type === 'mission' && item.latestRun && (
+                        <span className="tc-source">
+                          run#{item.latestRun.attempt} {item.latestRun.status}:{item.latestRun.stage}
+                        </span>
+                      )}
+                    </div>
+                    {item.type === 'mission' && item.latestDiff && diffBadge && (
+                      <div className="tc-diff">
+                        <span className={`diff-chip ${diffBadge.tone}`}>{diffBadge.label}</span>
+                        <span className="tc-diff-summary">{item.latestDiff.summary}</span>
+                        <button
+                          type="button"
+                          className="today-compare-btn"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openMissionCompare(item);
+                          }}
+                        >
+                          查看对比
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
 
-              <div className="tc-right">
-                {item.tickers.length > 0 && (
-                  <div className="tc-tickers">
-                    {item.tickers.slice(0, 4).map(t => (
-                      <span key={t} className="ticker-pill">${t}</span>
-                    ))}
-                    {item.tickers.length > 4 && <span className="ticker-more">+{item.tickers.length - 4}</span>}
-                  </div>
-                )}
-                {item.consensus.length > 0 && (
-                  <div className="tc-consensus">
-                    {item.consensus.slice(0, 3).map(c => (
-                      <div key={c.ticker} className="consensus-inline">
-                        <span className="ci-ticker">{c.ticker}</span>
-                        {consensusLabel(c.agreement)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {item.type === 'mission' && <ChevronRight size={16} className="icon-dim" />}
+                <div className="tc-right">
+                  {item.tickers.length > 0 && (
+                    <div className="tc-tickers">
+                      {item.tickers.slice(0, 4).map(t => (
+                        <span key={t} className="ticker-pill">${t}</span>
+                      ))}
+                      {item.tickers.length > 4 && <span className="ticker-more">+{item.tickers.length - 4}</span>}
+                    </div>
+                  )}
+                  {item.consensus.length > 0 && (
+                    <div className="tc-consensus">
+                      {item.consensus.slice(0, 3).map(c => (
+                        <div key={c.ticker} className="consensus-inline">
+                          <span className="ci-ticker">{c.ticker}</span>
+                          {consensusLabel(c.agreement)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {item.type === 'mission' && <ChevronRight size={16} className="icon-dim" />}
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

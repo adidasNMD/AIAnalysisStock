@@ -11,10 +11,25 @@ import { getRuntimeConfig, updateRuntimeConfig } from '../config';
 import { checkOpenBBHealth } from '../utils/openbb-provider';
 import { checkTAHealth } from '../utils/ta-client';
 import { getTokenUsage } from '../utils/llm';
-import { listMissions, getMission, dispatchMission, type MissionInput } from '../workflows';
+import {
+  listMissions,
+  getMission,
+  listMissionEvents,
+  listMissionRuns,
+  getLatestMissionRun,
+  buildLatestMissionDiff,
+  getMissionEvidence,
+  saveMissionEvidence,
+  markMissionCanceled,
+  cancelMissionRun,
+  createQueuedMission,
+  retryMissionRun,
+  type MissionInput,
+} from '../workflows';
 import { diagnosticsHandler } from './routes/diagnostics';
 import { rssProxyHandler } from './routes/rss-proxy';
 import { logger } from '../utils/logger';
+import { getTraceByMissionId, getTraceByRunId } from '../utils/agent-logger';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -57,18 +72,44 @@ app.post('/api/trigger', async (req: Request, res: Response) => {
   const { query, depth, source = 'manual' } = req.body;
   if (!query) return res.status(400).json({ error: 'Query is required' });
 
-  const success = await taskQueue.enqueue(query, depth || 'deep', source, 100); // 手动触发最高优先级
-  if (success) {
-    res.json({ success: true, message: 'Mission queued successfully' });
+  const mission = await createQueuedMission({
+    query,
+    depth: depth || 'deep',
+    source,
+    priority: 100,
+  });
+  if (mission) {
+    const latestRun = await getLatestMissionRun(mission.id);
+    res.status(202).json({
+      success: true,
+      message: 'Mission queued successfully',
+      missionId: mission.id,
+      runId: latestRun?.id,
+    });
   } else {
-    res.status(400).json({ error: 'Task already in queue or running' });
+    res.status(409).json({ error: 'Task already in queue or running' });
   }
 });
 
 // API: 强制中止任务 (Cancel Mission)
 app.delete('/api/queue/:id', async (req: Request, res: Response) => {
   try {
-    await taskQueue.cancelTask(req.params.id as string);
+    const task = await taskQueue.cancelTask(req.params.id as string);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    if (task.status !== 'canceled') {
+      return res.status(409).json({ error: `Task is already ${task.status}` });
+    }
+    if (task.runId) {
+      await cancelMissionRun(task.runId, 'Canceled by user');
+    }
+    if (task.missionId) {
+      const canceledMission = markMissionCanceled(task.missionId, 'Canceled by user');
+      if (canceledMission && task.runId) {
+        saveMissionEvidence(canceledMission, task.runId, 'canceled');
+      }
+    }
     res.json({ success: true, message: 'Mission canceled' });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -223,25 +264,27 @@ app.get('/api/traces/content', (req: Request, res: Response) => {
 app.get('/api/traces/byMission/:missionId', (req: Request, res: Response) => {
   try {
     const missionId = req.params.missionId as string;
-    const tracesDir = path.join(process.cwd(), 'out', 'traces');
-    if (!fs.existsSync(tracesDir)) {
-      return res.status(404).json({ error: 'Trace not found' });
+    const trace = getTraceByMissionId(missionId);
+    if (!trace) {
+      return res.status(404).json({ error: 'Trace not found for mission' });
     }
-    const dates = fs.readdirSync(tracesDir)
-      .filter(d => fs.statSync(path.join(tracesDir, d)).isDirectory())
-      .sort()
-      .reverse(); // 最新日期优先
+    res.json({ content: trace });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
 
-    for (const date of dates) {
-      const dateDir = path.join(tracesDir, date);
-      const match = fs.readdirSync(dateDir)
-        .find(f => f.endsWith('.json') && f.includes(missionId));
-      if (match) {
-        const content = fs.readFileSync(path.join(dateDir, match), 'utf-8');
-        return res.json({ content: JSON.parse(content) });
-      }
+// API: 根据 Mission + Run 定位特定执行轨迹
+app.get('/api/traces/byMission/:missionId/runs/:runId', (req: Request, res: Response) => {
+  try {
+    const missionId = req.params.missionId as string;
+    const runId = req.params.runId as string;
+    const trace = getTraceByRunId(missionId, runId);
+    if (!trace) {
+      return res.status(404).json({ error: 'Trace not found for mission run' });
     }
-    res.status(404).json({ error: 'Trace not found for mission' });
+    res.json({ content: trace });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     res.status(500).json({ error: msg });
@@ -640,22 +683,31 @@ app.get('/api/health/services', async (req: Request, res: Response) => {
 // ================================================================
 
 // API: 列出所有 Mission
-app.get('/api/missions', (req: Request, res: Response) => {
+app.get('/api/missions', async (req: Request, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string) || 50;
     const missions = listMissions(limit);
     // 返回轻量列表（不含完整报告内容）
-    const summaries = missions.map(m => ({
-      id: m.id,
-      mode: m.input.mode,
-      query: m.input.query,
-      source: m.input.source,
-      status: m.status,
-      createdAt: m.createdAt,
-      openclawTickers: m.openclawTickers,
-      taCount: m.taResults.length,
-      consensus: m.consensus,
-      totalDurationMs: m.totalDurationMs,
+    const summaries = await Promise.all(missions.map(async (m) => {
+      const runs = await listMissionRuns(m.id);
+      const latestRun = runs[0] || null;
+      const latestDiff = buildLatestMissionDiff(m, runs);
+
+      return {
+        id: m.id,
+        mode: m.input.mode,
+        query: m.input.query,
+        source: m.input.source,
+        status: m.status,
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt,
+        openclawTickers: m.openclawTickers,
+        taCount: m.taResults.length,
+        consensus: m.consensus,
+        totalDurationMs: m.totalDurationMs,
+        ...(latestRun ? { latestRun } : {}),
+        ...(latestDiff ? { latestDiff } : {}),
+      };
     }));
     res.json(summaries);
   } catch (e: unknown) {
@@ -703,6 +755,78 @@ app.get('/api/missions/:id', (req: Request, res: Response) => {
   }
 });
 
+// API: 获取 Mission 生命周期事件
+app.get('/api/missions/:id/events', (req: Request, res: Response) => {
+  try {
+    res.json(listMissionEvents(req.params.id as string));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// API: 获取 Mission 的执行实例
+app.get('/api/missions/:id/runs', async (req: Request, res: Response) => {
+  try {
+    res.json(await listMissionRuns(req.params.id as string));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// API: 获取某次 run 的证据快照
+app.get('/api/missions/:id/runs/:runId/evidence', (req: Request, res: Response) => {
+  try {
+    const mission = getMission(req.params.id as string);
+    if (!mission) {
+      return res.status(404).json({ error: 'Mission not found' });
+    }
+
+    const evidence = getMissionEvidence(req.params.runId as string);
+    if (!evidence || evidence.missionId !== mission.id) {
+      return res.status(404).json({ error: 'Mission evidence not found' });
+    }
+
+    res.json(evidence);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// API: 重试已有 Mission，复用同一个 missionId，生成新的 run
+app.post('/api/missions/:id/retry', async (req: Request, res: Response) => {
+  try {
+    const missionId = req.params.id as string;
+    const existingMission = getMission(missionId);
+    if (!existingMission) {
+      return res.status(404).json({ error: 'Mission not found' });
+    }
+
+    const body = req.body as Partial<MissionInput>;
+    const mission = await retryMissionRun(missionId, {
+      source: body.source || 'manual_retry',
+      priority: 90,
+      ...(body.depth ? { depth: body.depth } : {}),
+    });
+    if (!mission) {
+      return res.status(409).json({ error: 'Task already in queue or running' });
+    }
+
+    const latestRun = await getLatestMissionRun(mission.id);
+    res.status(202).json({
+      success: true,
+      message: 'Mission retry queued',
+      missionId: mission.id,
+      runId: latestRun?.id,
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // API: 创建并触发 Mission（Dashboard Command Center 调用）
 app.post('/api/missions', async (req: Request, res: Response) => {
   try {
@@ -710,20 +834,36 @@ app.post('/api/missions', async (req: Request, res: Response) => {
     if (!query) {
       return res.status(400).json({ error: 'query is required' });
     }
+    const inputTickers = tickers || [];
 
     const input: MissionInput = {
       mode: mode || 'explore',
       query,
-      tickers: tickers || [],
+      tickers: inputTickers,
       depth: depth || 'deep',
       source: source || 'manual',
     };
 
-    // 立即返回 Mission ID，后台异步执行
-    res.json({ success: true, message: 'Mission dispatched', missionId: `pending_${Date.now()}` });
+    const mission = await createQueuedMission({
+      query: input.query,
+      depth: input.depth || 'deep',
+      source: input.source || 'manual',
+      priority: 100,
+      mode: input.mode,
+      ...(inputTickers.length > 0 ? { tickers: inputTickers } : {}),
+      ...(input.date ? { date: input.date } : {}),
+    });
+    if (!mission) {
+      return res.status(409).json({ error: 'Task already in queue or running' });
+    }
 
-    // 同时也向旧的 taskQueue 入队（保持向后兼容）
-    await taskQueue.enqueue(query, depth || 'deep', source || 'manual', 100);
+    const latestRun = await getLatestMissionRun(mission.id);
+    res.status(202).json({
+      success: true,
+      message: 'Mission queued',
+      missionId: mission.id,
+      runId: latestRun?.id,
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     res.status(500).json({ error: msg });

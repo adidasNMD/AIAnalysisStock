@@ -81,7 +81,8 @@ export class AgentSwarmOrchestrator {
     saveState?: (state: SwarmState) => Promise<void>,
     onProgress?: (step: 'scout' | 'analyst' | 'strategist' | 'council' | 'synthesis') => void,
     checkCanceled?: () => Promise<boolean>,
-    explicitMissionId?: string
+    explicitMissionId?: string,
+    explicitRunId?: string,
   ): Promise<string | null> {
     console.log(`\n======================================================`);
     console.log(`🦅 OPENCLAW V4 SWARM (Free-form Text Flow) ENGAGED: Target [${query}]`);
@@ -104,7 +105,10 @@ export class AgentSwarmOrchestrator {
       console.log(`[SwarmManager] 🔄 从中断状态恢复任务！已跳过阶段: ${completedPhases.join(', ')}`);
     }
 
-    const missionId = startMissionTrace(query, explicitMissionId);
+    const traceId = startMissionTrace(query, {
+      ...(explicitMissionId ? { missionId: explicitMissionId } : {}),
+      ...(explicitRunId ? { runId: explicitRunId } : {}),
+    });
 
     // 0. 加载投资者画像
     const investorProfile = loadInvestorProfile();
@@ -129,13 +133,13 @@ export class AgentSwarmOrchestrator {
       const scoutRes = await this.scout.scout(query);
       rawSignals = scoutRes.signals;
       intelligenceBrief = scoutRes.intelligenceBrief;
-      logAgentStep('DataScout', 'scouting', { query, rawSignals }, intelligenceBrief, Date.now() - t0, { signalCount: rawSignals.length });
+      logAgentStep(traceId, 'DataScout', 'scouting', { query, rawSignals }, intelligenceBrief, Date.now() - t0, { signalCount: rawSignals.length });
       handoffs.push(createHandoff('DataScout', intelligenceBrief, Date.now() - t0, { signalCount: rawSignals.length }));
 
       if (rawSignals.length === 0 && intelligenceBrief.length === 0) {
         console.log('🛑 [SwarmManager] Scout returned no actionable intelligence. Initiating early abort.');
         saveReport(query, `# V4 Execution Aborted\n\nNo actionable intelligence found on the web/social for query: **${query}**`);
-        endMissionTrace();
+        endMissionTrace(traceId);
         return null;
       }
     } else {
@@ -147,7 +151,7 @@ export class AgentSwarmOrchestrator {
     if (!completedPhases.includes('scout')) {
       t0 = Date.now();
       cleanedSignals = await this.normalizer.process(rawSignals);
-      logAgentStep('Normalizer', 'dedup_filter', rawSignals, cleanedSignals, Date.now() - t0);
+      logAgentStep(traceId, 'Normalizer', 'dedup_filter', rawSignals, cleanedSignals, Date.now() - t0);
 
       // 将叙事记忆注入情报上下文
       const narrativeMemory = await getNarrativeContext();
@@ -173,12 +177,12 @@ export class AgentSwarmOrchestrator {
           const analystResult = await this.analyst.analyze(enrichedBrief, query);
           analysisMemo = analystResult.analysisMemo;
           shouldProceed = analystResult.shouldProceed;
-          logAgentStep('LeadAnalyst', 'event_analysis', enrichedBrief, analysisMemo, Date.now() - t0, { shouldProceed });
+          logAgentStep(traceId, 'LeadAnalyst', 'event_analysis', enrichedBrief, analysisMemo, Date.now() - t0, { shouldProceed });
           handoffs.push(createHandoff('LeadAnalyst', analysisMemo, Date.now() - t0, { shouldProceed }));
         } catch (e: any) {
           console.error(`[SwarmManager] ⚠️ Analyst phase failed: ${e.message}. Using raw intelligence brief as fallback.`);
           analysisMemo = enrichedBrief; // 降级：直接用情报文本
-          logAgentStep('LeadAnalyst', 'event_analysis_FALLBACK', { error: e.message }, 'Using raw brief', Date.now() - t0);
+          logAgentStep(traceId, 'LeadAnalyst', 'event_analysis_FALLBACK', { error: e.message }, 'Using raw brief', Date.now() - t0);
           handoffs.push(createDegradedHandoff('LeadAnalyst', analysisMemo, Date.now() - t0, e.message));
         }
 
@@ -186,7 +190,7 @@ export class AgentSwarmOrchestrator {
           console.log('🛑 [SwarmManager] Analyst dismissed event. Insufficient novelty/credibility.');
           const abortReport = `# V4 分析中止报告\n\n**搜索目标:** ${query}\n\n## 分析师评估\n\n${analysisMemo}\n\n---\n*分析师判定该事件不具备足够的可信度/新颖度，Pipeline 提前终止。*`;
           saveReport(query, abortReport);
-          endMissionTrace();
+          endMissionTrace(traceId);
           return abortReport;
         }
 
@@ -202,7 +206,7 @@ export class AgentSwarmOrchestrator {
       
       saveReport(query, quickReport);
       await this.persistNarrative(query, analysisMemo, '', relatedNarrative);
-      endMissionTrace();
+      endMissionTrace(traceId);
 
       // Telegram Push
       await this.pushToTelegram(query, quickReport, relatedNarrative, '⚡ 快速扫描');
@@ -220,12 +224,12 @@ export class AgentSwarmOrchestrator {
         onProgress?.('strategist');
         try {
           strategyReport = await this.strategist.strategize(analysisMemo, investorProfile);
-          logAgentStep('QuantStrategist', 'supply_chain_mapping', analysisMemo, strategyReport, Date.now() - t0);
+          logAgentStep(traceId, 'QuantStrategist', 'supply_chain_mapping', analysisMemo, strategyReport, Date.now() - t0);
           handoffs.push(createHandoff('QuantStrategist', strategyReport, Date.now() - t0));
         } catch (e: any) {
           console.error(`[SwarmManager] ⚠️ Strategist phase failed: ${e.message}. Continuing with analyst memo.`);
           strategyReport = analysisMemo; // 降级：直接用分析师备忘录
-          logAgentStep('QuantStrategist', 'supply_chain_mapping_FALLBACK', { error: e.message }, 'Using analyst memo', Date.now() - t0);
+          logAgentStep(traceId, 'QuantStrategist', 'supply_chain_mapping_FALLBACK', { error: e.message }, 'Using analyst memo', Date.now() - t0);
           handoffs.push(createDegradedHandoff('QuantStrategist', strategyReport, Date.now() - t0, e.message));
         }
         
@@ -248,12 +252,12 @@ export class AgentSwarmOrchestrator {
           } else {
             debateReport = await this.council.singlePassDebate(strategyReport, investorProfile);
           }
-          logAgentStep('Council', depth === 'deep' ? 'multi_persona_debate' : 'single_pass_debate', strategyReport, debateReport, Date.now() - t0);
+          logAgentStep(traceId, 'Council', depth === 'deep' ? 'multi_persona_debate' : 'single_pass_debate', strategyReport, debateReport, Date.now() - t0);
           handoffs.push(createHandoff('Council', debateReport, Date.now() - t0, { mode: depth === 'deep' ? 'full' : 'single-pass' }));
         } catch (e: any) {
           console.error(`[SwarmManager] ⚠️ Council phase failed: ${e.message}. Continuing with strategy report.`);
           debateReport = `## ⚖️ 辩论环节异常\n\n> 辩论 Agent 执行失败: ${e.message}\n\n请参考上游策略师的产业链研报进行独立判断。`;
-          logAgentStep('Council', 'debate_FALLBACK', { error: e.message }, 'Partial output', Date.now() - t0);
+          logAgentStep(traceId, 'Council', 'debate_FALLBACK', { error: e.message }, 'Partial output', Date.now() - t0);
           handoffs.push(createDegradedHandoff('Council', debateReport, Date.now() - t0, e.message));
         }
         
@@ -287,7 +291,7 @@ export class AgentSwarmOrchestrator {
       // 降级：手动拼装原始文本
       finalReport = `# 📈 OpenClaw 深度研报: ${new Date().toISOString().split('T')[0]}\n\n**搜索目标:** ${query}\n**分析深度:** ${DEPTH_LABELS[depth]}\n\n---\n\n## 📌 事件分析\n\n${analysisMemo}\n\n---\n\n## 🗺️ 产业链研报\n\n${strategyReport}\n\n---\n\n## ⚔️ 多空辩论\n\n${debateReport}\n\n---\n*Generated by OpenClaw Autonomous Intelligence Desk (fallback mode)*`;
     }
-    logAgentStep('Synthesis', 'report_generation', { query, analysisMemo, strategyReport, debateReport, depth }, finalReport, Date.now() - t0);
+    logAgentStep(traceId, 'Synthesis', 'report_generation', { query, analysisMemo, strategyReport, debateReport, depth }, finalReport, Date.now() - t0);
 
     const structured = validateTradeDecision(finalReport, query);
     if (structured) {
@@ -332,7 +336,7 @@ export class AgentSwarmOrchestrator {
     await this.persistNarrative(query, strategyReport, debateReport, relatedNarrative);
     
     // 7. 保存全链路追踪
-    endMissionTrace();
+    endMissionTrace(traceId);
 
     // 8. Telegram Push
     const depthEmoji = depth === 'deep' ? '🔬' : depth === 'standard' ? '📊' : '⚡';

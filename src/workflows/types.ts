@@ -4,15 +4,69 @@ import type { RejectedTicker } from '../agents/discovery/ticker-discovery';
 import type { OpenClawStructuredVerdict } from '../models/types';
 
 export type MissionStatus =
+  | 'queued'
   | 'triggered'
   | 'main_running'
   | 'main_complete'
   | 'ta_running'
   | 'fully_enriched'
   | 'main_only'
+  | 'canceled'
   | 'failed';
 
 export type MissionMode = 'explore' | 'analyze' | 'review';
+
+export type MissionRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+
+export type MissionRunStage =
+  | 'queued'
+  | 'dispatch'
+  | 'scout'
+  | 'analyst'
+  | 'strategist'
+  | 'council'
+  | 'synthesis'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+export interface MissionRunRecord {
+  id: string;
+  missionId: string;
+  taskId?: string;
+  status: MissionRunStatus;
+  stage: MissionRunStage;
+  attempt: number;
+  workerLeaseId?: string;
+  createdAt: string;
+  startedAt?: string;
+  heartbeatAt?: string;
+  completedAt?: string;
+  failureMessage?: string;
+  degradedFlags?: string[];
+}
+
+export type MissionEvidenceCompleteness = 'full' | 'partial' | 'failed' | 'canceled';
+
+export type MissionDiffCategory =
+  | 'execution'
+  | 'coverage'
+  | 'consensus'
+  | 'tradingAgents'
+  | 'openbb'
+  | 'trace';
+
+export interface MissionDiffSummary {
+  currentRunId: string;
+  baselineRunId: string;
+  currentAttempt: number;
+  baselineAttempt: number;
+  changed: boolean;
+  changeCount: number;
+  changedCategories: MissionDiffCategory[];
+  highlights: string[];
+  summary: string;
+}
 
 export interface MissionInput {
   mode: MissionMode;
@@ -47,6 +101,28 @@ export interface UnifiedMission {
   decisionTrail?: DecisionTrailEntry[];
   structuredVerdicts?: Record<string, OpenClawStructuredVerdict>;
 
+  totalDurationMs: number;
+}
+
+export interface MissionEvidenceRecord {
+  id: string;
+  missionId: string;
+  runId: string;
+  capturedAt: string;
+  status: MissionStatus;
+  completeness: MissionEvidenceCompleteness;
+  input: MissionInput;
+  openclawReport: string | null;
+  openclawTickers: string[];
+  openclawDurationMs: number;
+  taResults: TAAnalysisResult[];
+  taDurationMs: number;
+  openbbData: OpenBBTickerData[];
+  macroData: any;
+  consensus: TickerConsensus[];
+  discoveryRejections?: RejectedTicker[];
+  decisionTrail?: DecisionTrailEntry[];
+  structuredVerdicts?: Record<string, OpenClawStructuredVerdict>;
   totalDurationMs: number;
 }
 

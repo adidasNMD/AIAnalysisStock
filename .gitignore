@@ -70,3 +70,6 @@ tmp_*.ts
 *.tmp
 *.bak
 .specstory
+
+# === Local Agent Scratch Space ===
+.sisyphus/

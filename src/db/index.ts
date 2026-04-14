@@ -27,6 +27,8 @@ async function initDb(db: Database) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
+      missionId TEXT,
+      runId TEXT,
       query TEXT NOT NULL,
       depth TEXT NOT NULL,
       priority INTEGER NOT NULL,
@@ -42,10 +44,47 @@ async function initDb(db: Database) {
   `);
   // Handle migrations for existing DB
   try {
+    await db.exec(`ALTER TABLE tasks ADD COLUMN missionId TEXT;`);
+  } catch (e: any) {
+    // Column already exists
+  }
+  try {
+    await db.exec(`ALTER TABLE tasks ADD COLUMN runId TEXT;`);
+  } catch (e: any) {
+    // Column already exists
+  }
+  try {
     await db.exec(`ALTER TABLE tasks ADD COLUMN statePayload TEXT;`);
   } catch (e: any) {
     // Column already exists
   }
+
+  // === Mission Runs Table ===
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS mission_runs (
+      id TEXT PRIMARY KEY,
+      missionId TEXT NOT NULL,
+      taskId TEXT,
+      status TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      workerLeaseId TEXT,
+      createdAt TEXT NOT NULL,
+      startedAt TEXT,
+      heartbeatAt TEXT,
+      completedAt TEXT,
+      failureMessage TEXT,
+      degradedFlags TEXT
+    );
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_mission_runs_mission_created
+    ON mission_runs (missionId, createdAt DESC);
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_mission_runs_task
+    ON mission_runs (taskId);
+  `);
 
   // === Narratives Table ===
   await db.exec(`

@@ -21,40 +21,77 @@ export interface AgentTrace {
 
 // 每次 Mission 的完整追踪记录
 export interface MissionTrace {
+  traceId: string;
   missionId: string;
+  runId?: string;
   query: string;
   startedAt: string;
   completedAt?: string;
   steps: AgentTrace[];
 }
 
+interface StartMissionTraceOptions {
+  missionId?: string;
+  runId?: string;
+  traceId?: string;
+}
+
 // 当前活跃的 Mission trace
-let activeMission: MissionTrace | null = null;
+const activeMissions = new Map<string, MissionTrace>();
+
+function currentLocalIsoTime(): string {
+  const now = new Date();
+  const tzoffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
+}
+
+function buildTraceFileStem(trace: MissionTrace): string {
+  const safeQuery = trace.query.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_').substring(0, 30);
+  if (trace.runId) {
+    return `${trace.missionId}__${trace.runId}_${safeQuery}`;
+  }
+  return `${trace.missionId}_${safeQuery}`;
+}
+
+function traceDateDir(isoTime: string): string {
+  const dateStr = isoTime.split('T')[0] || '1970-01-01';
+  return path.join(TRACE_DIR, dateStr);
+}
+
+function readTraceFile(tracePath: string): MissionTrace | null {
+  try {
+    return JSON.parse(fs.readFileSync(tracePath, 'utf-8')) as MissionTrace;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 开始一个新的 Mission 追踪
  */
-export function startMissionTrace(query: string, explicitId?: string): string {
-  const now = new Date();
-  const tzoffset = now.getTimezoneOffset() * 60000; 
-  const localISOTime = new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
-  const missionId = explicitId || `mission_${localISOTime.replace(/[:.]/g, '-')}`;
-  
-  activeMission = {
+export function startMissionTrace(query: string, options: StartMissionTraceOptions = {}): string {
+  const localISOTime = currentLocalIsoTime();
+  const missionId = options.missionId || `mission_${localISOTime.replace(/[:.]/g, '-')}`;
+  const traceId = options.traceId || options.runId || missionId;
+
+  activeMissions.set(traceId, {
+    traceId,
     missionId,
+    ...(options.runId ? { runId: options.runId } : {}),
     query,
     startedAt: localISOTime,
     steps: [],
-  };
+  });
 
-  console.log(`[AgentLogger] 📝 开始追踪 Mission: ${missionId}`);
-  return missionId;
+  console.log(`[AgentLogger] 📝 开始追踪 Mission: ${missionId}${options.runId ? ` run=${options.runId}` : ''}`);
+  return traceId;
 }
 
 /**
  * 记录一个 Agent 步骤
  */
 export function logAgentStep(
+  traceId: string,
   agentName: string,
   phase: string,
   input: any,
@@ -62,9 +99,7 @@ export function logAgentStep(
   durationMs: number,
   meta?: Record<string, any>,
 ): void {
-  const now = new Date();
-  const tzoffset = now.getTimezoneOffset() * 60000; 
-  const localISOTime = new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
+  const localISOTime = currentLocalIsoTime();
 
   const trace: AgentTrace = {
     agentName,
@@ -76,10 +111,15 @@ export function logAgentStep(
     meta,
   };
 
+  const activeMission = activeMissions.get(traceId);
   if (activeMission) {
     activeMission.steps.push(trace);
     let textOut = typeof output === 'string' ? output : JSON.stringify(output);
-    eventBus.emitLog(activeMission.missionId, agentName, phase, textOut, meta);
+    eventBus.emitLog(activeMission.missionId, agentName, phase, textOut, {
+      ...(meta || {}),
+      ...(activeMission.runId ? { runId: activeMission.runId } : {}),
+      traceId,
+    });
   }
 
   console.log(`[AgentLogger] 📎 ${agentName} | ${phase} | ${durationMs}ms`);
@@ -88,25 +128,21 @@ export function logAgentStep(
 /**
  * 结束并保存 Mission 追踪
  */
-export function endMissionTrace(): string | null {
+export function endMissionTrace(traceId: string): string | null {
+  const activeMission = activeMissions.get(traceId);
   if (!activeMission) return null;
 
-  const now = new Date();
-  const tzoffset = now.getTimezoneOffset() * 60000; 
-  const localISOTime = new Date(now.getTime() - tzoffset).toISOString().slice(0, -1);
-
+  const localISOTime = currentLocalIsoTime();
   activeMission.completedAt = localISOTime;
 
   // 保存 JSON trace
-  const dateStr = localISOTime.split('T')[0] || '1970-01-01';
-  const dirPath = path.join(TRACE_DIR, dateStr);
+  const dirPath = traceDateDir(localISOTime);
 
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 
-  const safeQuery = activeMission.query.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_').substring(0, 30);
-  const tracePath = path.join(dirPath, `${activeMission.missionId}_${safeQuery}.json`);
+  const tracePath = path.join(dirPath, `${buildTraceFileStem(activeMission)}.json`);
   fs.writeFileSync(tracePath, JSON.stringify(activeMission, null, 2), 'utf-8');
 
   // 同时生成可读的 Markdown 报告
@@ -118,8 +154,60 @@ export function endMissionTrace(): string | null {
   console.log(`[AgentLogger] 📊 可读报告已保存: ${reportPath}`);
 
   const result = tracePath;
-  activeMission = null;
+  activeMissions.delete(traceId);
   return result;
+}
+
+export function getTraceByMissionId(missionId: string): MissionTrace | null {
+  if (!fs.existsSync(TRACE_DIR)) return null;
+
+  const dates = fs.readdirSync(TRACE_DIR)
+    .filter((dir) => fs.statSync(path.join(TRACE_DIR, dir)).isDirectory())
+    .sort()
+    .reverse();
+
+  for (const date of dates) {
+    const dateDir = path.join(TRACE_DIR, date);
+    const files = fs.readdirSync(dateDir)
+      .filter((file) => file.endsWith('.json') && (file.startsWith(`${missionId}__`) || file.startsWith(`${missionId}_`)))
+      .sort()
+      .reverse();
+
+    for (const file of files) {
+      const trace = readTraceFile(path.join(dateDir, file));
+      if (trace && trace.missionId === missionId) {
+        return trace;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function getTraceByRunId(missionId: string, runId: string): MissionTrace | null {
+  if (!fs.existsSync(TRACE_DIR)) return null;
+
+  const dates = fs.readdirSync(TRACE_DIR)
+    .filter((dir) => fs.statSync(path.join(TRACE_DIR, dir)).isDirectory())
+    .sort()
+    .reverse();
+
+  for (const date of dates) {
+    const dateDir = path.join(TRACE_DIR, date);
+    const files = fs.readdirSync(dateDir)
+      .filter((file) => file.endsWith('.json') && file.startsWith(`${missionId}__${runId}_`))
+      .sort()
+      .reverse();
+
+    for (const file of files) {
+      const trace = readTraceFile(path.join(dateDir, file));
+      if (trace && trace.missionId === missionId && trace.runId === runId) {
+        return trace;
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
