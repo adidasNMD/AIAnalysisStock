@@ -1,8 +1,9 @@
 import { Outlet, NavLink } from 'react-router-dom';
-import { Crosshair, Clock, Eye, Settings as SettingsIcon, Zap, Radar, Database } from 'lucide-react';
+import { Crosshair, Clock, Eye, Settings as SettingsIcon, Zap, Radar, Database, Orbit } from 'lucide-react';
 
 const navItems = [
-  { to: '/', icon: Crosshair, label: '指挥中心' },
+  { to: '/', icon: Orbit, label: '机会工作台' },
+  { to: '/command-center', icon: Crosshair, label: '执行控制台' },
   { to: '/radar', icon: Radar, label: '全局大盘雷达' },
   { to: '/radar-raw', icon: Database, label: '底层数据透视' },
   { to: '/missions', icon: Clock, label: '任务时间线' },

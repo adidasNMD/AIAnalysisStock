@@ -9,6 +9,15 @@ export interface AgentLog {
   meta?: any;
 }
 
+export interface OpportunityStreamEvent {
+  id: string;
+  opportunityId: string;
+  type: string;
+  message: string;
+  timestamp: string;
+  meta?: any;
+}
+
 /**
  * Hook for subscribing to Agent SSE stream
  * B1 fix: 手动重连逻辑，防止服务端断连后不恢复
@@ -67,6 +76,61 @@ export function useAgentStream(maxLogs = 100) {
   const clearLogs = useCallback(() => setLogs([]), []);
 
   return { logs, isConnected, clearLogs };
+}
+
+export function useOpportunityStream(maxEvents = 100) {
+  const [events, setEvents] = useState<OpportunityStreamEvent[]>([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const retryCount = useRef(0);
+  const sseRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let unmounted = false;
+
+    function connect() {
+      if (unmounted) return;
+
+      const sseBase = import.meta.env.PROD ? '' : 'http://localhost:3000';
+      const sse = new EventSource(`${sseBase}/api/opportunities/stream`);
+      sseRef.current = sse;
+
+      sse.onopen = () => {
+        setIsConnected(true);
+        retryCount.current = 0;
+      };
+
+      sse.onerror = () => {
+        setIsConnected(false);
+        sse.close();
+        sseRef.current = null;
+
+        if (unmounted) return;
+        const delay = Math.min(1000 * Math.pow(2, retryCount.current), 30000);
+        retryCount.current += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+
+      sse.onmessage = (e) => {
+        try {
+          const event = JSON.parse(e.data) as OpportunityStreamEvent;
+          setEvents((prev) => [event, ...prev].slice(0, maxEvents));
+        } catch {}
+      };
+    }
+
+    connect();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      sseRef.current?.close();
+    };
+  }, [maxEvents]);
+
+  const clearEvents = useCallback(() => setEvents([]), []);
+
+  return { events, isConnected, clearEvents };
 }
 
 /**

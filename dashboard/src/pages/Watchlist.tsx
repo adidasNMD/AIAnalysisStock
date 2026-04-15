@@ -8,7 +8,7 @@ export function Watchlist() {
 
   const focused = tickers?.filter(t => t.status === 'focused') || [];
   const watching = tickers?.filter(t => t.status === 'watching') || [];
-  const aging = tickers?.filter(t => t.status === 'aging') || [];
+  const discovered = tickers?.filter(t => t.status === 'discovered') || [];
 
   return (
     <div className="page watchlist">
@@ -43,11 +43,11 @@ export function Watchlist() {
             </section>
           )}
 
-          {aging.length > 0 && (
+          {discovered.length > 0 && (
             <section className="wl-section">
-              <h3 className="wl-section-title aging"><TrendingUp size={14} /> 老化 ({aging.length})</h3>
+              <h3 className="wl-section-title aging"><TrendingUp size={14} /> 待观察 ({discovered.length})</h3>
               <div className="wl-grid">
-                {aging.map(t => <TickerCard key={t.symbol} ticker={t} />)}
+                {discovered.map(t => <TickerCard key={t.symbol} ticker={t} />)}
               </div>
             </section>
           )}

@@ -95,11 +95,11 @@ export function MissionTimeline() {
 
       <div className="timeline-list">
         {timelineItems.length === 0 ? (
-          <div className="empty-state">
-            <Search size={48} />
-            <p>暂无任务记录</p>
-            <p className="hint">在指挥中心发射一个任务开始</p>
-          </div>
+            <div className="empty-state">
+              <Search size={48} />
+              <p>暂无任务记录</p>
+              <p className="hint">在机会工作台创建机会卡，或去执行控制台直接发射任务</p>
+            </div>
         ) : (
           timelineItems.map(item => {
             const diffBadge = item.type === 'mission' ? missionDiffBadge(item.latestDiff) : null;
