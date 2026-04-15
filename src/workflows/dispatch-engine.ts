@@ -11,6 +11,11 @@ import { buildDecisionTrail, computeConsensus, triggerConsensusAlerts } from './
 import { parseStructuredVerdicts } from '../utils/report-validator';
 import { appendMissionEvent } from './mission-events';
 import { saveMissionEvidence } from './mission-evidence';
+import {
+  markOpportunityMissionCanceled,
+  markOpportunityMissionCompleted,
+  markOpportunityMissionFailed,
+} from './opportunities';
 import type { ConsensusResult, MissionInput, UnifiedMission } from './types';
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
@@ -290,6 +295,13 @@ export async function dispatchMission(
         mission.status === 'main_only' ? 'partial' : 'full',
       );
     }
+    if (input.opportunityId) {
+      await markOpportunityMissionCompleted(input.opportunityId, mission.id, runId, {
+        missionStatus: mission.status,
+        tickers: mission.openclawTickers,
+        consensusCount: mission.consensus.length,
+      });
+    }
     appendMissionEvent(mission.id, mission.createdAt, {
       type: 'completed',
       status: mission.status,
@@ -308,6 +320,13 @@ export async function dispatchMission(
         runId,
         isCanceledError(e) ? 'canceled' : 'failed',
       );
+    }
+    if (input.opportunityId) {
+      if (isCanceledError(e)) {
+        await markOpportunityMissionCanceled(input.opportunityId, mission.id, runId, e.message);
+      } else {
+        await markOpportunityMissionFailed(input.opportunityId, mission.id, runId, e.message);
+      }
     }
     appendMissionEvent(mission.id, mission.createdAt, {
       type: isCanceledError(e) ? 'canceled' : 'failed',

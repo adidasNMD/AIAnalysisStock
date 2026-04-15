@@ -43,6 +43,17 @@ class SwarmEventBus extends EventEmitter {
     });
   }
 
+  emitOpportunityEvent(event: {
+    id: string;
+    opportunityId: string;
+    type: string;
+    message: string;
+    timestamp: string;
+    meta?: any;
+  }) {
+    this.emit('opportunity_event', event);
+  }
+
   cleanupMission(missionId: string): void {
     void missionId;
     this.listenerRegistry.forEach((listeners, event) => {

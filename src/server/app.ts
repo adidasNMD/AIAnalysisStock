@@ -11,7 +11,17 @@ import { getRuntimeConfig, updateRuntimeConfig } from '../config';
 import { checkOpenBBHealth } from '../utils/openbb-provider';
 import { checkTAHealth } from '../utils/ta-client';
 import { getTokenUsage } from '../utils/llm';
+import { watchIPO } from '../tools/edgar-monitor';
 import {
+  buildHeatTransferGraphs,
+  buildOpportunityBoardHealthMap,
+  buildNewCodeRadarCandidates,
+  buildOpportunityInbox,
+  buildOpportunityActionTimeline,
+  buildOpportunityPlaybook,
+  buildOpportunitySuggestedMission,
+  buildOpportunitySuggestedMissions,
+  buildWhyNowSummary,
   listMissions,
   getMission,
   listMissionEvents,
@@ -24,6 +34,22 @@ import {
   cancelMissionRun,
   createQueuedMission,
   retryMissionRun,
+  createOpportunity,
+  detectOpportunityHeatInflection,
+  emitOpportunityDerivedEvents,
+  getOpportunity,
+  getOpportunityHeatHistory,
+  getLatestOpportunityDiff,
+  listOpportunities,
+  listOpportunityEvents,
+  syncHeatTransferGraphOpportunities,
+  syncNewCodeRadarOpportunities,
+  updateOpportunity,
+  appendOpportunityEvent,
+  markOpportunityMissionCanceled,
+  type OpportunityRecord,
+  type OpportunitySummaryRecord,
+  type CreateOpportunityInput,
   type MissionInput,
 } from '../workflows';
 import { diagnosticsHandler } from './routes/diagnostics';
@@ -37,6 +63,63 @@ export const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+function loadEdgarWatchCompanies(): string[] {
+  const watchlistPath = path.join(process.cwd(), 'data', 'watchlist.json');
+  if (!fs.existsSync(watchlistPath)) return [];
+  const data = JSON.parse(fs.readFileSync(watchlistPath, 'utf-8')) as {
+    tickers?: Array<{ name?: string; alerts?: { edgarWatch?: boolean } }>;
+  };
+  return (data.tickers || [])
+    .filter((ticker) => ticker.alerts?.edgarWatch && ticker.name)
+    .map((ticker) => ticker.name as string);
+}
+
+async function buildOpportunitySummary(opportunity: OpportunityRecord): Promise<OpportunitySummaryRecord> {
+  const latestMission = opportunity.latestMissionId ? getMission(opportunity.latestMissionId) : null;
+  const runs = latestMission ? await listMissionRuns(latestMission.id) : [];
+  const latestRun = runs[0] || null;
+  const latestDiff = latestMission ? buildLatestMissionDiff(latestMission, runs) : null;
+  const latestOpportunityDiff = await getLatestOpportunityDiff(opportunity.id);
+  const recentHeatHistory = opportunity.type === 'relay_chain'
+    ? await getOpportunityHeatHistory(opportunity.id, 5)
+    : [];
+  const recentOpportunityEvents = await listOpportunityEvents(opportunity.id, 4);
+  const recentMissionEvents = latestMission ? listMissionEvents(latestMission.id).slice(-3) : [];
+  const heatInflection = opportunity.type === 'relay_chain'
+    ? recentHeatHistory.length > 1
+      ? detectOpportunityHeatInflection(recentHeatHistory)
+      : null
+    : null;
+  const summaryBase: OpportunitySummaryRecord = {
+    ...opportunity,
+    ...(latestMission
+      ? {
+          latestMission: {
+            id: latestMission.id,
+            query: latestMission.input.query,
+            status: latestMission.status,
+            updatedAt: latestMission.updatedAt,
+            source: latestMission.input.source,
+          },
+        }
+      : {}),
+    ...(latestRun ? { latestRun } : {}),
+    ...(latestDiff ? { latestDiff } : {}),
+    ...(latestOpportunityDiff ? { latestOpportunityDiff } : {}),
+    ...(recentHeatHistory.length > 0 ? { recentHeatHistory } : {}),
+    ...(heatInflection ? { heatInflection } : {}),
+  };
+
+  return {
+    ...summaryBase,
+    whyNowSummary: buildWhyNowSummary(summaryBase),
+    playbook: buildOpportunityPlaybook(summaryBase),
+    suggestedMission: buildOpportunitySuggestedMission(summaryBase),
+    suggestedMissions: buildOpportunitySuggestedMissions(summaryBase),
+    recentActionTimeline: buildOpportunityActionTimeline(recentOpportunityEvents, recentMissionEvents, 6),
+  };
+}
 
 // API: 代理内部 RSS 数据 (X / Reddit bypass)
 app.get('/api/rss/:source', rssProxyHandler);
@@ -69,7 +152,7 @@ app.get('/api/queue', async (req: Request, res: Response) => {
 
 // API: 手动下发任务 (Manual Trigger)
 app.post('/api/trigger', async (req: Request, res: Response) => {
-  const { query, depth, source = 'manual' } = req.body;
+  const { query, depth, source = 'manual', opportunityId } = req.body;
   if (!query) return res.status(400).json({ error: 'Query is required' });
 
   const mission = await createQueuedMission({
@@ -77,6 +160,7 @@ app.post('/api/trigger', async (req: Request, res: Response) => {
     depth: depth || 'deep',
     source,
     priority: 100,
+    ...(opportunityId ? { opportunityId } : {}),
   });
   if (mission) {
     const latestRun = await getLatestMissionRun(mission.id);
@@ -109,8 +193,256 @@ app.delete('/api/queue/:id', async (req: Request, res: Response) => {
       if (canceledMission && task.runId) {
         saveMissionEvidence(canceledMission, task.runId, 'canceled');
       }
+      if (canceledMission?.input.opportunityId) {
+        await markOpportunityMissionCanceled(canceledMission.input.opportunityId, canceledMission.id, task.runId, 'Canceled by user');
+      }
     }
     res.json({ success: true, message: 'Mission canceled' });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/graphs/heat-transfer', async (_req: Request, res: Response) => {
+  try {
+    const opportunities = await listOpportunities(500);
+    const graphs = buildHeatTransferGraphs(getActiveTickers(), opportunities);
+    res.json(graphs);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/opportunities/graphs/heat-transfer/sync', async (_req: Request, res: Response) => {
+  try {
+    const synced = await syncHeatTransferGraphOpportunities(getActiveTickers());
+    res.json({
+      success: true,
+      syncedCount: synced.length,
+      opportunities: synced,
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/opportunities/radar/new-codes/refresh', async (_req: Request, res: Response) => {
+  try {
+    const companies = loadEdgarWatchCompanies();
+    const filings = await watchIPO(companies);
+    const synced = await syncNewCodeRadarOpportunities(filings);
+    const candidates = buildNewCodeRadarCandidates(filings, synced);
+    res.json({
+      success: true,
+      companyCount: companies.length,
+      filingCount: filings.length,
+      syncedCount: synced.length,
+      candidates,
+      opportunities: synced,
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/inbox', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string, 10) || 12;
+    const opportunities = await listOpportunities(200);
+    const summaries = await Promise.all(opportunities.map((opportunity) => buildOpportunitySummary(opportunity)));
+    res.json(buildOpportunityInbox(summaries, limit));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/inbox/:id', async (req: Request, res: Response) => {
+  try {
+    const opportunity = await getOpportunity(req.params.id as string);
+    if (!opportunity) {
+      return res.status(404).json({ error: 'Opportunity not found' });
+    }
+
+    const summary = await buildOpportunitySummary(opportunity);
+    const [item] = buildOpportunityInbox([summary], 1);
+    if (!item) {
+      return res.status(404).json({ error: 'Inbox item not found' });
+    }
+    return res.json(item);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/board-health', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const opportunities = await listOpportunities(limit);
+    const summaries = await Promise.all(opportunities.map((opportunity) => buildOpportunitySummary(opportunity)));
+    return res.json(buildOpportunityBoardHealthMap(summaries));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const opportunities = await listOpportunities(limit);
+    const summaries = await Promise.all(opportunities.map((opportunity) => buildOpportunitySummary(opportunity)));
+    res.json(summaries);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunity-events', async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    res.json(await listOpportunityEvents(undefined, limit));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/stream', (req: Request, res: Response) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+  });
+
+  const onEvent = (data: unknown) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  eventBus.on('opportunity_event', onEvent);
+
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n');
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    eventBus.removeListener('opportunity_event', onEvent);
+  });
+});
+
+app.get('/api/opportunities/:id', async (req: Request, res: Response) => {
+  try {
+    const opportunity = await getOpportunity(req.params.id as string);
+    if (!opportunity) {
+      return res.status(404).json({ error: 'Opportunity not found' });
+    }
+    return res.json(await buildOpportunitySummary(opportunity));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/:id/events', async (req: Request, res: Response) => {
+  try {
+    res.json(await listOpportunityEvents(req.params.id as string, parseInt(req.query.limit as string, 10) || 50));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/opportunities/:id/heat-history', async (req: Request, res: Response) => {
+  try {
+    res.json(await getOpportunityHeatHistory(req.params.id as string, parseInt(req.query.limit as string, 10) || 8));
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/opportunities', async (req: Request, res: Response) => {
+  try {
+    const body = req.body as Partial<CreateOpportunityInput>;
+    const title = (body.title || body.query || '').trim();
+    if (!title) {
+      return res.status(400).json({ error: 'title or query is required' });
+    }
+    const type = body.type || 'ad_hoc';
+    const opportunity = await createOpportunity({
+      type,
+      title,
+      ...(body.query ? { query: body.query } : {}),
+      ...(body.thesis ? { thesis: body.thesis } : {}),
+      ...(body.summary ? { summary: body.summary } : {}),
+      ...(body.stage ? { stage: body.stage } : {}),
+      ...(body.status ? { status: body.status } : {}),
+      ...(body.primaryTicker ? { primaryTicker: body.primaryTicker } : {}),
+      ...(body.leaderTicker ? { leaderTicker: body.leaderTicker } : {}),
+      ...(body.proxyTicker ? { proxyTicker: body.proxyTicker } : {}),
+      ...(body.relatedTickers ? { relatedTickers: body.relatedTickers } : {}),
+      ...(body.relayTickers ? { relayTickers: body.relayTickers } : {}),
+      ...(body.nextCatalystAt ? { nextCatalystAt: body.nextCatalystAt } : {}),
+      ...(body.supplyOverhang ? { supplyOverhang: body.supplyOverhang } : {}),
+      ...(body.policyStatus ? { policyStatus: body.policyStatus } : {}),
+      ...(body.scores ? { scores: body.scores } : {}),
+      ...(body.heatProfile ? { heatProfile: body.heatProfile } : {}),
+      ...(body.proxyProfile ? { proxyProfile: body.proxyProfile } : {}),
+      ...(body.ipoProfile ? { ipoProfile: body.ipoProfile } : {}),
+      ...(body.catalystCalendar ? { catalystCalendar: body.catalystCalendar } : {}),
+    });
+    res.status(201).json(opportunity);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.patch('/api/opportunities/:id', async (req: Request, res: Response) => {
+  try {
+    const body = req.body as Record<string, unknown>;
+    const previous = await getOpportunity(req.params.id as string);
+    const opportunity = await updateOpportunity(req.params.id as string, {
+      ...(typeof body.title === 'string' ? { title: body.title } : {}),
+      ...(typeof body.query === 'string' ? { query: body.query } : {}),
+      ...(typeof body.thesis === 'string' ? { thesis: body.thesis } : {}),
+      ...(typeof body.summary === 'string' ? { summary: body.summary } : {}),
+      ...(typeof body.stage === 'string' ? { stage: body.stage as CreateOpportunityInput['stage'] } : {}),
+      ...(typeof body.status === 'string' ? { status: body.status as CreateOpportunityInput['status'] } : {}),
+      ...(typeof body.primaryTicker === 'string' ? { primaryTicker: body.primaryTicker } : {}),
+      ...(typeof body.leaderTicker === 'string' ? { leaderTicker: body.leaderTicker } : {}),
+      ...(typeof body.proxyTicker === 'string' ? { proxyTicker: body.proxyTicker } : {}),
+      ...(Array.isArray(body.relatedTickers) ? { relatedTickers: body.relatedTickers as string[] } : {}),
+      ...(Array.isArray(body.relayTickers) ? { relayTickers: body.relayTickers as string[] } : {}),
+      ...(typeof body.nextCatalystAt === 'string' ? { nextCatalystAt: body.nextCatalystAt } : {}),
+      ...(typeof body.supplyOverhang === 'string' ? { supplyOverhang: body.supplyOverhang } : {}),
+      ...(typeof body.policyStatus === 'string' ? { policyStatus: body.policyStatus } : {}),
+      ...(typeof body.scores === 'object' && body.scores !== null ? { scores: body.scores as CreateOpportunityInput['scores'] } : {}),
+      ...(typeof body.heatProfile === 'object' && body.heatProfile !== null ? { heatProfile: body.heatProfile as CreateOpportunityInput['heatProfile'] } : {}),
+      ...(typeof body.proxyProfile === 'object' && body.proxyProfile !== null ? { proxyProfile: body.proxyProfile as CreateOpportunityInput['proxyProfile'] } : {}),
+      ...(typeof body.ipoProfile === 'object' && body.ipoProfile !== null ? { ipoProfile: body.ipoProfile as CreateOpportunityInput['ipoProfile'] } : {}),
+      ...(Array.isArray(body.catalystCalendar) ? { catalystCalendar: body.catalystCalendar as CreateOpportunityInput['catalystCalendar'] } : {}),
+    });
+    if (!opportunity) {
+      return res.status(404).json({ error: 'Opportunity not found' });
+    }
+    await appendOpportunityEvent(opportunity.id, {
+      type: 'updated',
+      message: `Opportunity updated: ${opportunity.title}`,
+      meta: {
+        stage: opportunity.stage,
+        status: opportunity.status,
+      },
+    });
+    await emitOpportunityDerivedEvents(previous, opportunity);
+    res.json((await getOpportunity(opportunity.id)) || opportunity);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     res.status(500).json({ error: msg });
@@ -830,7 +1162,7 @@ app.post('/api/missions/:id/retry', async (req: Request, res: Response) => {
 // API: 创建并触发 Mission（Dashboard Command Center 调用）
 app.post('/api/missions', async (req: Request, res: Response) => {
   try {
-    const { mode, query, tickers, depth, source } = req.body as MissionInput;
+    const { mode, query, tickers, depth, source, opportunityId } = req.body as MissionInput;
     if (!query) {
       return res.status(400).json({ error: 'query is required' });
     }
@@ -842,6 +1174,7 @@ app.post('/api/missions', async (req: Request, res: Response) => {
       tickers: inputTickers,
       depth: depth || 'deep',
       source: source || 'manual',
+      ...(opportunityId ? { opportunityId } : {}),
     };
 
     const mission = await createQueuedMission({
@@ -852,6 +1185,7 @@ app.post('/api/missions', async (req: Request, res: Response) => {
       mode: input.mode,
       ...(inputTickers.length > 0 ? { tickers: inputTickers } : {}),
       ...(input.date ? { date: input.date } : {}),
+      ...(input.opportunityId ? { opportunityId: input.opportunityId } : {}),
     });
     if (!mission) {
       return res.status(409).json({ error: 'Task already in queue or running' });

@@ -17,6 +17,8 @@ import { healthMonitor } from './utils/health-monitor';
 import { taskQueue } from './utils/task-queue';
 import { startServer } from './server/app';
 import {
+  syncHeatTransferGraphOpportunities,
+  syncNewCodeRadarOpportunities,
   dispatchMission,
   createQueuedMission,
   appendMissionEvent,
@@ -439,6 +441,8 @@ cron.schedule('30 * * * *', async () => {
   if (edgarWatchCompanies.length > 0) {
     const filings = await watchIPO(edgarWatchCompanies);
     if (filings.length > 0) {
+      const syncedOpportunities = await syncNewCodeRadarOpportunities(filings);
+      logger.info(`[Sentinel] 🗓️ New Code Radar auto-synced ${syncedOpportunities.length} opportunity cards from EDGAR`);
       let msg = `📄 *SEC EDGAR 新文件* (${filings.length} 份)\n\n`;
       filings.forEach(f => {
         msg += `📌 *[${f.formType}]* ${f.companyName} — ${f.filedAt}\n   ${f.url}\n\n`;
@@ -571,6 +575,10 @@ cron.schedule(T4_CRON_EXPRESSION, async () => {
   
   try {
     const analysis = await trendRadar.scan();
+    const syncedGraphs = await syncHeatTransferGraphOpportunities(getActiveTickers());
+    if (syncedGraphs.length > 0) {
+      logger.info(`[Sentinel] 🔗 Heat Transfer Graph auto-synced ${syncedGraphs.length} relay opportunities`);
+    }
     
     // 推送趋势概览到 Telegram
     const telegramMsg = trendRadar.formatForTelegram(analysis);

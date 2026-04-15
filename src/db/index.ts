@@ -86,6 +86,81 @@ async function initDb(db: Database) {
     ON mission_runs (taskId);
   `);
 
+  // === Opportunities Table ===
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS opportunities (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      title TEXT NOT NULL,
+      query TEXT NOT NULL,
+      thesis TEXT,
+      summary TEXT,
+      primaryTicker TEXT,
+      leaderTicker TEXT,
+      proxyTicker TEXT,
+      relatedTickers TEXT NOT NULL,
+      relayTickers TEXT NOT NULL,
+      nextCatalystAt TEXT,
+      supplyOverhang TEXT,
+      policyStatus TEXT,
+      scores TEXT NOT NULL,
+      heatProfile TEXT,
+      proxyProfile TEXT,
+      ipoProfile TEXT,
+      catalystCalendar TEXT NOT NULL DEFAULT '[]',
+      latestMissionId TEXT,
+      latestEventType TEXT,
+      latestEventMessage TEXT,
+      latestEventAt TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_opportunities_type_updated
+    ON opportunities (type, updatedAt DESC);
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_opportunities_status_updated
+    ON opportunities (status, updatedAt DESC);
+  `);
+  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN heatProfile TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN proxyProfile TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN ipoProfile TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN catalystCalendar TEXT NOT NULL DEFAULT '[]';`); } catch {}
+
+  // === Opportunity Snapshots Table ===
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS opportunity_snapshots (
+      id TEXT PRIMARY KEY,
+      opportunityId TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_opportunity_snapshots_lookup
+    ON opportunity_snapshots (opportunityId, createdAt DESC);
+  `);
+
+  // === Opportunity Events Table ===
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS opportunity_events (
+      id TEXT PRIMARY KEY,
+      opportunityId TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      type TEXT NOT NULL,
+      message TEXT NOT NULL,
+      meta TEXT
+    );
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_opportunity_events_lookup
+    ON opportunity_events (opportunityId, timestamp DESC);
+  `);
+
   // === Narratives Table ===
   await db.exec(`
     CREATE TABLE IF NOT EXISTS narratives (

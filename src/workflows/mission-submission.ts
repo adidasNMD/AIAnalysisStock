@@ -2,6 +2,7 @@ import { taskQueue } from '../utils/task-queue';
 import { createMissionRecord, deleteMission, getMission, updateMissionRecord } from './dispatch-engine';
 import { appendMissionEvent } from './mission-events';
 import { createMissionRun } from './mission-runs';
+import { linkMissionToOpportunity, markOpportunityMissionQueued } from './opportunities';
 import type { MissionInput, MissionMode, UnifiedMission } from './types';
 import type { AnalysisDepth } from '../models/handoff';
 
@@ -13,6 +14,7 @@ export interface QueueMissionRequest {
   mode?: MissionMode;
   tickers?: string[];
   date?: string;
+  opportunityId?: string;
 }
 
 function inferMissionMode(query: string, tickers?: string[]): MissionMode {
@@ -28,6 +30,7 @@ export function buildMissionInput(request: QueueMissionRequest): MissionInput {
     depth: request.depth,
     source: request.source,
     ...(request.date ? { date: request.date } : {}),
+    ...(request.opportunityId ? { opportunityId: request.opportunityId } : {}),
   };
 }
 
@@ -56,12 +59,20 @@ async function queueMissionRun(
   });
   await taskQueue.attachRunId(task.id, run.id);
 
+  if (input.opportunityId) {
+    await linkMissionToOpportunity(input.opportunityId, mission.id, run.id);
+  }
+
   appendMissionEvent(mission.id, mission.createdAt, {
     type: 'queued',
     status: mission.status,
     message: queuedMessage,
     meta: { source: request.source, taskId: task.id, runId: run.id, attempt: run.attempt },
   });
+
+  if (input.opportunityId) {
+    await markOpportunityMissionQueued(input.opportunityId, mission.id, run.id);
+  }
 
   return mission;
 }
@@ -101,6 +112,7 @@ export async function retryMissionRun(
     priority: overrides.priority ?? 90,
     mode: overrides.mode || existingMission.input.mode,
     tickers: overrides.tickers || existingMission.input.tickers || [],
+    opportunityId: overrides.opportunityId || existingMission.input.opportunityId,
     ...((overrides.date || existingMission.input.date) ? { date: overrides.date || existingMission.input.date } : {}),
   });
 
@@ -121,6 +133,7 @@ export async function retryMissionRun(
       priority: overrides.priority ?? 90,
       mode: input.mode,
       ...(input.tickers && input.tickers.length > 0 ? { tickers: input.tickers } : {}),
+      ...(input.opportunityId ? { opportunityId: input.opportunityId } : {}),
       ...(input.date ? { date: input.date } : {}),
     },
     `Retry queued with priority ${overrides.priority ?? 90}`,
