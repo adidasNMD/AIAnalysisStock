@@ -1,9 +1,21 @@
 # Storage Architecture
 
 ## SQLite (`data/openclaw.db`)
-WAL mode enabled for concurrent reads. Tables:
-- `tasks` — mission queue with state tracking (id, type, status, payload, result, createdAt, updatedAt)
-- `narratives` — narrative lifecycle persistence (id, symbol, title, stage, status, impactScore, coreTicker, content, meta, timestamp, lastUpdatedAt)
+WAL mode enabled for concurrent reads.
+
+Schema ownership:
+- Versioned migrations live in `src/migrations/versions/`
+- Migration metadata lives in `schema_version`
+- Runtime startup must use `runMigrations(...)`, not `initDb()`
+
+Current baseline tables:
+- `schema_version` — applied migration metadata + checksums
+- `tasks` — mission queue with state tracking
+- `mission_runs` — mission execution attempts and leases
+- `opportunities` — primary opportunity records
+- `opportunity_snapshots` — point-in-time opportunity payload snapshots
+- `opportunity_events` — structured opportunity event stream
+- `narratives` — narrative lifecycle persistence
 
 ## JSON Files (`data/`)
 - `watchlist.json` — manual ticker watchlist with sector labels

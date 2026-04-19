@@ -284,23 +284,27 @@ sequenceDiagram
    - `TrendRadar`
    - `MacroContextEngine`
    - `NarrativeLifecycleEngine`
-3. 执行健康检测：
+3. 打开 SQLite 并执行 migration：
+   - `openDbConnection()`
+   - `runMigrations(db)`
+   - `setDbInstance(db)`
+4. 执行健康检测：
    - `healthMonitor.checkConnectivity()`
-4. 恢复遗留任务：
+5. 恢复遗留任务：
    - `taskQueue.recover()`
    - `requeueMissionRunsForTasks(...)`
-5. 注册队列处理器：
+6. 注册队列处理器：
    - `taskQueue.onProcess(...)`
-6. 启动 API：
+7. 启动 API：
    - `startServer(3000)`
-7. 启动 Telegram 交互机器人：
+8. 启动 Telegram 交互机器人：
    - `startInteractiveBot()`
-8. 注册 4 条 cron 触发链：
+9. 注册 4 条 cron 触发链：
    - T1
    - T2
    - T3
    - T4
-9. 如果命令行包含 `--run-now` / `--trend` / `--deep`，再执行一次即时扫描。
+10. 如果命令行包含 `--run-now` / `--trend` / `--deep`，在 migration 成功后再执行一次即时扫描。
 
 ### 5.2 健康监控与降级模式
 
@@ -985,6 +989,7 @@ curl -X PATCH http://localhost:3000/api/config \
 
 当前至少包含这些表：
 
+- `schema_version`
 - `tasks`
 - `mission_runs`
 - `opportunities`
@@ -1153,6 +1158,27 @@ npm run daemon
 6. `src/workflows/opportunity-ranking.ts`
 7. `dashboard/src/pages/OpportunityWorkbench.tsx`
 8. `dashboard/src/pages/MissionViewer.tsx`
+
+### 12.4 数据库 schema 演化
+
+项目现在使用版本化 migration 管理 schema，而不是在运行时隐式拼装表结构。
+
+快速开始：
+
+```bash
+npm run migrate
+npm run migrate:status
+npm run migrate:down
+npm run migrate:redo
+```
+
+默认数据库路径是 `data/openclaw.db`，也可以覆盖：
+
+```bash
+npm run migrate -- --db /tmp/openclaw.db
+```
+
+更多约定见 `docs/migrations.md`。
 
 ---
 
