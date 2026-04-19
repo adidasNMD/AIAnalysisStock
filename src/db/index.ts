@@ -4,178 +4,33 @@ import * as path from 'path';
 
 let dbInstance: Database | null = null;
 
-const DB_PATH = path.join(process.cwd(), 'data', 'openclaw.db');
+export const DB_PATH = path.join(process.cwd(), 'data', 'openclaw.db');
+
+export async function configureDb(db: Database): Promise<void> {
+  await db.exec(`PRAGMA journal_mode = WAL;`);
+  await db.exec(`PRAGMA busy_timeout = 5000;`);
+}
+
+export async function openDbConnection(filename = DB_PATH): Promise<Database> {
+  const db = await open({
+    filename,
+    driver: sqlite3.Database,
+  });
+  await configureDb(db);
+  return db;
+}
+
+export function setDbInstance(db: Database): void {
+  dbInstance = db;
+}
 
 export async function getDb(): Promise<Database> {
   if (!dbInstance) {
-    dbInstance = await open({
-      filename: DB_PATH,
-      driver: sqlite3.Database
-    });
-    
-    // 初始化表结构
-    await initDb(dbInstance);
+    dbInstance = await openDbConnection();
   }
   return dbInstance;
 }
 
-async function initDb(db: Database) {
-  await db.exec(`PRAGMA journal_mode = WAL;`);
-  await db.exec(`PRAGMA busy_timeout = 5000;`);
-
-  // === Tasks Table ===
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY,
-      missionId TEXT,
-      runId TEXT,
-      query TEXT NOT NULL,
-      depth TEXT NOT NULL,
-      priority INTEGER NOT NULL,
-      source TEXT NOT NULL,
-      status TEXT NOT NULL,
-      progress TEXT,
-      statePayload TEXT,
-      createdAt INTEGER NOT NULL,
-      startedAt INTEGER,
-      completedAt INTEGER,
-      error TEXT
-    );
-  `);
-  // Handle migrations for existing DB
-  try {
-    await db.exec(`ALTER TABLE tasks ADD COLUMN missionId TEXT;`);
-  } catch (e: any) {
-    // Column already exists
-  }
-  try {
-    await db.exec(`ALTER TABLE tasks ADD COLUMN runId TEXT;`);
-  } catch (e: any) {
-    // Column already exists
-  }
-  try {
-    await db.exec(`ALTER TABLE tasks ADD COLUMN statePayload TEXT;`);
-  } catch (e: any) {
-    // Column already exists
-  }
-
-  // === Mission Runs Table ===
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS mission_runs (
-      id TEXT PRIMARY KEY,
-      missionId TEXT NOT NULL,
-      taskId TEXT,
-      status TEXT NOT NULL,
-      stage TEXT NOT NULL,
-      attempt INTEGER NOT NULL,
-      workerLeaseId TEXT,
-      createdAt TEXT NOT NULL,
-      startedAt TEXT,
-      heartbeatAt TEXT,
-      completedAt TEXT,
-      failureMessage TEXT,
-      degradedFlags TEXT
-    );
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_mission_runs_mission_created
-    ON mission_runs (missionId, createdAt DESC);
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_mission_runs_task
-    ON mission_runs (taskId);
-  `);
-
-  // === Opportunities Table ===
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS opportunities (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      stage TEXT NOT NULL,
-      status TEXT NOT NULL,
-      title TEXT NOT NULL,
-      query TEXT NOT NULL,
-      thesis TEXT,
-      summary TEXT,
-      primaryTicker TEXT,
-      leaderTicker TEXT,
-      proxyTicker TEXT,
-      relatedTickers TEXT NOT NULL,
-      relayTickers TEXT NOT NULL,
-      nextCatalystAt TEXT,
-      supplyOverhang TEXT,
-      policyStatus TEXT,
-      scores TEXT NOT NULL,
-      heatProfile TEXT,
-      proxyProfile TEXT,
-      ipoProfile TEXT,
-      catalystCalendar TEXT NOT NULL DEFAULT '[]',
-      latestMissionId TEXT,
-      latestEventType TEXT,
-      latestEventMessage TEXT,
-      latestEventAt TEXT,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_opportunities_type_updated
-    ON opportunities (type, updatedAt DESC);
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_opportunities_status_updated
-    ON opportunities (status, updatedAt DESC);
-  `);
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN heatProfile TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN proxyProfile TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN ipoProfile TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN catalystCalendar TEXT NOT NULL DEFAULT '[]';`); } catch {}
-
-  // === Opportunity Snapshots Table ===
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS opportunity_snapshots (
-      id TEXT PRIMARY KEY,
-      opportunityId TEXT NOT NULL,
-      createdAt TEXT NOT NULL,
-      payload TEXT NOT NULL
-    );
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_opportunity_snapshots_lookup
-    ON opportunity_snapshots (opportunityId, createdAt DESC);
-  `);
-
-  // === Opportunity Events Table ===
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS opportunity_events (
-      id TEXT PRIMARY KEY,
-      opportunityId TEXT NOT NULL,
-      timestamp TEXT NOT NULL,
-      type TEXT NOT NULL,
-      message TEXT NOT NULL,
-      meta TEXT
-    );
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_opportunity_events_lookup
-    ON opportunity_events (opportunityId, timestamp DESC);
-  `);
-
-  // === Narratives Table ===
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS narratives (
-      id TEXT PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      timestamp INTEGER NOT NULL,
-      category TEXT NOT NULL,
-      content TEXT NOT NULL,
-      meta TEXT
-    );
-  `);
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN title TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN stage TEXT DEFAULT 'earlyFermentation';`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN status TEXT DEFAULT 'active';`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN impactScore REAL DEFAULT 0;`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN coreTicker TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN lastUpdatedAt INTEGER;`); } catch {}
+export async function initDb(_db: Database): Promise<void> {
+  throw new Error('initDb is deprecated. Use runMigrations from src/migrations/runner.ts');
 }

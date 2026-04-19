@@ -6,6 +6,10 @@
   "scripts": {
     "start": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/index.ts",
     "daemon": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/worker.ts",
+    "migrate": "ts-node -O '{\"verbatimModuleSyntax\": false}' scripts/migrate.ts up",
+    "migrate:down": "ts-node -O '{\"verbatimModuleSyntax\": false}' scripts/migrate.ts down",
+    "migrate:status": "ts-node -O '{\"verbatimModuleSyntax\": false}' scripts/migrate.ts status",
+    "migrate:redo": "ts-node -O '{\"verbatimModuleSyntax\": false}' scripts/migrate.ts redo",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "git config core.hooksPath .githooks"
