@@ -18,6 +18,41 @@ export interface OpportunityStreamEvent {
   meta?: any;
 }
 
+interface StreamEnvelope<TPayload> {
+  id: string;
+  stream: 'mission' | 'opportunity' | 'system';
+  type: string;
+  version: 1;
+  occurredAt: string;
+  entityId?: string;
+  payload: TPayload;
+  source: {
+    service: string;
+    runId?: string;
+  };
+}
+
+function normalizeOpportunityStreamEvent(value: unknown): OpportunityStreamEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const maybeEnvelope = value as Partial<StreamEnvelope<OpportunityStreamEvent>>;
+  if (maybeEnvelope.stream === 'opportunity' && maybeEnvelope.payload) {
+    return maybeEnvelope.payload;
+  }
+
+  const maybeEvent = value as Partial<OpportunityStreamEvent>;
+  if (
+    typeof maybeEvent.id === 'string'
+    && typeof maybeEvent.opportunityId === 'string'
+    && typeof maybeEvent.type === 'string'
+    && typeof maybeEvent.message === 'string'
+    && typeof maybeEvent.timestamp === 'string'
+  ) {
+    return maybeEvent as OpportunityStreamEvent;
+  }
+
+  return null;
+}
+
 /**
  * Hook for subscribing to Agent SSE stream
  * B1 fix: 手动重连逻辑，防止服务端断连后不恢复
@@ -83,6 +118,7 @@ export function useOpportunityStream(maxEvents = 100) {
   const [isConnected, setIsConnected] = useState(false);
   const retryCount = useRef(0);
   const sseRef = useRef<EventSource | null>(null);
+  const lastEventId = useRef<string | null>(null);
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -92,7 +128,11 @@ export function useOpportunityStream(maxEvents = 100) {
       if (unmounted) return;
 
       const sseBase = import.meta.env.PROD ? '' : 'http://localhost:3000';
-      const sse = new EventSource(`${sseBase}/api/opportunities/stream`);
+      const streamUrl = new URL(`${sseBase}/api/opportunities/stream`, window.location.origin);
+      if (lastEventId.current) {
+        streamUrl.searchParams.set('since', lastEventId.current);
+      }
+      const sse = new EventSource(streamUrl.toString());
       sseRef.current = sse;
 
       sse.onopen = () => {
@@ -113,7 +153,10 @@ export function useOpportunityStream(maxEvents = 100) {
 
       sse.onmessage = (e) => {
         try {
-          const event = JSON.parse(e.data) as OpportunityStreamEvent;
+          const parsed = JSON.parse(e.data);
+          const event = normalizeOpportunityStreamEvent(parsed);
+          if (!event) return;
+          lastEventId.current = e.lastEventId || (typeof parsed?.id === 'string' ? parsed.id : event.id);
           setEvents((prev) => [event, ...prev].slice(0, maxEvents));
         } catch {}
       };

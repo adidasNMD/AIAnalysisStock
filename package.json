@@ -5,7 +5,16 @@
   "main": "index.js",
   "scripts": {
     "start": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/index.ts",
-    "daemon": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/worker.ts",
+    "server": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/server/index.ts",
+    "daemon": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/daemon/index.ts",
+    "daemon:all": "ts-node -O '{\"verbatimModuleSyntax\": false}' src/worker.ts",
+    "dev:server": "node --watch -r ts-node/register/transpile-only src/server/index.ts",
+    "dev:daemon": "node --watch -r ts-node/register/transpile-only src/daemon/index.ts",
+    "dev:dashboard": "npm --prefix dashboard run dev -- --host 127.0.0.1 --port 5173",
+    "dev:stack": "bash ./scripts/dev-stack.sh",
+    "dev:stack:no-vendors": "DEV_START_VENDORS=0 bash ./scripts/dev-stack.sh",
+    "check:dev-env": "bash ./scripts/check-dev-env.sh",
+    "typecheck": "tsc --noEmit -p tsconfig.core.json && tsc --noEmit -p dashboard/tsconfig.app.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "git config core.hooksPath .githooks"

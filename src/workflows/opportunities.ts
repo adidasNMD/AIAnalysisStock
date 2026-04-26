@@ -2,6 +2,7 @@ import { getDb } from '../db';
 import { eventBus } from '../utils/event-bus';
 import type {
   OpportunityCatalystItem,
+  OpportunityEventEnvelope,
   OpportunityEventRecord,
   OpportunityEventType,
   HeatTransferEdge,
@@ -68,47 +69,47 @@ interface OpportunitySnapshotRow {
 export interface CreateOpportunityInput {
   type: OpportunityType;
   title: string;
-  query?: string;
-  thesis?: string;
-  summary?: string;
-  stage?: OpportunityStage;
-  status?: OpportunityStatus;
-  primaryTicker?: string;
-  leaderTicker?: string;
-  proxyTicker?: string;
-  relatedTickers?: string[];
-  relayTickers?: string[];
-  nextCatalystAt?: string;
-  supplyOverhang?: string;
-  policyStatus?: string;
-  scores?: Partial<OpportunityScores>;
-  heatProfile?: Partial<OpportunityHeatProfile>;
-  proxyProfile?: Partial<OpportunityProxyProfile>;
-  ipoProfile?: OpportunityIpoProfile;
-  catalystCalendar?: OpportunityCatalystItem[];
+  query?: string | undefined;
+  thesis?: string | undefined;
+  summary?: string | undefined;
+  stage?: OpportunityStage | undefined;
+  status?: OpportunityStatus | undefined;
+  primaryTicker?: string | undefined;
+  leaderTicker?: string | undefined;
+  proxyTicker?: string | undefined;
+  relatedTickers?: string[] | undefined;
+  relayTickers?: string[] | undefined;
+  nextCatalystAt?: string | undefined;
+  supplyOverhang?: string | undefined;
+  policyStatus?: string | undefined;
+  scores?: Partial<OpportunityScores> | undefined;
+  heatProfile?: Partial<OpportunityHeatProfile> | undefined;
+  proxyProfile?: Partial<OpportunityProxyProfile> | undefined;
+  ipoProfile?: OpportunityIpoProfile | undefined;
+  catalystCalendar?: OpportunityCatalystItem[] | undefined;
 }
 
 export interface UpdateOpportunityInput {
-  title?: string;
-  query?: string;
-  thesis?: string;
-  summary?: string;
-  stage?: OpportunityStage;
-  status?: OpportunityStatus;
-  primaryTicker?: string;
-  leaderTicker?: string;
-  proxyTicker?: string;
-  relatedTickers?: string[];
-  relayTickers?: string[];
-  nextCatalystAt?: string | null;
-  supplyOverhang?: string | null;
-  policyStatus?: string | null;
-  scores?: Partial<OpportunityScores>;
-  heatProfile?: Partial<OpportunityHeatProfile>;
-  proxyProfile?: Partial<OpportunityProxyProfile>;
-  ipoProfile?: OpportunityIpoProfile;
-  catalystCalendar?: OpportunityCatalystItem[];
-  latestMissionId?: string | null;
+  title?: string | undefined;
+  query?: string | undefined;
+  thesis?: string | undefined;
+  summary?: string | undefined;
+  stage?: OpportunityStage | undefined;
+  status?: OpportunityStatus | undefined;
+  primaryTicker?: string | undefined;
+  leaderTicker?: string | undefined;
+  proxyTicker?: string | undefined;
+  relatedTickers?: string[] | undefined;
+  relayTickers?: string[] | undefined;
+  nextCatalystAt?: string | null | undefined;
+  supplyOverhang?: string | null | undefined;
+  policyStatus?: string | null | undefined;
+  scores?: Partial<OpportunityScores> | undefined;
+  heatProfile?: Partial<OpportunityHeatProfile> | undefined;
+  proxyProfile?: Partial<OpportunityProxyProfile> | undefined;
+  ipoProfile?: OpportunityIpoProfile | undefined;
+  catalystCalendar?: OpportunityCatalystItem[] | undefined;
+  latestMissionId?: string | null | undefined;
 }
 
 function generateOpportunityId(): string {
@@ -204,10 +205,10 @@ function mergeScores(type: OpportunityType, scores?: Partial<OpportunityScores>)
 function defaultHeatProfile(
   type: OpportunityType,
   payload: {
-    leaderTicker?: string;
-    relatedTickers?: string[];
-    relayTickers?: string[];
-    scores?: OpportunityScores;
+    leaderTicker?: string | undefined;
+    relatedTickers?: string[] | undefined;
+    relayTickers?: string[] | undefined;
+    scores?: OpportunityScores | undefined;
   },
 ): OpportunityHeatProfile | undefined {
   if (type !== 'relay_chain') return undefined;
@@ -270,9 +271,9 @@ function normalizeHeatEdges(edges?: HeatTransferEdge[]): HeatTransferEdge[] {
 function defaultProxyProfile(
   type: OpportunityType,
   payload: {
-    query?: string;
-    policyStatus?: string;
-    scores?: OpportunityScores;
+    query?: string | undefined;
+    policyStatus?: string | undefined;
+    scores?: OpportunityScores | undefined;
   },
 ): OpportunityProxyProfile | undefined {
   if (type !== 'proxy_narrative') return undefined;
@@ -290,9 +291,9 @@ function defaultProxyProfile(
 }
 
 function defaultCatalystCalendar(payload: {
-  nextCatalystAt?: string;
+  nextCatalystAt?: string | undefined;
   type: OpportunityType;
-  ipoProfile?: OpportunityIpoProfile;
+  ipoProfile?: OpportunityIpoProfile | undefined;
 }): OpportunityCatalystItem[] {
   const items: OpportunityCatalystItem[] = [];
   if (safeTrim(payload.nextCatalystAt)) {
@@ -417,10 +418,10 @@ function normalizeHeatProfile(
   type: OpportunityType,
   payload?: Partial<OpportunityHeatProfile>,
   fallbacks?: {
-    leaderTicker?: string;
-    relatedTickers?: string[];
-    relayTickers?: string[];
-    scores?: OpportunityScores;
+    leaderTicker?: string | undefined;
+    relatedTickers?: string[] | undefined;
+    relayTickers?: string[] | undefined;
+    scores?: OpportunityScores | undefined;
   },
 ): OpportunityHeatProfile | undefined {
   const base = defaultHeatProfile(type, {
@@ -472,9 +473,9 @@ function normalizeProxyProfile(
   type: OpportunityType,
   payload?: Partial<OpportunityProxyProfile>,
   fallbacks?: {
-    query?: string;
-    policyStatus?: string;
-    scores?: OpportunityScores;
+    query?: string | undefined;
+    policyStatus?: string | undefined;
+    scores?: OpportunityScores | undefined;
   },
 ): OpportunityProxyProfile | undefined {
   const base = defaultProxyProfile(type, {
@@ -634,6 +635,26 @@ function toOpportunityEventRecord(row: OpportunityEventRow): OpportunityEventRec
   };
 }
 
+export function toOpportunityEventEnvelope(
+  event: OpportunityEventRecord,
+  source: OpportunityEventEnvelope['source'] = { service: 'api' },
+): OpportunityEventEnvelope {
+  const metaRunId = typeof event.meta?.runId === 'string' ? event.meta.runId : undefined;
+  return {
+    id: event.id,
+    stream: 'opportunity',
+    type: event.type,
+    version: 1,
+    occurredAt: event.timestamp,
+    entityId: event.opportunityId,
+    payload: event,
+    source: {
+      service: source.service,
+      ...(source.runId || metaRunId ? { runId: source.runId || metaRunId } : {}),
+    },
+  };
+}
+
 function toOpportunitySnapshotRecord(row: OpportunitySnapshotRow): OpportunitySnapshotRecord | null {
   try {
     return {
@@ -669,11 +690,11 @@ function normalizeComparableText(value?: string): string | null {
 
 export async function findMatchingOpportunity(input: {
   type: OpportunityType;
-  title?: string;
-  query?: string;
-  primaryTicker?: string;
-  leaderTicker?: string;
-  proxyTicker?: string;
+  title?: string | undefined;
+  query?: string | undefined;
+  primaryTicker?: string | undefined;
+  leaderTicker?: string | undefined;
+  proxyTicker?: string | undefined;
 }): Promise<OpportunityRecord | null> {
   const opportunities = await listOpportunities(500);
   const title = normalizeComparableText(input.title);
@@ -1185,6 +1206,30 @@ export async function listOpportunityEvents(opportunityId?: string, limit = 50):
         'SELECT * FROM opportunity_events ORDER BY timestamp DESC LIMIT ?',
         limit,
       );
+
+  return rows.map(toOpportunityEventRecord);
+}
+
+export async function listOpportunityEventsAfter(cursorId: string, limit = 100): Promise<OpportunityEventRecord[]> {
+  const db = await getDb();
+  const cursor = await db.get<OpportunityEventRow>(
+    'SELECT * FROM opportunity_events WHERE id = ?',
+    cursorId,
+  );
+  if (!cursor) {
+    return [];
+  }
+
+  const rows = await db.all<OpportunityEventRow[]>(
+    `SELECT * FROM opportunity_events
+     WHERE timestamp > ? OR (timestamp = ? AND id > ?)
+     ORDER BY timestamp ASC, id ASC
+     LIMIT ?`,
+    cursor.timestamp,
+    cursor.timestamp,
+    cursor.id,
+    limit,
+  );
 
   return rows.map(toOpportunityEventRecord);
 }

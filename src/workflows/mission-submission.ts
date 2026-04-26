@@ -13,8 +13,8 @@ export interface QueueMissionRequest {
   priority?: number;
   mode?: MissionMode;
   tickers?: string[];
-  date?: string;
-  opportunityId?: string;
+  date?: string | undefined;
+  opportunityId?: string | undefined;
 }
 
 function inferMissionMode(query: string, tickers?: string[]): MissionMode {

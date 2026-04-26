@@ -42,14 +42,26 @@ import {
   getLatestOpportunityDiff,
   listOpportunities,
   listOpportunityEvents,
+  listOpportunityEventsAfter,
   syncHeatTransferGraphOpportunities,
   syncNewCodeRadarOpportunities,
+  toOpportunityEventEnvelope,
   updateOpportunity,
   appendOpportunityEvent,
+  type OpportunityEventEnvelope,
+  type OpportunityEventRecord,
   markOpportunityMissionCanceled,
   type OpportunityRecord,
   type OpportunitySummaryRecord,
   type CreateOpportunityInput,
+  type UpdateOpportunityInput,
+  type OpportunityStage,
+  type OpportunityStatus,
+  type OpportunityScores,
+  type OpportunityHeatProfile,
+  type OpportunityProxyProfile,
+  type OpportunityIpoProfile,
+  type OpportunityCatalystItem,
   type MissionInput,
 } from '../workflows';
 import { diagnosticsHandler } from './routes/diagnostics';
@@ -100,7 +112,7 @@ async function buildOpportunitySummary(opportunity: OpportunityRecord): Promise<
             query: latestMission.input.query,
             status: latestMission.status,
             updatedAt: latestMission.updatedAt,
-            source: latestMission.input.source,
+            ...(latestMission.input.source ? { source: latestMission.input.source } : {}),
           },
         }
       : {}),
@@ -314,7 +326,29 @@ app.get('/api/opportunity-events', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/opportunities/stream', (req: Request, res: Response) => {
+function getSseReplayCursor(req: Request): string | undefined {
+  const queryCursor = req.query.since;
+  if (typeof queryCursor === 'string' && queryCursor.trim()) {
+    return queryCursor.trim();
+  }
+
+  const headerCursor = req.headers['last-event-id'];
+  if (typeof headerCursor === 'string' && headerCursor.trim()) {
+    return headerCursor.trim();
+  }
+  if (Array.isArray(headerCursor) && typeof headerCursor[0] === 'string' && headerCursor[0].trim()) {
+    return headerCursor[0].trim();
+  }
+
+  return undefined;
+}
+
+function writeSseEnvelope(res: Response, envelope: OpportunityEventEnvelope): void {
+  res.write(`id: ${envelope.id}\n`);
+  res.write(`data: ${JSON.stringify(envelope)}\n\n`);
+}
+
+app.get('/api/opportunities/stream', async (req: Request, res: Response) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -322,10 +356,23 @@ app.get('/api/opportunities/stream', (req: Request, res: Response) => {
   });
 
   const onEvent = (data: unknown) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    const event = data as OpportunityEventRecord;
+    writeSseEnvelope(res, toOpportunityEventEnvelope(event, { service: 'api' }));
   };
 
   eventBus.on('opportunity_event', onEvent);
+
+  const replayCursor = getSseReplayCursor(req);
+  if (replayCursor) {
+    try {
+      const replayEvents = await listOpportunityEventsAfter(replayCursor, 100);
+      replayEvents.forEach((event) => {
+        writeSseEnvelope(res, toOpportunityEventEnvelope(event, { service: 'api' }));
+      });
+    } catch (e: unknown) {
+      logger.warn(`[SSE] Opportunity replay failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   const heartbeat = setInterval(() => {
     res.write(': heartbeat\n\n');
@@ -409,27 +456,28 @@ app.patch('/api/opportunities/:id', async (req: Request, res: Response) => {
   try {
     const body = req.body as Record<string, unknown>;
     const previous = await getOpportunity(req.params.id as string);
-    const opportunity = await updateOpportunity(req.params.id as string, {
-      ...(typeof body.title === 'string' ? { title: body.title } : {}),
-      ...(typeof body.query === 'string' ? { query: body.query } : {}),
-      ...(typeof body.thesis === 'string' ? { thesis: body.thesis } : {}),
-      ...(typeof body.summary === 'string' ? { summary: body.summary } : {}),
-      ...(typeof body.stage === 'string' ? { stage: body.stage as CreateOpportunityInput['stage'] } : {}),
-      ...(typeof body.status === 'string' ? { status: body.status as CreateOpportunityInput['status'] } : {}),
-      ...(typeof body.primaryTicker === 'string' ? { primaryTicker: body.primaryTicker } : {}),
-      ...(typeof body.leaderTicker === 'string' ? { leaderTicker: body.leaderTicker } : {}),
-      ...(typeof body.proxyTicker === 'string' ? { proxyTicker: body.proxyTicker } : {}),
-      ...(Array.isArray(body.relatedTickers) ? { relatedTickers: body.relatedTickers as string[] } : {}),
-      ...(Array.isArray(body.relayTickers) ? { relayTickers: body.relayTickers as string[] } : {}),
-      ...(typeof body.nextCatalystAt === 'string' ? { nextCatalystAt: body.nextCatalystAt } : {}),
-      ...(typeof body.supplyOverhang === 'string' ? { supplyOverhang: body.supplyOverhang } : {}),
-      ...(typeof body.policyStatus === 'string' ? { policyStatus: body.policyStatus } : {}),
-      ...(typeof body.scores === 'object' && body.scores !== null ? { scores: body.scores as CreateOpportunityInput['scores'] } : {}),
-      ...(typeof body.heatProfile === 'object' && body.heatProfile !== null ? { heatProfile: body.heatProfile as CreateOpportunityInput['heatProfile'] } : {}),
-      ...(typeof body.proxyProfile === 'object' && body.proxyProfile !== null ? { proxyProfile: body.proxyProfile as CreateOpportunityInput['proxyProfile'] } : {}),
-      ...(typeof body.ipoProfile === 'object' && body.ipoProfile !== null ? { ipoProfile: body.ipoProfile as CreateOpportunityInput['ipoProfile'] } : {}),
-      ...(Array.isArray(body.catalystCalendar) ? { catalystCalendar: body.catalystCalendar as CreateOpportunityInput['catalystCalendar'] } : {}),
-    });
+    const updates: UpdateOpportunityInput = {};
+    if (typeof body.title === 'string') updates.title = body.title;
+    if (typeof body.query === 'string') updates.query = body.query;
+    if (typeof body.thesis === 'string') updates.thesis = body.thesis;
+    if (typeof body.summary === 'string') updates.summary = body.summary;
+    if (typeof body.stage === 'string') updates.stage = body.stage as OpportunityStage;
+    if (typeof body.status === 'string') updates.status = body.status as OpportunityStatus;
+    if (typeof body.primaryTicker === 'string') updates.primaryTicker = body.primaryTicker;
+    if (typeof body.leaderTicker === 'string') updates.leaderTicker = body.leaderTicker;
+    if (typeof body.proxyTicker === 'string') updates.proxyTicker = body.proxyTicker;
+    if (Array.isArray(body.relatedTickers)) updates.relatedTickers = body.relatedTickers as string[];
+    if (Array.isArray(body.relayTickers)) updates.relayTickers = body.relayTickers as string[];
+    if (typeof body.nextCatalystAt === 'string') updates.nextCatalystAt = body.nextCatalystAt;
+    if (typeof body.supplyOverhang === 'string') updates.supplyOverhang = body.supplyOverhang;
+    if (typeof body.policyStatus === 'string') updates.policyStatus = body.policyStatus;
+    if (typeof body.scores === 'object' && body.scores !== null) updates.scores = body.scores as Partial<OpportunityScores>;
+    if (typeof body.heatProfile === 'object' && body.heatProfile !== null) updates.heatProfile = body.heatProfile as Partial<OpportunityHeatProfile>;
+    if (typeof body.proxyProfile === 'object' && body.proxyProfile !== null) updates.proxyProfile = body.proxyProfile as Partial<OpportunityProxyProfile>;
+    if (typeof body.ipoProfile === 'object' && body.ipoProfile !== null) updates.ipoProfile = body.ipoProfile as OpportunityIpoProfile;
+    if (Array.isArray(body.catalystCalendar)) updates.catalystCalendar = body.catalystCalendar as OpportunityCatalystItem[];
+
+    const opportunity = await updateOpportunity(req.params.id as string, updates);
     if (!opportunity) {
       return res.status(404).json({ error: 'Opportunity not found' });
     }

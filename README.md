@@ -1084,6 +1084,15 @@ curl -X PATCH http://localhost:3000/api/config \
 # 根目录测试
 npm test
 
+# 开发环境预检
+npm run check:dev-env
+
+# 一键开发栈（API + daemon + Dashboard + vendors）
+npm run dev:stack
+
+# 只跑 OpenClaw API/daemon/Dashboard，不启动 vendors
+npm run dev:stack:no-vendors
+
 # Dashboard 构建
 cd dashboard
 npm run build
@@ -1153,6 +1162,7 @@ npm run daemon
 6. `src/workflows/opportunity-ranking.ts`
 7. `dashboard/src/pages/OpportunityWorkbench.tsx`
 8. `dashboard/src/pages/MissionViewer.tsx`
+9. `docs/system-maturity-improvement-plan.md`
 
 ---
 
@@ -1162,8 +1172,7 @@ npm run daemon
 cp config/.env.example .env
 npm install
 cd dashboard && npm install && cd ..
-npm run daemon
-cd dashboard && npm run dev
+npm run dev:stack:no-vendors
 ```
 
 然后打开 [http://localhost:5173](http://localhost:5173)。

@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import * as dotenv from 'dotenv';
+import { eventBus } from './event-bus';
 
 // 加载环境变量（优先 config/.env，其次根目录 .env）
 const configEnvPath = path.join(process.cwd(), 'config', '.env');
@@ -67,6 +68,9 @@ const CONFIG_PATH = path.join(process.cwd(), 'config', 'models.yaml');
 let cachedConfig: ModelsConfig | null = null;
 let lastLoadTime = 0;
 const CACHE_TTL_MS = 30_000; // 30秒缓存，支持热更新
+let configWatcher: fs.FSWatcher | null = null;
+let watcherDebounce: ReturnType<typeof setTimeout> | null = null;
+let lastConfigFingerprint = '';
 
 // ===== 核心函数 =====
 
@@ -101,6 +105,81 @@ export function loadModelsConfig(): ModelsConfig {
   } catch (e: any) {
     console.error(`[ModelConfig] ❌ 解析 models.yaml 失败: ${e.message}`);
     return getDefaultConfig();
+  }
+}
+
+function getConfigFingerprint(): string {
+  try {
+    const stat = fs.statSync(CONFIG_PATH);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function invalidateModelsConfigCache(): void {
+  cachedConfig = null;
+  lastLoadTime = 0;
+}
+
+function scheduleWatchedReload(reason: string): void {
+  if (watcherDebounce) {
+    clearTimeout(watcherDebounce);
+  }
+
+  watcherDebounce = setTimeout(() => {
+    const nextFingerprint = getConfigFingerprint();
+    if (nextFingerprint === lastConfigFingerprint) {
+      return;
+    }
+
+    lastConfigFingerprint = nextFingerprint;
+    invalidateModelsConfigCache();
+    const config = loadModelsConfig();
+    eventBus.emitSystem('info', 'Model config hot reloaded', {
+      reason,
+      provider: config.defaults.provider,
+      configPath: CONFIG_PATH,
+    });
+  }, 150);
+}
+
+/**
+ * 启动 models.yaml 文件监听。
+ *
+ * server 与 daemon 是两个独立 Node 进程，因此各自都需要自己的 watcher。
+ */
+export function startModelsConfigWatcher(): void {
+  if (configWatcher) {
+    return;
+  }
+
+  const configDir = path.dirname(CONFIG_PATH);
+  const configFile = path.basename(CONFIG_PATH);
+  const watchTarget = fs.existsSync(CONFIG_PATH) ? CONFIG_PATH : configDir;
+  lastConfigFingerprint = getConfigFingerprint();
+
+  try {
+    configWatcher = fs.watch(watchTarget, { persistent: false }, (_eventType, filename) => {
+      if (filename && path.basename(filename.toString()) !== configFile && watchTarget !== CONFIG_PATH) {
+        return;
+      }
+      scheduleWatchedReload('file_change');
+    });
+    console.log(`[ModelConfig] 👀 watching ${CONFIG_PATH}`);
+  } catch (e: any) {
+    console.warn(`[ModelConfig] ⚠️ 无法监听 models.yaml: ${e.message}`);
+  }
+}
+
+export function stopModelsConfigWatcher(): void {
+  if (watcherDebounce) {
+    clearTimeout(watcherDebounce);
+    watcherDebounce = null;
+  }
+  if (configWatcher) {
+    configWatcher.close();
+    configWatcher = null;
   }
 }
 
@@ -163,8 +242,8 @@ export function saveModelsConfig(newConfig: ModelsConfig): void {
     });
     fs.writeFileSync(CONFIG_PATH, yamlStr, 'utf-8');
     // 清除缓存，下次读取时会重新加载
-    cachedConfig = null;
-    lastLoadTime = 0;
+    invalidateModelsConfigCache();
+    lastConfigFingerprint = getConfigFingerprint();
     console.log('[ModelConfig] ✅ 配置已保存并刷新');
   } catch (e: any) {
     console.error(`[ModelConfig] ❌ 保存配置失败: ${e.message}`);
@@ -176,8 +255,8 @@ export function saveModelsConfig(newConfig: ModelsConfig): void {
  * 强制刷新缓存（用于外部更新后）
  */
 export function reloadConfig(): ModelsConfig {
-  cachedConfig = null;
-  lastLoadTime = 0;
+  invalidateModelsConfigCache();
+  lastConfigFingerprint = getConfigFingerprint();
   return loadModelsConfig();
 }
 

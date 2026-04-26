@@ -331,12 +331,23 @@ export interface OpportunitySummary {
 export type OpportunityBoardType = Exclude<OpportunityType, 'ad_hoc'>;
 export type OpportunityBoardHealthMetricTone = 'neutral' | 'positive' | 'warning' | 'negative';
 
+export interface OpportunityBoardHealthMetricDetail {
+  opportunityId: string;
+  title: string;
+  reason: string;
+  evidence?: string;
+  eventId?: string;
+  eventLabel?: string;
+}
+
 export interface OpportunityBoardHealthMetric {
   key: string;
   label: string;
   value: number;
   tone: OpportunityBoardHealthMetricTone;
   opportunityIds: string[];
+  explanation?: string;
+  details?: OpportunityBoardHealthMetricDetail[];
 }
 
 export interface OpportunityBoardHealthSummary {

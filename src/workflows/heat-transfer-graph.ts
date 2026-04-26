@@ -55,7 +55,7 @@ function resolveTemperature(relayScore: number, validationStatus: HeatTransferVa
 }
 
 function resolveValidationStatus(payload: {
-  leader?: DynamicTicker;
+  leader?: DynamicTicker | undefined;
   bottlenecks: DynamicTicker[];
   laggards: DynamicTicker[];
   breadthScore: number;
@@ -76,7 +76,7 @@ function resolveValidationStatus(payload: {
 
 function buildValidationSummary(payload: {
   theme: string;
-  leader?: DynamicTicker;
+  leader?: DynamicTicker | undefined;
   bottlenecks: DynamicTicker[];
   laggards: DynamicTicker[];
   validationStatus: HeatTransferValidationStatus;

@@ -34,6 +34,7 @@ import {
 } from './workflows';
 import { eventBus } from './utils/event-bus';
 import { logger } from './utils/logger';
+import { startModelsConfigWatcher } from './utils/model-config';
 import { getDb } from './db';
 import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
 import { getRuntimeConfig } from './config';
@@ -45,6 +46,13 @@ const T4_CRON_EXPRESSION = T4_INTERVAL_MS === 15 * 60 * 1000
 const trendCooldown = new Map<string, number>();
 
 let isShuttingDown = false;
+const SHOULD_START_API = process.env.OPENCLAW_ENABLE_API !== 'false';
+const API_PORT = Number(process.env.OPENCLAW_API_PORT || process.env.PORT || 3000);
+const SHOULD_BOOTSTRAP_WORKER = process.env.OPENCLAW_WORKER_BOOTSTRAP === '1' || require.main === module;
+
+if (SHOULD_BOOTSTRAP_WORKER) {
+  startModelsConfigWatcher();
+}
 
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return;
@@ -78,8 +86,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+if (SHOULD_BOOTSTRAP_WORKER) {
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+}
 
 function simpleHash(str: string): string {
   let h = 0;
@@ -126,11 +136,13 @@ function normalizeRecoverResult(
 // 多级触发哨兵模式 + TrendRadar 趋势雷达 + 实时交互(Interactive Bot)
 // ==========================================
 
-logger.info(`\n==================================================================`);
-logger.info(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
-logger.info(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
-logger.info(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
-logger.info(`==================================================================\n`);
+if (SHOULD_BOOTSTRAP_WORKER) {
+  logger.info(`\n==================================================================`);
+  logger.info(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
+  logger.info(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
+  logger.info(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
+  logger.info(`==================================================================\n`);
+}
 
 const orchestrator = new AgentSwarmOrchestrator();
 const trendRadar = new TrendRadar();
@@ -140,7 +152,8 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
 // ==========================================
 // 初始化系统监控与任务队列
 // ==========================================
-(async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  (async () => {
   // 1. 检测大模型连通性
   await healthMonitor.checkConnectivity();
   // 2. 恢复积压的任务
@@ -276,12 +289,17 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
     }
   });
   taskQueue.processNext(); // Trigger processing for recovered tasks
-  // 4. 启动本地 API 供大屏使用
-  startServer(3000);
-})();
+  // 4. 启动本地 API 供大屏使用（daemon-only 入口会显式关闭）
+  if (SHOULD_START_API) {
+    startServer(API_PORT);
+  }
+  })();
+}
 
 // 启动实时交互长轮询机器人
-startInteractiveBot();
+if (SHOULD_BOOTSTRAP_WORKER) {
+  startInteractiveBot();
+}
 
 // 加载 Watchlist
 interface WatchlistTicker {
@@ -349,7 +367,7 @@ export function cleanupCooldown() {
   }
 }
 
-if (T1_ENABLED) {
+if (SHOULD_BOOTSTRAP_WORKER && T1_ENABLED) {
   cron.schedule('*/5 * * * *', async () => {
     if (isShuttingDown) return;
     if (!getRuntimeConfig().t1Enabled) return;
@@ -394,14 +412,15 @@ if (T1_ENABLED) {
     }
   });
   logger.info('[Sentinel] ✅ T1 价量哨兵已启用 (每5分钟, cooldown=' + COOLDOWN_MS / 60000 + 'min)');
-} else {
+} else if (SHOULD_BOOTSTRAP_WORKER) {
   logger.info('[Sentinel] ⏸️ T1 价量哨兵已禁用 (T1_ENABLED=false)');
 }
 
 // ==========================================
 // TRIGGER 2: 媒体资讯与公告 (每小时的第30分钟触发)
 // ==========================================
-cron.schedule('30 * * * *', async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  cron.schedule('30 * * * *', async () => {
   if (isShuttingDown) return;
   const watchlist = loadWatchlist();
   
@@ -450,12 +469,14 @@ cron.schedule('30 * * * *', async () => {
       await sendMessage(msg);
     }
   }
-});
+  });
+}
 
 // ==========================================
 // TRIGGER 3: 每天 08:30 AM — 全量 Watchlist 日报
 // ==========================================
-cron.schedule('30 08 * * 1-5', async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  cron.schedule('30 08 * * 1-5', async () => {
   if (isShuttingDown) return;
   const watchlist = loadWatchlist();
   logger.info(`\n[Sentinel] 📊 执行每日全量技术面快照...`);
@@ -564,12 +585,14 @@ cron.schedule('30 08 * * 1-5', async () => {
       priority: 10,
     });
   }
-});
+  });
+}
 
 // ==========================================
 // TRIGGER 4: 趋势雷达媒体扫描 (每小时的整点触发: 寻找新的交易机会)
 // ==========================================
-cron.schedule(T4_CRON_EXPRESSION, async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  cron.schedule(T4_CRON_EXPRESSION, async () => {
   if (isShuttingDown) return;
   logger.info(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
   
@@ -606,12 +629,13 @@ cron.schedule(T4_CRON_EXPRESSION, async () => {
     const msg = e instanceof Error ? e.message : String(e);
     logger.error(`[Sentinel] TrendRadar scan failed: ${msg}`);
   }
-});
+  });
+}
 
 // ==========================================
 // 手动触发模式
 // ==========================================
-if (process.argv.includes('--run-now')) {
+if (SHOULD_BOOTSTRAP_WORKER && process.argv.includes('--run-now')) {
   logger.info(`[Sentinel] '--run-now' detected. Executing immediate Watchlist scan...\n`);
 
   (async () => {

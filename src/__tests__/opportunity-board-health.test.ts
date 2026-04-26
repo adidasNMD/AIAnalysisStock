@@ -113,10 +113,15 @@ describe('buildOpportunityBoardHealthMap', () => {
       }),
     ]);
 
-    expect(boardHealth.proxy_narrative.metrics.find((metric) => metric.key === 'ignited')?.value).toBe(1);
-    expect(boardHealth.proxy_narrative.metrics.find((metric) => metric.key === 'retreat')?.value).toBe(1);
+    const ignited = boardHealth.proxy_narrative.metrics.find((metric) => metric.key === 'ignited');
+    const retreat = boardHealth.proxy_narrative.metrics.find((metric) => metric.key === 'retreat');
+    expect(ignited?.value).toBe(1);
+    expect(ignited?.explanation).toContain('点火');
+    expect(ignited?.details?.[0]?.reason).toContain('代理变量评分达标');
+    expect(retreat?.value).toBe(1);
+    expect(retreat?.details?.[0]?.eventLabel).toBe('thesis_degraded');
     expect(boardHealth.proxy_narrative.metrics.find((metric) => metric.key === 'rule_named')?.value).toBe(1);
-    expect(boardHealth.proxy_narrative.metrics.find((metric) => metric.key === 'retreat')?.opportunityIds).toEqual(['proxy_retreat']);
+    expect(retreat?.opportunityIds).toEqual(['proxy_retreat']);
   });
 
   it('tracks new-code trading windows and supply overhang', () => {

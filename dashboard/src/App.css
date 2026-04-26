@@ -1000,6 +1000,45 @@ button.board-health-chip {
   margin-top: 8px;
 }
 
+.op-board-metric-explain {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.op-board-metric-details {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.op-board-metric-detail {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.025);
+  color: var(--text-primary);
+  padding: 8px;
+}
+
+.op-board-metric-detail span,
+.op-board-metric-detail small {
+  display: block;
+}
+
+.op-board-metric-detail span {
+  font-size: 0.72rem;
+}
+
+.op-board-metric-detail small {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
 .op-board-live {
   margin-top: 10px;
   padding: 10px;

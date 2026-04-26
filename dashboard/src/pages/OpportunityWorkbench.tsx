@@ -382,8 +382,8 @@ type WorkbenchPulse = {
   label: 'LIVE' | 'RECENT' | 'STEADY';
   summary: string;
   chips: string[];
-  targetLane?: InboxLane | null;
-  actionLabel?: string | null;
+  targetLane?: InboxLane | null | undefined;
+  actionLabel?: string | null | undefined;
 };
 
 function buildExtraTemplates(
@@ -2493,6 +2493,8 @@ export function OpportunityWorkbench() {
                           className={`timeline-chip muted board-health-chip ${metricToneClass(metric.tone)} ${activeMetric?.key === metric.key ? 'active' : ''}`}
                           onClick={() => toggleBoardFilter(type, metric.key, metric.value)}
                           disabled={metric.key === 'cards' || metric.value === 0}
+                          title={metric.explanation || metric.label}
+                          aria-label={`${metric.label} ${metric.value}${metric.explanation ? `: ${metric.explanation}` : ''}`}
                         >
                           {metric.label} {metric.value}
                         </button>
@@ -2511,6 +2513,25 @@ export function OpportunityWorkbench() {
                         >
                           清除
                         </button>
+                      </div>
+                    )}
+                    {activeMetric?.explanation && (
+                      <div className="op-board-metric-explain">
+                        {activeMetric.explanation}
+                      </div>
+                    )}
+                    {activeMetric?.details && activeMetric.details.length > 0 && (
+                      <div className="op-board-metric-details">
+                        {activeMetric.details.slice(0, 3).map((detail) => (
+                          <div
+                            key={`${activeMetric.key}_${detail.opportunityId}`}
+                            className="op-board-metric-detail"
+                            title={detail.evidence || detail.reason}
+                          >
+                            <span>{detail.title}</span>
+                            <small>{detail.eventLabel ? `${detail.eventLabel}: ` : ''}{detail.reason}</small>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>

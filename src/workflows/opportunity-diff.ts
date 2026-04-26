@@ -212,5 +212,8 @@ export function buildOpportunityDiff(
 export async function getLatestOpportunityDiff(opportunityId: string): Promise<OpportunityDiffSummary | null> {
   const snapshots = await listOpportunitySnapshots(opportunityId, 2);
   if (snapshots.length < 2) return null;
-  return buildOpportunityDiff(snapshots[0], snapshots[1]);
+  const currentSnapshot = snapshots[0];
+  const baselineSnapshot = snapshots[1];
+  if (!currentSnapshot || !baselineSnapshot) return null;
+  return buildOpportunityDiff(currentSnapshot, baselineSnapshot);
 }

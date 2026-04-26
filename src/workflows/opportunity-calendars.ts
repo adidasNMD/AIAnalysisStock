@@ -278,10 +278,10 @@ export function buildNewCodeRadarCandidates(
     grouped.get(key)!.push(filing);
   });
 
-  return [...grouped.entries()]
-    .map(([key, companyFilings]) => {
+  const candidates = [...grouped.entries()].reduce<NewCodeRadarCandidate[]>((acc, [key, companyFilings]) => {
       const sorted = sortFilingsByDate(companyFilings);
       const latest = sorted[0];
+      if (!latest) return acc;
       const linked = linkedOpportunities.find((opportunity) =>
         opportunity.type === 'ipo_spinout'
         && opportunity.query.trim().toLowerCase() === latest.companyName.trim().toLowerCase(),
@@ -289,7 +289,7 @@ export function buildNewCodeRadarCandidates(
       const status = deriveNewCodeRadarStatus(sorted);
       const ipoProfile = deriveIpoProfileFromFilings(sorted, linked?.ipoProfile);
 
-      return {
+      acc.push({
         key,
         companyName: latest.companyName,
         title: `${latest.companyName} New Code Radar`,
@@ -302,9 +302,11 @@ export function buildNewCodeRadarCandidates(
         ...(ipoProfile ? { ipoProfile } : {}),
         catalystCalendar: buildNewCodeRadarCalendar(sorted, status, ipoProfile),
         ...(linked ? { linkedOpportunityId: linked.id } : {}),
-      };
-    })
-    .sort((a, b) => {
+      });
+      return acc;
+    }, []);
+
+  return candidates.sort((a, b) => {
       const stageDelta = stageRank(b.status) - stageRank(a.status);
       if (stageDelta !== 0) return stageDelta;
       return (b.latestFiledAt || '').localeCompare(a.latestFiledAt || '');

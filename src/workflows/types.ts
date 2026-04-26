@@ -45,51 +45,51 @@ export interface OpportunityHeatProfile {
   bottleneckTickers: string[];
   laggardTickers: string[];
   junkTickers: string[];
-  breadthScore?: number;
-  validationStatus?: HeatTransferValidationStatus;
-  validationSummary?: string;
-  edgeCount?: number;
-  edges?: HeatTransferEdge[];
-  leaderHealth?: string;
-  transmissionNote?: string;
+  breadthScore?: number | undefined;
+  validationStatus?: HeatTransferValidationStatus | undefined;
+  validationSummary?: string | undefined;
+  edgeCount?: number | undefined;
+  edges?: HeatTransferEdge[] | undefined;
+  leaderHealth?: string | undefined;
+  transmissionNote?: string | undefined;
 }
 
 export interface OpportunityProxyProfile {
-  mappingTarget?: string;
+  mappingTarget?: string | undefined;
   legitimacyScore: number;
   legibilityScore: number;
   tradeabilityScore: number;
-  ruleStatus?: string;
-  identityNote?: string;
-  scarcityNote?: string;
+  ruleStatus?: string | undefined;
+  identityNote?: string | undefined;
+  scarcityNote?: string | undefined;
 }
 
 export interface OpportunityFieldEvidence {
   source: string;
   confidence: OpportunityCatalystConfidence;
-  note?: string;
-  observedAt?: string;
+  note?: string | undefined;
+  observedAt?: string | undefined;
 }
 
 export interface OpportunityIpoEvidence {
-  officialTradingDate?: OpportunityFieldEvidence;
-  spinoutDate?: OpportunityFieldEvidence;
-  retainedStakePercent?: OpportunityFieldEvidence;
-  lockupDate?: OpportunityFieldEvidence;
-  greenshoeStatus?: OpportunityFieldEvidence;
-  firstIndependentEarningsAt?: OpportunityFieldEvidence;
-  firstCoverageAt?: OpportunityFieldEvidence;
+  officialTradingDate?: OpportunityFieldEvidence | undefined;
+  spinoutDate?: OpportunityFieldEvidence | undefined;
+  retainedStakePercent?: OpportunityFieldEvidence | undefined;
+  lockupDate?: OpportunityFieldEvidence | undefined;
+  greenshoeStatus?: OpportunityFieldEvidence | undefined;
+  firstIndependentEarningsAt?: OpportunityFieldEvidence | undefined;
+  firstCoverageAt?: OpportunityFieldEvidence | undefined;
 }
 
 export interface OpportunityIpoProfile {
-  officialTradingDate?: string;
-  spinoutDate?: string;
-  retainedStakePercent?: number;
-  lockupDate?: string;
-  greenshoeStatus?: string;
-  firstIndependentEarningsAt?: string;
-  firstCoverageAt?: string;
-  evidence?: OpportunityIpoEvidence;
+  officialTradingDate?: string | undefined;
+  spinoutDate?: string | undefined;
+  retainedStakePercent?: number | undefined;
+  lockupDate?: string | undefined;
+  greenshoeStatus?: string | undefined;
+  firstIndependentEarningsAt?: string | undefined;
+  firstCoverageAt?: string | undefined;
+  evidence?: OpportunityIpoEvidence | undefined;
 }
 
 export type OpportunityCatalystStatus = 'upcoming' | 'active' | 'observed' | 'missed';
@@ -97,11 +97,11 @@ export type OpportunityCatalystConfidence = 'confirmed' | 'inferred' | 'placehol
 
 export interface OpportunityCatalystItem {
   label: string;
-  dueAt?: string;
+  dueAt?: string | undefined;
   status: OpportunityCatalystStatus;
-  note?: string;
-  source?: string;
-  confidence?: OpportunityCatalystConfidence;
+  note?: string | undefined;
+  source?: string | undefined;
+  confidence?: OpportunityCatalystConfidence | undefined;
 }
 
 export interface OpportunityRecord {
@@ -111,25 +111,25 @@ export interface OpportunityRecord {
   status: OpportunityStatus;
   title: string;
   query: string;
-  thesis?: string;
-  summary?: string;
-  primaryTicker?: string;
-  leaderTicker?: string;
-  proxyTicker?: string;
+  thesis?: string | undefined;
+  summary?: string | undefined;
+  primaryTicker?: string | undefined;
+  leaderTicker?: string | undefined;
+  proxyTicker?: string | undefined;
   relatedTickers: string[];
   relayTickers: string[];
-  nextCatalystAt?: string;
-  supplyOverhang?: string;
-  policyStatus?: string;
+  nextCatalystAt?: string | undefined;
+  supplyOverhang?: string | undefined;
+  policyStatus?: string | undefined;
   scores: OpportunityScores;
-  heatProfile?: OpportunityHeatProfile;
-  proxyProfile?: OpportunityProxyProfile;
-  ipoProfile?: OpportunityIpoProfile;
+  heatProfile?: OpportunityHeatProfile | undefined;
+  proxyProfile?: OpportunityProxyProfile | undefined;
+  ipoProfile?: OpportunityIpoProfile | undefined;
   catalystCalendar: OpportunityCatalystItem[];
-  latestMissionId?: string;
-  latestEventType?: OpportunityEventType;
-  latestEventMessage?: string;
-  latestEventAt?: string;
+  latestMissionId?: string | undefined;
+  latestEventType?: OpportunityEventType | undefined;
+  latestEventMessage?: string | undefined;
+  latestEventAt?: string | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -139,7 +139,7 @@ export interface OpportunityMissionSummary {
   query: string;
   status: string;
   updatedAt: string;
-  source?: string;
+  source?: string | undefined;
 }
 
 export interface OpportunitySnapshotRecord {
@@ -150,21 +150,30 @@ export interface OpportunitySnapshotRecord {
 }
 
 export interface OpportunitySummaryRecord extends OpportunityRecord {
-  latestMission?: OpportunityMissionSummary;
-  latestRun?: MissionRunRecord;
-  latestDiff?: MissionDiffSummary | null;
-  latestOpportunityDiff?: OpportunityDiffSummary | null;
-  recentHeatHistory?: OpportunityHeatHistoryPoint[];
-  heatInflection?: OpportunityHeatInflection | null;
-  whyNowSummary?: string;
-  playbook?: OpportunityPlaybook;
-  suggestedMission?: OpportunitySuggestedMission;
-  suggestedMissions?: OpportunitySuggestedMission[];
-  recentActionTimeline?: OpportunityActionTimelineEntry[];
+  latestMission?: OpportunityMissionSummary | undefined;
+  latestRun?: MissionRunRecord | undefined;
+  latestDiff?: MissionDiffSummary | null | undefined;
+  latestOpportunityDiff?: OpportunityDiffSummary | null | undefined;
+  recentHeatHistory?: OpportunityHeatHistoryPoint[] | undefined;
+  heatInflection?: OpportunityHeatInflection | null | undefined;
+  whyNowSummary?: string | undefined;
+  playbook?: OpportunityPlaybook | undefined;
+  suggestedMission?: OpportunitySuggestedMission | undefined;
+  suggestedMissions?: OpportunitySuggestedMission[] | undefined;
+  recentActionTimeline?: OpportunityActionTimelineEntry[] | undefined;
 }
 
 export type OpportunityBoardType = Exclude<OpportunityType, 'ad_hoc'>;
 export type OpportunityBoardHealthMetricTone = 'neutral' | 'positive' | 'warning' | 'negative';
+
+export interface OpportunityBoardHealthMetricDetail {
+  opportunityId: string;
+  title: string;
+  reason: string;
+  evidence?: string | undefined;
+  eventId?: string | undefined;
+  eventLabel?: string | undefined;
+}
 
 export interface OpportunityBoardHealthMetric {
   key: string;
@@ -172,6 +181,8 @@ export interface OpportunityBoardHealthMetric {
   value: number;
   tone: OpportunityBoardHealthMetricTone;
   opportunityIds: string[];
+  explanation?: string | undefined;
+  details?: OpportunityBoardHealthMetricDetail[] | undefined;
 }
 
 export interface OpportunityBoardHealthSummary {
@@ -192,12 +203,12 @@ export interface NewCodeRadarCandidate {
   query: string;
   status: NewCodeRadarStatus;
   summary: string;
-  latestFilingType?: string;
-  latestFiledAt?: string;
+  latestFilingType?: string | undefined;
+  latestFiledAt?: string | undefined;
   filingCount: number;
-  ipoProfile?: OpportunityIpoProfile;
+  ipoProfile?: OpportunityIpoProfile | undefined;
   catalystCalendar: OpportunityCatalystItem[];
-  linkedOpportunityId?: string;
+  linkedOpportunityId?: string | undefined;
 }
 
 export type HeatTransferEdgeKind =
@@ -219,8 +230,8 @@ export type HeatTransferValidationStatus = 'forming' | 'confirmed' | 'fragile' |
 export interface HeatTransferGraph {
   id: string;
   theme: string;
-  leaderTicker?: string;
-  leaderScore?: number;
+  leaderTicker?: string | undefined;
+  leaderScore?: number | undefined;
   bottleneckTickers: string[];
   laggardTickers: string[];
   junkTickers: string[];
@@ -232,7 +243,7 @@ export interface HeatTransferGraph {
   edgeCount: number;
   edges: HeatTransferEdge[];
   transmissionSummary: string;
-  linkedOpportunityId?: string;
+  linkedOpportunityId?: string | undefined;
 }
 
 export type OpportunityInboxReasonCode =
@@ -252,7 +263,7 @@ export type OpportunityInboxReasonCode =
 export interface OpportunityInboxReason {
   code: OpportunityInboxReasonCode;
   label: string;
-  detail?: string;
+  detail?: string | undefined;
   priority: number;
 }
 
@@ -261,22 +272,22 @@ export interface OpportunityInboxItem extends OpportunitySummaryRecord {
   inboxSummary: string;
   recommendedAction: 'analyze' | 'review' | 'monitor';
   inboxReasons: OpportunityInboxReason[];
-  actionLabel?: string;
-  actionDetail?: string;
-  actionDecision?: OpportunityActionTimelineDecision;
-  actionDriver?: OpportunityActionTimelineDriver;
-  actionTimestamp?: string;
+  actionLabel?: string | undefined;
+  actionDetail?: string | undefined;
+  actionDecision?: OpportunityActionTimelineDecision | undefined;
+  actionDriver?: OpportunityActionTimelineDriver | undefined;
+  actionTimestamp?: string | undefined;
 }
 
 export interface OpportunityHeatHistoryPoint {
   snapshotId: string;
   createdAt: string;
   relayScore: number;
-  breadthScore?: number;
-  temperature?: OpportunityTemperature;
-  validationStatus?: HeatTransferValidationStatus;
-  validationSummary?: string;
-  leaderTicker?: string;
+  breadthScore?: number | undefined;
+  temperature?: OpportunityTemperature | undefined;
+  validationStatus?: HeatTransferValidationStatus | undefined;
+  validationSummary?: string | undefined;
+  leaderTicker?: string | undefined;
   bottleneckCount: number;
   laggardCount: number;
 }
@@ -294,9 +305,9 @@ export interface OpportunityHeatInflection {
   summary: string;
   happenedAt: string;
   scoreDelta: number;
-  breadthDelta?: number;
-  fromStatus?: HeatTransferValidationStatus;
-  toStatus?: HeatTransferValidationStatus;
+  breadthDelta?: number | undefined;
+  fromStatus?: HeatTransferValidationStatus | undefined;
+  toStatus?: HeatTransferValidationStatus | undefined;
 }
 
 export type OpportunityPlaybookStance = 'prepare' | 'act' | 'review';
@@ -304,7 +315,7 @@ export type OpportunityPlaybookStance = 'prepare' | 'act' | 'review';
 export interface OpportunityPlaybookItem {
   label: string;
   status: 'ready' | 'watch' | 'missing';
-  note?: string;
+  note?: string | undefined;
 }
 
 export interface OpportunityPlaybook {
@@ -321,10 +332,10 @@ export interface OpportunitySuggestedMission {
   label: string;
   mode: MissionMode;
   query: string;
-  tickers?: string[];
+  tickers?: string[] | undefined;
   depth: 'quick' | 'standard' | 'deep';
   source: string;
-  whenToUse?: string;
+  whenToUse?: string | undefined;
   rationale: string;
 }
 
@@ -344,7 +355,7 @@ export interface OpportunityActionTimelineEntry {
   driver: OpportunityActionTimelineDriver;
   label: string;
   detail: string;
-  reasonSummary?: string;
+  reasonSummary?: string | undefined;
   tone: 'neutral' | 'positive' | 'warning' | 'negative';
 }
 
@@ -389,8 +400,24 @@ export interface OpportunityEventRecord {
   type: OpportunityEventType;
   message: string;
   timestamp: string;
-  meta?: Record<string, unknown>;
+  meta?: Record<string, unknown> | undefined;
 }
+
+export interface StreamEnvelope<TPayload> {
+  id: string;
+  stream: 'mission' | 'opportunity' | 'system';
+  type: string;
+  version: 1;
+  occurredAt: string;
+  entityId?: string | undefined;
+  payload: TPayload;
+  source: {
+    service: 'api' | 'daemon' | 'trendradar' | 'trading_agents' | 'openbb' | 'system';
+    runId?: string | undefined;
+  };
+}
+
+export type OpportunityEventEnvelope = StreamEnvelope<OpportunityEventRecord>;
 
 export type MissionRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
 
@@ -447,11 +474,11 @@ export interface MissionDiffSummary {
 export interface MissionInput {
   mode: MissionMode;
   query: string;
-  tickers?: string[];
-  depth?: 'quick' | 'standard' | 'deep';
-  source?: string;
-  date?: string;
-  opportunityId?: string;
+  tickers?: string[] | undefined;
+  depth?: 'quick' | 'standard' | 'deep' | undefined;
+  source?: string | undefined;
+  date?: string | undefined;
+  opportunityId?: string | undefined;
 }
 
 export interface UnifiedMission {
