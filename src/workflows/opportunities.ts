@@ -1,5 +1,6 @@
 import { getDb } from '../db';
 import { eventBus } from '../utils/event-bus';
+import { appendStreamEvent, getRuntimeEventSourceService } from './stream-events';
 import type {
   OpportunityCatalystItem,
   OpportunityEventEnvelope,
@@ -1046,6 +1047,7 @@ export async function appendOpportunityEvent(
     opportunityId,
   );
 
+  await appendStreamEvent(toOpportunityEventEnvelope(record, { service: getRuntimeEventSourceService() }));
   eventBus.emitOpportunityEvent(record);
   return record;
 }

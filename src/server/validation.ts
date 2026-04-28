@@ -9,18 +9,28 @@ export const missionPayloadSchema = z.object({
   source: z.string().trim().min(1).optional(),
   date: z.string().trim().min(1).optional(),
   opportunityId: z.string().trim().min(1).optional(),
+  idempotencyKey: z.string().trim().min(1).optional(),
 });
 
 const opportunityTypeSchema = z.enum(['ipo_spinout', 'relay_chain', 'proxy_narrative', 'ad_hoc']);
 const opportunityStageSchema = z.enum(['radar', 'framing', 'tracking', 'ready', 'active', 'cooldown', 'archived']);
 const opportunityStatusSchema = z.enum(['watching', 'ready', 'active', 'degraded', 'archived']);
+const opportunityTemperatureSchema = z.enum(['cold', 'warming', 'hot', 'crowded', 'broken']);
+const heatTransferValidationStatusSchema = z.enum(['forming', 'confirmed', 'fragile', 'broken']);
+const heatTransferEdgeKindSchema = z.enum([
+  'leader_to_bottleneck',
+  'bottleneck_to_laggard',
+  'leader_to_laggard',
+]);
+const catalystConfidenceSchema = z.enum(['confirmed', 'inferred', 'placeholder']);
+const scoreFieldSchema = z.number().finite().min(0).max(100);
 const opportunityScoresSchema = z.object({
-  purityScore: z.number().finite().optional(),
-  scarcityScore: z.number().finite().optional(),
-  tradeabilityScore: z.number().finite().optional(),
-  relayScore: z.number().finite().optional(),
-  catalystScore: z.number().finite().optional(),
-  policyScore: z.number().finite().optional(),
+  purityScore: scoreFieldSchema.optional(),
+  scarcityScore: scoreFieldSchema.optional(),
+  tradeabilityScore: scoreFieldSchema.optional(),
+  relayScore: scoreFieldSchema.optional(),
+  catalystScore: scoreFieldSchema.optional(),
+  policyScore: scoreFieldSchema.optional(),
 }).strict();
 const catalystItemSchema = z.object({
   label: z.string().trim().min(1),
@@ -28,13 +38,67 @@ const catalystItemSchema = z.object({
   status: z.enum(['upcoming', 'active', 'observed', 'missed']),
   note: z.string().trim().optional(),
   source: z.string().trim().optional(),
-  confidence: z.enum(['confirmed', 'inferred', 'placeholder']).optional(),
+  confidence: catalystConfidenceSchema.optional(),
 });
-const opportunityProfileSchema = z.object({}).passthrough();
 const stringListSchema = z.array(z.string().trim().min(1));
 const requiredTextSchema = z.string().trim().min(1);
 const optionalTextSchema = z.string().trim().optional();
 const nullableTextSchema = z.string().trim().nullable().optional();
+const heatTransferEdgeSchema = z.object({
+  id: optionalTextSchema,
+  from: requiredTextSchema,
+  to: requiredTextSchema,
+  weight: scoreFieldSchema,
+  kind: heatTransferEdgeKindSchema,
+  reason: optionalTextSchema,
+}).strict();
+const opportunityHeatProfileSchema = z.object({
+  temperature: opportunityTemperatureSchema.optional(),
+  bottleneckTickers: stringListSchema.optional(),
+  laggardTickers: stringListSchema.optional(),
+  junkTickers: stringListSchema.optional(),
+  breadthScore: scoreFieldSchema.optional(),
+  validationStatus: heatTransferValidationStatusSchema.optional(),
+  validationSummary: optionalTextSchema,
+  edgeCount: z.number().int().nonnegative().optional(),
+  edges: z.array(heatTransferEdgeSchema).optional(),
+  leaderHealth: optionalTextSchema,
+  transmissionNote: optionalTextSchema,
+}).strict();
+const opportunityProxyProfileSchema = z.object({
+  mappingTarget: optionalTextSchema,
+  legitimacyScore: scoreFieldSchema.optional(),
+  legibilityScore: scoreFieldSchema.optional(),
+  tradeabilityScore: scoreFieldSchema.optional(),
+  ruleStatus: optionalTextSchema,
+  identityNote: optionalTextSchema,
+  scarcityNote: optionalTextSchema,
+}).strict();
+const opportunityFieldEvidenceSchema = z.object({
+  source: requiredTextSchema,
+  confidence: catalystConfidenceSchema,
+  note: optionalTextSchema,
+  observedAt: optionalTextSchema,
+}).strict();
+const opportunityIpoEvidenceSchema = z.object({
+  officialTradingDate: opportunityFieldEvidenceSchema.optional(),
+  spinoutDate: opportunityFieldEvidenceSchema.optional(),
+  retainedStakePercent: opportunityFieldEvidenceSchema.optional(),
+  lockupDate: opportunityFieldEvidenceSchema.optional(),
+  greenshoeStatus: opportunityFieldEvidenceSchema.optional(),
+  firstIndependentEarningsAt: opportunityFieldEvidenceSchema.optional(),
+  firstCoverageAt: opportunityFieldEvidenceSchema.optional(),
+}).strict();
+const opportunityIpoProfileSchema = z.object({
+  officialTradingDate: optionalTextSchema,
+  spinoutDate: optionalTextSchema,
+  retainedStakePercent: scoreFieldSchema.optional(),
+  lockupDate: optionalTextSchema,
+  greenshoeStatus: optionalTextSchema,
+  firstIndependentEarningsAt: optionalTextSchema,
+  firstCoverageAt: optionalTextSchema,
+  evidence: opportunityIpoEvidenceSchema.optional(),
+}).strict();
 
 export const createOpportunityPayloadSchema = z.object({
   type: opportunityTypeSchema.optional().default('ad_hoc'),
@@ -53,9 +117,9 @@ export const createOpportunityPayloadSchema = z.object({
   supplyOverhang: optionalTextSchema,
   policyStatus: optionalTextSchema,
   scores: opportunityScoresSchema.optional(),
-  heatProfile: opportunityProfileSchema.optional(),
-  proxyProfile: opportunityProfileSchema.optional(),
-  ipoProfile: opportunityProfileSchema.optional(),
+  heatProfile: opportunityHeatProfileSchema.optional(),
+  proxyProfile: opportunityProxyProfileSchema.optional(),
+  ipoProfile: opportunityIpoProfileSchema.optional(),
   catalystCalendar: z.array(catalystItemSchema).optional(),
 });
 
@@ -75,9 +139,9 @@ export const updateOpportunityPayloadSchema = z.object({
   supplyOverhang: nullableTextSchema,
   policyStatus: nullableTextSchema,
   scores: opportunityScoresSchema.optional(),
-  heatProfile: opportunityProfileSchema.optional(),
-  proxyProfile: opportunityProfileSchema.optional(),
-  ipoProfile: opportunityProfileSchema.optional(),
+  heatProfile: opportunityHeatProfileSchema.optional(),
+  proxyProfile: opportunityProxyProfileSchema.optional(),
+  ipoProfile: opportunityIpoProfileSchema.optional(),
   catalystCalendar: z.array(catalystItemSchema).optional(),
 });
 

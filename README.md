@@ -1,1178 +1,590 @@
 # Sineige Alpha Engine
 
-> 一套把“分析执行平台”与“交易机会操作系统”叠加在一起的 AI 交易研究工作台。  
-> 底层负责 `mission / run / evidence / trace` 的执行与留痕，上层负责 `opportunity / event / snapshot / diff` 的机会建模、传导排序和行动分发。
+Sineige Alpha Engine 是一个面向交易研究的 AI 工作台。它不是单纯的任务运行器，而是由两层系统组成：
+
+- Mission 执行层：负责任务排队、执行、重试、取消、证据归档、运行轨迹和结果对比。
+- Opportunity 机会层：负责把 IPO/分拆、产业链热量传导、代理叙事等主题沉淀成可跟踪、可排序、可行动的机会卡。
+
+当前主入口是 Opportunity Workbench。系统会从价格哨兵、RSS/EDGAR、TrendRadar、手动输入等来源产生信号，再把信号转成 mission、opportunity、event、snapshot 和 action inbox。
 
 ## 目录
 
-- [1. 项目定位](#1-项目定位)
-- [2. 当前系统长什么样](#2-当前系统长什么样)
-- [3. 核心领域对象](#3-核心领域对象)
-- [4. 总体架构图](#4-总体架构图)
-- [5. 详细运行机制](#5-详细运行机制)
-- [6. 前端页面与使用说明](#6-前端页面与使用说明)
-- [7. 启动方式](#7-启动方式)
-- [8. 环境变量与配置](#8-环境变量与配置)
-- [9. API 与流式接口](#9-api-与流式接口)
-- [10. 存储与产物](#10-存储与产物)
-- [11. 仓库结构](#11-仓库结构)
-- [12. 开发与排障](#12-开发与排障)
+- [系统定位](#系统定位)
+- [本轮成熟度优化](#本轮成熟度优化)
+- [架构总览](#架构总览)
+- [核心运行流程](#核心运行流程)
+- [核心领域对象](#核心领域对象)
+- [前端工作台](#前端工作台)
+- [存储模型](#存储模型)
+- [API 与 SSE](#api-与-sse)
+- [目录结构](#目录结构)
+- [启动与开发](#启动与开发)
+- [验证命令](#验证命令)
+- [运维与排障](#运维与排障)
+- [后续路线](#后续路线)
 
-## 1. 项目定位
+## 系统定位
 
-这个仓库现在不是单一工具，而是两个层级叠加出来的系统：
+这个项目解决的问题是：把“发现市场机会”和“执行深度分析”放进同一个可审计系统里。
 
-1. 执行内核  
-   负责排队、执行、重试、取消、留痕、回放。核心对象是 `mission`、`mission_run`、`mission_evidence`、`trace`。
+典型工作流：
 
-2. 机会层  
-   负责把市场信息整理成可跟踪的交易机会。核心对象是 `opportunity`、`opportunity_event`、`opportunity_snapshot`、`opportunity_diff`。
+1. 数据源产生信号，例如价格异动、RSS/EDGAR 更新、TrendRadar 新主题、手动输入。
+2. 系统创建或更新 Opportunity，记录事件和快照。
+3. 用户或自动化从 Opportunity 触发 Mission。
+4. TaskQueue 调度 Worker 执行 Mission。
+5. Worker 调用 OpenClaw、TradingAgents、OpenBB 等分析链。
+6. 系统保存 run、evidence、trace、consensus、diff。
+7. Dashboard 通过 REST、SSE 和 polling fallback 更新机会工作台。
 
-从 repo 里的当前代码来看，系统主要服务 3 类工作：
+核心目标不是“更多数据源”，而是让交易机会能被稳定地日常跟踪：为什么它重要、现在该做什么、证据在哪里、上次分析和这次有什么变化、失败后怎么恢复。
 
-- 自动扫描与事件触发：`src/worker.ts`
-- 多智能体分析与证据归档：`src/workflows/dispatch-engine.ts`
-- 机会卡、行动泳道、实时工作台：`dashboard/src/pages/OpportunityWorkbench.tsx`
+## 本轮成熟度优化
 
-## 2. 当前系统长什么样
+本分支聚焦系统稳定性、状态一致性和前端状态治理。
 
-### 2.1 一句话描述
+### 1. Mission 输入完整性
 
-系统会持续监听价格、RSS、EDGAR、TrendRadar 等来源，把它们转成排队任务和机会卡；任务完成后会保存 run 级证据、trace 和 diff，同时把结构化结果喂给前端的机会工作台。
+Mission 进入队列后不再只依赖 `query/depth/source` 重构输入。队列任务现在保存：
 
-### 2.2 它解决的核心问题
+- `inputPayload`
+- `inputHash`
+- `dedupeKey`
+- `idempotencyKey`
 
-- 把“发现新东西”与“执行深分析”拆开，但保持关联。
-- 把一次分析变成可追踪、可重试、可比较的 run。
-- 把“最近该看什么”从任务列表，提升成机会视角的 `Action Inbox`。
-- 把 `IPO / 分拆`、`产业链热量传导`、`题材代理变量` 三类机会统一到同一套前端工作流。
+Worker 执行时优先使用原始 Mission input，并校验 `inputHash`。这样 `mode / tickers / opportunityId / date` 不会在队列执行阶段丢失。
 
-### 2.3 双层系统摘要
+相关文件：
 
-| 层级 | 主要对象 | 主要责任 | 当前入口 |
-| --- | --- | --- | --- |
-| 执行层 | `mission`, `mission_run`, `mission_evidence`, `trace` | 触发分析、并发执行、取消/恢复、保存原始证据 | `/command-center`, `/missions`, `/missions/:id` |
-| 机会层 | `opportunity`, `opportunity_event`, `opportunity_snapshot`, `opportunity_diff` | 建模机会、维护催化日历、热量图谱、代理变量评分、行动排序 | `/` (Opportunity Workbench) |
+- `src/workflows/mission-identity.ts`
+- `src/workflows/mission-submission.ts`
+- `src/utils/task-queue.ts`
+- `src/worker.ts`
 
-## 3. 核心领域对象
+### 2. 任务幂等与去重
 
-### 3.1 执行层对象
+任务去重从 query-only 升级为稳定 mission identity：
 
-| 对象 | 作用 | 主要持久化位置 |
-| --- | --- | --- |
-| `mission` | 一次分析请求的主记录 | `out/missions/<date>/<mission>.json` |
-| `mission_run` | 某个 mission 的一次执行实例 | SQLite `mission_runs` |
-| `task` | 队列里的调度单元 | SQLite `tasks` |
-| `mission_evidence` | 某个 run 的完整证据快照 | `out/missions/<date>/<run>.evidence.json` |
-| `trace` | 某个 run 的 agent 轨迹 | `out/traces/<date>/...json` + `_report.md` |
-| `mission_diff` | 当前 run 与历史 run 的差异摘要 | 运行时聚合 |
+- 同一个 `idempotencyKey` 返回同一个 mission。
+- 同一个 query 但不同 `opportunityId` 可以创建不同任务。
+- 兼容旧任务：没有新字段时仍保留旧 query fallback。
 
-### 3.2 机会层对象
+### 3. Durable stream event log
 
-| 对象 | 作用 | 主要持久化位置 |
-| --- | --- | --- |
-| `opportunity` | 交易者真正看的对象 | SQLite `opportunities` |
-| `opportunity_event` | 结构化事件流 | SQLite `opportunity_events` |
-| `opportunity_snapshot` | 机会快照版本 | SQLite `opportunity_snapshots` |
-| `opportunity_diff` | thesis 级变化摘要 | 运行时聚合 |
-| `board_health` | New Codes / Heat Transfer / Proxy Desk 头部指标 | 运行时聚合 |
-| `inbox_item` | 机会工作台里用来排序和行动分发的对象 | 运行时聚合 |
+新增 `stream_events` 表作为跨进程事件日志。Mission events 和 Opportunity events 会写入 durable stream，Opportunity SSE 支持：
 
-### 3.3 Opportunity 类型
+- cursor replay
+- reconnect 后补齐 missed events
+- DB tail 捕获 daemon/API 分进程写入的事件
+- eventBus 继续负责本进程即时推送
 
-当前代码里定义了 4 类：
+相关文件：
 
-- `ipo_spinout`
-- `relay_chain`
-- `proxy_narrative`
-- `ad_hoc`
+- `src/workflows/stream-events.ts`
+- `src/workflows/mission-events.ts`
+- `src/workflows/opportunities.ts`
+- `src/server/routes/opportunities.ts`
 
-其中前三类是工作台的正式板块：
+### 4. Mission DB read path
 
-- `ipo_spinout` → New Codes
-- `relay_chain` → Heat Transfer
-- `proxy_narrative` → Proxy Desk
+Mission 列表和详情优先走 SQLite index。artifact 仍保存大文本和证据，但 API 不再完全依赖扫描 JSON 文件。
 
-## 4. 总体架构图
+如果 artifact 缺失，详情 API 会返回 DB index 中的 partial mission stub，而不是直接 500。
 
-### 4.1 系统总览
+相关文件：
+
+- `src/workflows/mission-index.ts`
+- `src/server/routes/missions.ts`
+
+### 5. Opportunity runtime validation
+
+Opportunity 写入边界从浅层 passthrough 改成深层 Zod schema：
+
+- `scores` 限制在 0-100。
+- `heatProfile` 校验 temperature、validationStatus、edge kind、edge weight。
+- `proxyProfile` 校验分数字段和已知 profile key。
+- `ipoProfile` 校验 retained stake、字段级 evidence、confidence enum。
+
+相关文件：
+
+- `src/server/validation.ts`
+- `src/__tests__/opportunity-validation.test.ts`
+
+### 6. Workbench query layer 起步
+
+Opportunity Workbench 的主数据源开始迁移到轻量 query hooks：
+
+- `useOpportunityListQuery`
+- `useOpportunityInboxQuery`
+- `useOpportunityBoardHealthQuery`
+- `useOpportunityEventsQuery`
+
+新增 `mergeSnapshotPreservingFresh()`，避免 polling 旧快照覆盖 SSE 刚合并进去的新 opportunity/inbox item。
+
+相关文件：
+
+- `dashboard/src/queries/query-client.ts`
+- `dashboard/src/queries/opportunity-queries.ts`
+- `dashboard/src/pages/OpportunityWorkbench.tsx`
+- `src/__tests__/query-client.test.ts`
+
+### 7. 响应式底栏修复
+
+底部 macro strip 不再硬编码 `left: 220px`。sidebar 宽度和 macro strip 高度改为 CSS 变量，720px 下 sidebar offset 归零，并给主内容保留底部空间。
+
+相关文件：
+
+- `dashboard/src/App.css`
+- `dashboard/src/index.css`
+
+## 架构总览
 
 ```mermaid
 flowchart TB
-  subgraph Sources["Signals / Data Sources"]
-    T1["T1 Price Sentinel (5m)"]
-    T2["T2 RSS + EDGAR (hourly :30)"]
-    T3["T3 Daily Report (08:30 weekdays)"]
-    T4["T4 TrendRadar (15m)"]
-    WL["data/watchlist.json"]
-    CFG["config/models.yaml + runtime config"]
+  subgraph Sources["Signals and Inputs"]
+    Manual["Manual input"]
+    T1["T1 price sentinel"]
+    T2["RSS and EDGAR"]
+    T3["Daily report"]
+    T4["TrendRadar"]
+    Watchlist["data/watchlist.json"]
   end
 
-  subgraph Core["Execution Core"]
-    SUB["Mission Submission"]
-    QUEUE["TaskQueue"]
-    RUNS["mission_runs"]
-    DISPATCH["dispatchMission()"]
-    OC["OpenClaw"]
-    TA["TradingAgents"]
-    OBB["OpenBB"]
-    CONS["Consensus + Lifecycle Guard"]
-    EVID["Mission Evidence"]
-    TRACE["Agent Trace"]
-    MDIFF["Mission Diff"]
+  subgraph API["Express API"]
+    Routes["REST routes"]
+    MissionSSE["/api/missions/stream"]
+    OpportunitySSE["/api/opportunities/stream"]
+    Validation["Zod validation"]
   end
 
-  subgraph Opp["Opportunity Layer"]
-    AUTO["Opportunity Automation"]
-    OPP["Opportunity Store"]
-    EVENTS["Opportunity Events"]
-    SNAP["Opportunity Snapshots"]
-    ODIFF["Opportunity Diff"]
-    RADAR["New Code Radar"]
-    HEAT["Heat Transfer Graph"]
-    PROXY["Proxy Desk"]
-    INBOX["Inbox / Ranking / Board Health"]
+  subgraph Runtime["Mission Runtime"]
+    Submission["Mission submission"]
+    Queue["TaskQueue"]
+    Worker["Worker daemon"]
+    Dispatch["dispatchMission"]
+    Runs["mission_runs"]
+    Evidence["evidence artifacts"]
+    Trace["agent traces"]
   end
 
-  subgraph API["Express API + SSE"]
-    REST["REST APIs"]
-    SSEM["/api/missions/stream"]
-    SSEO["/api/opportunities/stream"]
+  subgraph Vendors["Analysis Providers"]
+    OpenClaw["OpenClaw"]
+    TradingAgents["TradingAgents"]
+    OpenBB["OpenBB"]
   end
 
-  subgraph UI["Dashboard"]
-    WB["Opportunity Workbench"]
-    CC["Command Center"]
-    TL["Mission Timeline"]
-    MV["Mission Viewer"]
-    ST["Settings"]
+  subgraph Opportunity["Opportunity OS"]
+    Store["opportunities"]
+    OppEvents["opportunity_events"]
+    StreamEvents["stream_events"]
+    Snapshots["opportunity_snapshots"]
+    Inbox["Action Inbox"]
+    Board["Board health"]
   end
 
-  T1 --> SUB
-  T2 --> AUTO
-  T3 --> SUB
-  T4 --> AUTO
-  WL --> AUTO
-  CFG --> OC
-  CFG --> TA
+  subgraph Dashboard["React Dashboard"]
+    Workbench["Opportunity Workbench"]
+    Command["Command Center"]
+    Missions["Mission pages"]
+    Settings["Settings"]
+    Queries["Query hooks"]
+  end
 
-  SUB --> QUEUE --> RUNS --> DISPATCH
-  DISPATCH --> OC
-  DISPATCH --> TA
-  DISPATCH --> OBB
-  DISPATCH --> CONS
-  DISPATCH --> EVID
-  DISPATCH --> TRACE
-  RUNS --> MDIFF
+  Manual --> Routes
+  T1 --> Submission
+  T2 --> Store
+  T3 --> Submission
+  T4 --> Store
+  Watchlist --> Store
 
-  AUTO --> RADAR
-  AUTO --> HEAT
-  AUTO --> PROXY
-  RADAR --> OPP
-  HEAT --> OPP
-  PROXY --> OPP
-  OPP --> EVENTS
-  OPP --> SNAP
-  SNAP --> ODIFF
-  OPP --> INBOX
+  Routes --> Validation
+  Validation --> Submission
+  Submission --> Queue
+  Queue --> Worker
+  Worker --> Dispatch
+  Dispatch --> OpenClaw
+  Dispatch --> TradingAgents
+  Dispatch --> OpenBB
+  Dispatch --> Runs
+  Dispatch --> Evidence
+  Dispatch --> Trace
 
-  RUNS --> REST
-  EVID --> REST
-  TRACE --> REST
-  MDIFF --> REST
-  INBOX --> REST
-  EVENTS --> SSEO
-  TRACE --> SSEM
+  Store --> OppEvents
+  OppEvents --> StreamEvents
+  Runs --> StreamEvents
+  Store --> Snapshots
+  Store --> Inbox
+  Store --> Board
 
-  REST --> WB
-  REST --> CC
-  REST --> TL
-  REST --> MV
-  REST --> ST
-  SSEO --> WB
-  SSEM --> CC
-  SSEM --> MV
+  Routes --> Queries
+  StreamEvents --> OpportunitySSE
+  Trace --> MissionSSE
+  Queries --> Workbench
+  OpportunitySSE --> Workbench
+  MissionSSE --> Command
+  Routes --> Missions
+  Routes --> Settings
 ```
 
-### 4.2 领域关系图
+## 核心运行流程
 
-```mermaid
-erDiagram
-  OPPORTUNITY ||--o{ OPPORTUNITY_EVENT : emits
-  OPPORTUNITY ||--o{ OPPORTUNITY_SNAPSHOT : versions
-  OPPORTUNITY ||--o{ MISSION : drives
-  MISSION ||--o{ MISSION_RUN : executes
-  MISSION_RUN ||--o| MISSION_EVIDENCE : captures
-  MISSION_RUN ||--o| TRACE : records
-
-  OPPORTUNITY {
-    string id
-    string type
-    string stage
-    string status
-    string title
-    string query
-    json scores
-    json heatProfile
-    json proxyProfile
-    json ipoProfile
-    json catalystCalendar
-  }
-
-  MISSION {
-    string id
-    string mode
-    string query
-    string status
-    datetime createdAt
-  }
-
-  MISSION_RUN {
-    string id
-    string missionId
-    string status
-    string stage
-    int attempt
-    datetime heartbeatAt
-  }
-```
-
-### 4.3 Mission 执行时序图
+### Mission 提交流程
 
 ```mermaid
 sequenceDiagram
-  participant Trigger as "Manual / T1-T4"
-  participant API as "Mission Submission"
-  participant Queue as "TaskQueue"
-  participant Worker as "worker.ts"
-  participant Dispatch as "dispatchMission()"
-  participant OC as "OpenClaw"
-  participant TA as "TradingAgents"
-  participant OBB as "OpenBB"
-  participant Store as "Artifacts / Opportunity"
+  participant UI as Dashboard/API
+  participant Submit as createQueuedMission
+  participant Mission as Mission store
+  participant Queue as TaskQueue
+  participant Worker as Worker
+  participant Dispatch as dispatchMission
 
-  Trigger->>API: createQueuedMission(...)
-  API->>Store: create mission record
-  API->>Queue: enqueue(query, depth, source)
-  Queue->>Store: create mission_run
-  Queue->>Worker: onProcess(task)
-  Worker->>Store: mark run running + heartbeat
-  Worker->>Dispatch: dispatchMission(input, runId)
-  Dispatch->>OC: execute main analysis
-  par Enrichment
-    Dispatch->>TA: analyze tickers
-    Dispatch->>OBB: fetch full ticker data
+  UI->>Submit: mode, query, tickers, opportunityId, idempotencyKey
+  Submit->>Queue: getByIdempotencyKey()
+  alt existing idempotent task
+    Queue-->>Submit: existing task
+    Submit-->>UI: existing mission
+  else new task
+    Submit->>Mission: create mission record
+    Submit->>Queue: enqueue with inputPayload, inputHash, dedupeKey
+    Queue-->>Submit: task
+    Submit-->>UI: mission + task
   end
-  Dispatch->>Dispatch: compute consensus + anti-sell guard
-  Dispatch->>Store: save mission JSON
-  Dispatch->>Store: save run evidence
-  Dispatch->>Store: save trace + trail
-  Dispatch->>Store: update linked opportunity
-  Dispatch-->>Worker: mission complete / failed / canceled
-  Worker->>Store: complete/fail/cancel mission_run
+  Worker->>Queue: acquire task
+  Worker->>Mission: resolve original input
+  Worker->>Worker: verify inputHash
+  Worker->>Dispatch: execute mission
 ```
 
-## 5. 详细运行机制
+### Opportunity 事件流程
 
-### 5.1 进程启动顺序
+```mermaid
+sequenceDiagram
+  participant Writer as API/Daemon/Worker
+  participant Opp as opportunities.ts
+  participant Legacy as opportunity_events
+  participant Stream as stream_events
+  participant Bus as in-process eventBus
+  participant SSE as Opportunity SSE
+  participant UI as Workbench
 
-`npm run daemon` 实际运行的是 `src/worker.ts`。从代码看，启动顺序是：
+  Writer->>Opp: append opportunity event
+  Opp->>Stream: appendStreamEvent(envelope)
+  Opp->>Legacy: write opportunity_events
+  Opp->>Bus: emit local event
+  SSE->>Stream: replay cursor on connect
+  SSE->>Bus: push same-process events
+  SSE->>Stream: periodic DB tail
+  SSE-->>UI: event envelope
+  UI->>UI: merge fresh item into query cache
+```
 
-1. 输出 daemon 启动横幅。
-2. 创建核心单例：
-   - `AgentSwarmOrchestrator`
-   - `TrendRadar`
-   - `MacroContextEngine`
-   - `NarrativeLifecycleEngine`
-3. 执行健康检测：
-   - `healthMonitor.checkConnectivity()`
-4. 恢复遗留任务：
-   - `taskQueue.recover()`
-   - `requeueMissionRunsForTasks(...)`
-5. 注册队列处理器：
-   - `taskQueue.onProcess(...)`
-6. 启动 API：
-   - `startServer(3000)`
-7. 启动 Telegram 交互机器人：
-   - `startInteractiveBot()`
-8. 注册 4 条 cron 触发链：
-   - T1
-   - T2
-   - T3
-   - T4
-9. 如果命令行包含 `--run-now` / `--trend` / `--deep`，再执行一次即时扫描。
+### Workbench 数据刷新流程
 
-### 5.2 健康监控与降级模式
+```mermaid
+flowchart LR
+  Poll["Query hooks polling"] --> Merge["mergeSnapshotPreservingFresh"]
+  SSE["Opportunity SSE"] --> Detail["Fetch changed detail/inbox item"]
+  Detail --> Merge
+  Merge --> LiveState["liveOpportunities / liveInbox"]
+  LiveState --> Selectors["selectors and lane ranking"]
+  Selectors --> UI["Workbench view"]
+```
 
-`src/utils/health-monitor.ts` 负责：
+## 核心领域对象
 
-- 启动时探测 LLM API 可达性
-- 记录连续失败次数
-- 连续失败达到 `5` 次后进入降级模式
-- 降级冷却窗口为 `10` 分钟
-- 降级时通过 `shouldSkipAnalysis()` 控制是否跳过重分析
-- Telegram 配置存在时发送健康告警；不存在时仅打印日志
+### Mission 层
 
-### 5.3 队列机制
-
-队列实现位于 `src/utils/task-queue.ts`，当前行为非常重要：
-
-- 存储在 SQLite `tasks` 表
-- 默认并发度：`3`
-- 重复任务去重规则：同一个 `query` 只要还有 `pending/running` 就不会再次入队
-- 任务状态：
-  - `pending`
-  - `running`
-  - `done`
-  - `failed`
-  - `canceled`
-- 启动恢复时会：
-  - 删除过老的 `done/failed`
-  - 把中断的 `running` 改回 `pending`
-- `cancelTask()` 支持对 `pending/running` 任务强制取消
-
-### 5.4 T1-T4 四条自动触发链
-
-| Trigger | 调度 | 作用 | 关键行为 |
-| --- | --- | --- | --- |
-| `T1` | 每 5 分钟 | 价量哨兵 | 扫描 watchlist `target` 标的，命中严重异动时发送批量告警，`critical` 事件自动创建 quick mission |
-| `T2` | 每小时第 30 分钟 | RSS + EDGAR | 轮询政策/RSS/公告；高命中关键词事件自动创建 standard mission；EDGAR filing 自动同步 New Code Radar |
-| `T3` | 工作日 08:30 | 日报与赛道扫查 | 生成技术快照、ETF 概览、动态监控池、宏观与绩效摘要，并为每个赛道创建 deep mission |
-| `T4` | 每 15 分钟 | TrendRadar | 扫描趋势，推送趋势概览；同步 Heat Transfer Graph；趋势报告提及 ticker 足够多时排队 standard mission |
-
-#### T1 特别说明
-
-- 默认关闭：`T1_SENTINEL_ENABLED_DEFAULT = false`
-- 可以通过环境变量或运行时 API 打开
-- 冷却时间默认 `30` 分钟
-
-#### T2 特别说明
-
-T2 里其实包含两条逻辑：
-
-- RSS / 政策事件 → 可能直接触发分析任务
-- EDGAR filing → 自动刷新 `ipo_spinout` 机会卡
-
-#### T4 特别说明
-
-T4 的作用已经不只是“生成一份趋势报告”，而是：
-
-- 调用 `TrendRadar.scan()`
-- 自动构建 / 同步 heat-transfer opportunities
-- 在工作台上形成实时 `Heat Transfer` 板块与 `Action Inbox`
-
-### 5.5 Mission 生命周期
-
-Mission 入口主要有两个：
-
-- `POST /api/missions`
-- `POST /api/trigger`
-
-二者最终都走 `createQueuedMission()`，关键步骤如下：
-
-1. 生成 `mission` 记录
-2. 追加 `created` 事件
-3. 入队 `taskQueue.enqueue(...)`
-4. 为该任务创建 `mission_run`
-5. 如果带 `opportunityId`，把 mission 绑定到对应 opportunity
-6. 追加 `queued` 事件
-
-`mission_run` 的典型状态/阶段：
-
-- 状态：
-  - `queued`
-  - `running`
-  - `completed`
-  - `failed`
-  - `canceled`
-- 阶段：
-  - `queued`
-  - `dispatch`
-  - `scout`
-  - `analyst`
-  - `strategist`
-  - `council`
-  - `synthesis`
-  - `completed`
-  - `failed`
-  - `canceled`
-
-### 5.6 dispatchMission 具体做了什么
-
-`src/workflows/dispatch-engine.ts` 是执行层核心。它会：
-
-1. 创建或复用 mission record
-2. 进入 OpenClaw 主分析阶段
-3. 如果是 `explore`：
-   - 先跑 OpenClaw
-   - 从报告提取 ticker
-   - 再对 ticker 跑 TA/OpenBB enrichment
-4. 如果是 `analyze` / `review`：
-   - OpenClaw 与 enrichment 并行
-5. 解析结构化 verdict
-6. 计算双大脑共识
-7. 运行 lifecycle anti-sell guard
-8. 触发 Telegram 入场/止损/否决汇总
-9. 生成 decision trail
-10. 保存证据、trace、mission 文件
-11. 更新 linked opportunity
-
-### 5.7 Opportunity 层如何生成
-
-机会层不是单一数据源生成，而是多条路径叠加：
-
-#### 5.7.1 New Code Radar
-
-来自：
-
-- `watchIPO(...)`
-- `syncNewCodeRadarOpportunities(...)`
-- `buildNewCodeRadarCandidates(...)`
-
-它会根据 filing 阶段和已有机会卡，维护：
-
-- `ipoProfile`
-- `catalystCalendar`
-- 字段级 evidence
-- `trading_soon / pricing / filing` 这类状态
-
-#### 5.7.2 Heat Transfer Graph
-
-来自：
-
-- `getActiveTickers()`
-- `buildHeatTransferGraphs(...)`
-- `syncHeatTransferGraphOpportunities(...)`
-
-它会维护：
-
-- leader / bottleneck / laggard / junk
-- relay score
-- breadth score
-- validation status
-- edges 与传导理由
-- heat history 与 inflection
-
-#### 5.7.3 Proxy Desk
-
-来自：
-
-- opportunity 的 `scores`
-- `proxyProfile`
-- 规则状态与点火/退潮事件
-
-当前前端展示的点火/退潮，后端统一通过 `buildOpportunityBoardHealthMap()` 计算。
-
-### 5.8 前后端如何同步实时状态
-
-当前代码里有两条 SSE：
-
-- `/api/missions/stream`
-- `/api/opportunities/stream`
-
-前端通过 `useAgentStream()` 和 `useOpportunityStream()` 订阅，特征是：
-
-- 自动指数退避重连
-- mission stream 用于 agent log / trace 可视化
-- opportunity stream 用于工作台局部刷新、lane 头部跳变、`LIVE RANK`
-
-也就是说，首页不是纯轮询页面，而是：
-
-- 基础数据走 polling
-- 关键跳变走 SSE
-- 收到关键事件后，只局部刷新对应 inbox item / opportunity summary / board health
-
-## 6. 前端页面与使用说明
-
-当前 Dashboard 路由定义在 `dashboard/src/App.tsx`。
-
-### 6.1 页面总览
-
-| 路由 | 页面 | 作用 |
+| 对象 | 作用 | 主要位置 |
 | --- | --- | --- |
-| `/` | Opportunity Workbench | 默认首页，机会工作台 |
-| `/command-center` | Command Center | 手动发任务、看执行控制台 |
-| `/missions` | Mission Timeline | 查看任务时间线 |
-| `/missions/:id` | Mission Viewer | 查看单任务详情、run、evidence、trace、compare |
-| `/radar` | TrendRadar Hub | 趋势雷达视图 |
-| `/radar-raw` | TrendRadar Raw | 原始 TrendRadar 数据透视 |
-| `/watchlist` | Watchlist | 监控池与动态观察标的 |
-| `/settings` | Settings | 模型配置页面 |
+| `task` | 队列调度单元，保存 dedupe、idempotency、input hash、lease 信息 | SQLite `tasks` |
+| `mission` | 一次分析请求的主记录 | `out/missions` + SQLite index |
+| `mission_run` | Mission 的一次执行实例 | SQLite `mission_runs` |
+| `mission_event` | Mission 生命周期事件 | JSONL + `stream_events` |
+| `mission_evidence` | Run 级证据快照 | artifact JSON |
+| `trace` | Agent 轨迹和 report | `out/traces` |
 
-### 6.2 Opportunity Workbench
+### Opportunity 层
 
-这是当前系统最重要的页面。
-
-它主要由以下部分组成：
-
-- 顶部 summary cards
-- `Pulse` 总控卡
-- `Action Inbox`
-- 三大机会板块：
-  - New Codes
-  - Heat Transfer
-  - Proxy Desk
-- 手动创建机会卡表单
-- 近期事件流
-
-#### `Pulse` 卡
-
-`Pulse` 会把 lane 和 board 的实时变化综合成：
-
-- `LIVE`
-- `RECENT`
-- `STEADY`
-
-它还能：
-
-- 跳转到当前最应该看的 lane
-- 直接执行该 lane 的默认动作
-- 显示当前 focus opportunity 与备选动作
-
-#### `Action Inbox`
-
-`Action Inbox` 现在分成三条泳道：
-
-- `Act Now`
-- `Review Now`
-- `Monitor`
-
-每条泳道都不是简单的列表，而是：
-
-- lane insight
-- lane live signal
-- lane default action
-- lane 内部实时重排
-
-#### 工作台快捷键
-
-当前页面内建了这些快捷键：
-
-- `1` → 跳到 `Act Now`
-- `2` → 跳到 `Review Now`
-- `3` → 跳到 `Monitor`
-- `Shift + 1/2/3` → 直接执行对应泳道的默认动作
-
-#### Drilldown 与状态保留
-
-机会板块头部的 health chips 可以点击筛选。当前实现里：
-
-- 筛选会写入 URL query
-- 页面刷新后会恢复
-- 无效筛选会被自动清理
-- 创建机会卡草稿会保存在本地浏览器存储
-
-### 6.3 Command Center
-
-适合做“直接发任务”的操作：
-
-- Explore 模式
-- Analyze 模式
-- 选择 `quick / standard / deep`
-- 查看当前 queue、服务健康、最近 missions
-
-如果你只是想快速扔一个题目让系统分析，这里最直接。
-
-### 6.4 Mission Timeline
-
-按时间列出 mission 和 legacy traces，适合：
-
-- 快速浏览最近任务
-- 看到 mission status / run status
-- 打开 compare 视图
-
-### 6.5 Mission Viewer
-
-这是执行层最细的详情页，能看：
-
-- mission 基本信息
-- events
-- 所有 runs
-- run 级 evidence
-- run 级 trace
-- 当前 run 与历史 run 的 compare
-
-如果你要做“这次和上次到底哪里变了”的审计，这里是主入口。
-
-### 6.6 Settings
-
-Settings 页编辑的是 `config/models.yaml`，不是临时内存状态。
-
-页面支持：
-
-- 查看当前 provider/base_url
-- 修改模型档案
-- 修改服务到模型的映射
-- 保存回 YAML
-
-这意味着：
-
-- 模型配置是持久化的
-- 重启后依然保留
-
-与之相对，`/api/config` 的运行时配置是内存态：
-
-- `t1Enabled`
-- `leaderTickers`
-- `sma250VetoEnabled`
-
-这部分重启后会回到默认值。
-
-## 7. 启动方式
-
-### 7.1 启动前准备
-
-#### 必需软件
-
-- Node.js + npm
-- Python 运行环境（如果你打算本地跑 OpenBB / TradingAgents / TrendRadar）
-- Docker / Docker Compose（如果你选择容器方式）
-
-#### 安装 Node 依赖
-
-根目录与 dashboard 是两个独立的 Node 项目，都要安装依赖：
-
-```bash
-npm install
-cd dashboard
-npm install
-cd ..
-```
-
-#### 环境变量文件
-
-仓库里同时存在两份模板：
-
-- 根目录 `.env.example`
-- `config/.env.example`
-
-建议以 `config/.env.example` 为主，因为它更完整，包含：
-
-- LLM
-- Web intelligence
-- Financial data
-- Telegram
-- OpenBB / TradingAgents service URLs
-
-如果你直接用 `npm run daemon`，根目录下的 `.env` 最稳妥：
-
-```bash
-cp config/.env.example .env
-```
-
-如果你还想用 `scripts/start-all.sh`，它会优先读取 `config/.env`，其次才是根目录 `.env`。所以可以再补一份：
-
-```bash
-cp config/.env.example config/.env
-```
-
-#### 端口约定
-
-| 服务 | 端口 | 说明 |
+| 对象 | 作用 | 主要位置 |
 | --- | --- | --- |
-| OpenClaw API | `3000` | Express API + SSE |
-| OpenBB | `8000` | 外部数据层 |
-| TradingAgents | `8001` | 第二大脑 |
-| Dashboard dev | `5173` | Vite 开发服务器 |
-| Dashboard docker | `5173 -> 80` | Nginx 代理静态前端 |
+| `opportunity` | 用户真正操作的交易机会卡 | SQLite `opportunities` |
+| `opportunity_event` | 机会事件，例如 mission queued、relay triggered、proxy ignited | SQLite `opportunity_events` + `stream_events` |
+| `opportunity_snapshot` | 机会版本快照 | SQLite `opportunity_snapshots` |
+| `board_health` | New Codes、Heat Transfer、Proxy Desk 的板块指标 | 运行时聚合 |
+| `inbox_item` | 工作台行动排序对象 | 运行时聚合 |
 
-### 7.2 方式 A：最小可运行开发模式
+### Opportunity 类型
 
-适合只想启动后端 + Dashboard，验证 UI、API、机会层与基础分析流。
-
-#### Terminal 1：启动 daemon + API
-
-```bash
-npm run daemon
-```
-
-这条命令会同时做几件事：
-
-- 启动 worker
-- 启动 API server (`3000`)
-- 注册 T1-T4
-- 启动 Telegram 交互 bot
-
-#### Terminal 2：启动 Dashboard
-
-```bash
-cd dashboard
-npm run dev
-```
-
-打开：
-
-- Dashboard: [http://localhost:5173](http://localhost:5173)
-- API: [http://localhost:3000/api/health](http://localhost:3000/api/health)
-
-#### 说明
-
-即使 OpenBB / TradingAgents 没启动，前后端页面依然可以打开；但：
-
-- 多服务健康卡会显示 offline
-- enrichment 能力会缺失
-- 某些 mission 只能部分完成或失败
-
-### 7.3 方式 B：交互式单次分析
-
-适合只想在命令行里直接问一个题目，不关心工作台。
-
-```bash
-npm start
-```
-
-这个入口来自 `src/index.ts`，会：
-
-- 提示输入 narrative 或 ticker
-- 启动 `AgentSwarmOrchestrator`
-- 执行一次性 mission
-
-### 7.4 方式 C：daemon 的手动即时扫描参数
-
-`src/worker.ts` 支持以下参数：
-
-#### 立即跑一轮 watchlist 扫描
-
-```bash
-npm run daemon -- --run-now
-```
-
-#### 立即跑一轮 TrendRadar
-
-```bash
-npm run daemon -- --run-now --trend
-```
-
-#### 立即排一条深度任务
-
-```bash
-npm run daemon -- --run-now --deep "AI data center bottleneck"
-```
-
-说明：
-
-- `--run-now` 不会替代 daemon，而是在 daemon 启动后额外执行一次立即扫描
-- `--deep "<query>"` 会创建一条高优先级 deep mission
-
-### 7.5 方式 D：本地一键拉起全套服务
-
-仓库自带：
-
-```bash
-./scripts/start-all.sh
-```
-
-它会尝试按顺序启动：
-
-1. OpenBB API
-2. TradingAgents API
-3. OpenClaw daemon + API
-4. Dashboard dev server
-5. TrendRadar 后台循环
-
-注意：
-
-- 这个脚本依赖本地 vendor 目录和 Python/venv 形状
-- 适合已经把 `vendors/openbb`、`vendors/trading-agents` 跑通的开发环境
-
-### 7.6 方式 E：Docker Compose
-
-```bash
-docker compose up --build
-```
-
-当前 `docker-compose.yml` 会启动：
-
-- `openclaw`
-- `trading-agents`
-- `trendradar`
-- `openbb`
-- `dashboard`
-
-Compose 暴露的端口：
-
-- `3000` → openclaw
-- `8000` → openbb
-- `8001` → trading-agents
-- `5173` → dashboard
-
-这是最接近“完整联调环境”的方式。
-
-### 7.7 启动后的自检清单
-
-建议按下面顺序验证：
-
-```bash
-curl http://localhost:3000/api/health
-curl http://localhost:3000/api/health/services
-curl http://localhost:3000/api/opportunities
-curl http://localhost:3000/api/missions
-```
-
-然后打开：
-
-- [http://localhost:5173](http://localhost:5173)
-- 看首页 `Pulse`
-- 看 `Action Inbox`
-- 看 `Command Center`
-
-## 8. 环境变量与配置
-
-### 8.1 `.env` / `config/.env` 常用变量
-
-| 变量 | 作用 | 说明 |
+| 类型 | 工作台板块 | 用途 |
 | --- | --- | --- |
-| `LLM_API_KEY` | 主 LLM API Key | 必需，未配置时健康监控会提示 Mock/降级 |
-| `LLM_BASE_URL` | OpenAI-compatible base URL | 由代码直接读取 |
-| `LLM_MODEL` | 默认模型名 | 基础配置 |
-| `ZHIPUAI_API_KEY` / `AI_API_KEY` | 兼容其他 provider | `config/.env.example` 中提供 |
-| `FIRECRAWL_API_KEY` | Web intelligence | 可选 |
-| `TAVILY_API_KEY` | Web intelligence | 可选 |
-| `EXA_API_KEY` | Web intelligence | 可选 |
-| `DESEARCH_API_KEY` | 社媒搜索 | 可选 |
-| `FMP_API_KEY` | 金融数据 | OpenBB / 财务数据用 |
-| `TELEGRAM_BOT_TOKEN` | Telegram 机器人 token | 可选 |
-| `TELEGRAM_CHAT_ID` | Telegram chat id | 可选 |
-| `OPENBB_API_URL` | OpenBB 地址 | 默认 `http://localhost:8000` |
-| `TRADING_AGENTS_URL` | TradingAgents 地址 | 默认 `http://localhost:8001` |
-| `POLL_INTERVAL_MS` | 轮询周期 | 基础配置 |
-| `LOG_LEVEL` | 日志级别 | 基础配置 |
-| `MOCK_LLM` | 是否启用 mock | 可选 |
+| `ipo_spinout` | New Codes | IPO、分拆、独立交易窗口、lockup、coverage、first earnings |
+| `relay_chain` | Heat Transfer | 龙头、瓶颈、二三层扩散、热量传导验证 |
+| `proxy_narrative` | Proxy Desk | 政策/主题代理变量、映射合法性、稀缺性、可交易性 |
+| `ad_hoc` | 通用 | 临时观察和手动分析 |
 
-### 8.2 代码支持但模板里不一定显式列出的变量
+## 前端工作台
 
-| 变量 | 作用 |
+Dashboard 使用 React + Vite，主要页面包括：
+
+- `/`：Opportunity Workbench
+- `/command-center`：Mission 提交和队列观察
+- `/missions`：Mission 列表
+- `/missions/:id`：Mission 详情、run、evidence、trace
+- `/watchlist`：动态 watchlist
+- `/settings`：模型和运行配置
+
+Opportunity Workbench 的主要模块：
+
+- Action Inbox：按 act、review、monitor 分发行动。
+- New Codes：IPO/分拆机会板块。
+- Heat Transfer：产业链热量传导板块。
+- Proxy Desk：代理叙事板块。
+- Event Feed：Opportunity 事件流。
+- Detail Drawer：机会详情、编辑、证据和恢复入口。
+- Mission Recovery：失败/取消任务恢复入口。
+
+当前前端状态分层：
+
+| 状态类型 | 当前 owner |
 | --- | --- |
-| `TASK_QUEUE_CONCURRENCY` | 覆盖默认并发数 |
-| `T1_ENABLED` | 环境级打开/关闭 T1 |
-| `T1_COOLDOWN_MS` | 覆盖 T1 冷却时间 |
+| Server cache | `dashboard/src/queries/*` 起步接管 opportunity 数据 |
+| Live events | `useOpportunityStream` + Workbench merge |
+| URL state | search query、board filters |
+| Local persistent UI | drafts、saved views |
+| Ephemeral UI | drawer、focused lane、loading action |
 
-### 8.3 模型配置
+## 存储模型
 
-模型配置文件是：
+系统使用 SQLite + 文件 artifact 的混合模型。
 
-- [`config/models.yaml`](config/models.yaml)
-
-它是单一事实源，当前支持：
-
-- 全局默认 provider/base_url
-- `deep_think`
-- `quick_think`
-- service → profile 映射
-
-Dashboard 的 Settings 页会直接保存回这个 YAML。
-
-### 8.4 运行时配置
-
-运行时配置通过：
-
-- `GET /api/config`
-- `PATCH /api/config`
-
-当前支持的字段：
-
-- `t1Enabled`
-- `leaderTickers`
-- `sma250VetoEnabled`
-
-注意：这部分是内存态，不会写回文件。
-
-## 9. API 与流式接口
-
-下面只列核心接口，完整路由定义见 `src/server/app.ts`。
-
-### 9.1 任务与执行层
-
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/api/health` | 系统健康摘要 |
-| `GET` | `/api/health/services` | 多服务健康 |
-| `GET` | `/api/queue` | 队列状态 |
-| `POST` | `/api/trigger` | 兼容旧入口，手动下发任务 |
-| `DELETE` | `/api/queue/:id` | 取消任务 |
-| `GET` | `/api/missions` | mission 列表 |
-| `GET` | `/api/missions/:id` | 单 mission 详情 |
-| `GET` | `/api/missions/:id/events` | mission 事件流 |
-| `GET` | `/api/missions/:id/runs` | run 列表 |
-| `GET` | `/api/missions/:id/runs/:runId/evidence` | run 证据 |
-| `POST` | `/api/missions` | 创建 mission |
-| `POST` | `/api/missions/:id/retry` | 重试 mission |
-
-### 9.2 机会层
-
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/api/opportunities` | 机会列表 |
-| `GET` | `/api/opportunities/:id` | 单机会详情 |
-| `POST` | `/api/opportunities` | 创建机会 |
-| `PATCH` | `/api/opportunities/:id` | 更新机会 |
-| `GET` | `/api/opportunities/inbox` | 工作台 inbox |
-| `GET` | `/api/opportunities/board-health` | 三大板块健康摘要 |
-| `GET` | `/api/opportunity-events` | 机会事件流历史 |
-| `GET` | `/api/opportunities/:id/events` | 单机会事件 |
-| `GET` | `/api/opportunities/:id/heat-history` | relay 历史 |
-| `GET` | `/api/opportunities/graphs/heat-transfer` | heat transfer graph 列表 |
-| `POST` | `/api/opportunities/graphs/heat-transfer/sync` | 同步 relay opportunities |
-| `POST` | `/api/opportunities/radar/new-codes/refresh` | 刷新 New Code Radar |
-
-### 9.3 配置与观测
-
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/api/config/models` | 读取 models.yaml |
-| `PUT` | `/api/config/models` | 保存 models.yaml |
-| `GET` | `/api/config` | 读取运行时配置 |
-| `PATCH` | `/api/config` | 更新运行时配置 |
-| `GET` | `/api/token-usage` | token 使用量 |
-| `GET` | `/api/diagnostics` | 诊断与探针 |
-
-### 9.4 SSE
-
-| 路径 | 内容 |
-| --- | --- |
-| `/api/missions/stream` | agent log / mission 进度流 |
-| `/api/opportunities/stream` | opportunity_event 实时流 |
-
-### 9.5 例子
-
-#### 创建机会卡
-
-```bash
-curl -X POST http://localhost:3000/api/opportunities \
-  -H "Content-Type: application/json" \
-  -d '{
-    "type": "relay_chain",
-    "title": "AI Memory Wall Relay",
-    "query": "AI memory wall",
-    "thesis": "Leader heat may transmit into bottleneck memory names.",
-    "leaderTicker": "NVDA",
-    "relatedTickers": ["MU"],
-    "relayTickers": ["WDC"]
-  }'
-```
-
-#### 创建 mission
-
-```bash
-curl -X POST http://localhost:3000/api/missions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "mode": "analyze",
-    "query": "NVDA",
-    "tickers": ["NVDA"],
-    "depth": "deep",
-    "source": "manual"
-  }'
-```
-
-#### 打开 T1
-
-```bash
-curl -X PATCH http://localhost:3000/api/config \
-  -H "Content-Type: application/json" \
-  -d '{
-    "t1Enabled": true
-  }'
-```
-
-## 10. 存储与产物
-
-### 10.1 SQLite
-
-数据库文件：
-
-- `data/openclaw.db`
-
-当前至少包含这些表：
+SQLite 负责索引、状态和可查询事件：
 
 - `tasks`
 - `mission_runs`
+- `missions_index`
+- `mission_events`
+- `mission_evidence_refs`
 - `opportunities`
-- `opportunity_snapshots`
 - `opportunity_events`
-- `narratives`
+- `opportunity_snapshots`
+- `stream_events`
 
-### 10.2 文件产物
+文件 artifact 负责大文本和证据：
 
-| 路径 | 内容 |
+- `out/missions`
+- `out/traces`
+- `out/reports`
+- `data/watchlist.json`
+- `config/models.yaml`
+
+设计原则：
+
+- SQLite 是运行态查询入口。
+- artifact 保留完整上下文和大文本。
+- API read path 优先 SQLite，必要时 fallback 到 artifact。
+- 事件流进入 durable `stream_events`，SSE 只是 projection。
+
+## API 与 SSE
+
+常用 API：
+
+| Endpoint | 作用 |
 | --- | --- |
-| `out/missions/<date>/<mission>.json` | mission 主记录 |
-| `out/missions/<date>/<run>.evidence.json` | run 级证据快照 |
-| `out/traces/<date>/*.json` | run 级 trace |
-| `out/traces/<date>/*_report.md` | 可读 trace 报告 |
-| `out/trails/<date>/<mission>-trail.md` | 决策漏斗报告 |
-| `vendors/trendradar/output` | TrendRadar 输出目录 |
+| `GET /api/health` | 服务健康检查 |
+| `GET /api/queue` | 队列状态 |
+| `POST /api/trigger` | 快速触发 mission |
+| `POST /api/missions` | 创建 mission |
+| `GET /api/missions` | Mission 列表 |
+| `GET /api/missions/:id` | Mission 详情 |
+| `GET /api/missions/:id/events` | Mission 事件 |
+| `POST /api/missions/:id/retry` | 重试 mission |
+| `GET /api/opportunities` | Opportunity 列表 |
+| `POST /api/opportunities` | 创建 Opportunity |
+| `PATCH /api/opportunities/:id` | 更新 Opportunity |
+| `GET /api/opportunities/inbox` | Action Inbox |
+| `GET /api/opportunities/board-health` | 板块健康指标 |
+| `GET /api/opportunity-events` | 最近 Opportunity events |
+| `GET /api/opportunities/graphs/heat-transfer` | Heat Transfer graph |
 
-### 10.3 watchlist / 配置源
+SSE：
 
-| 路径 | 作用 |
+| Endpoint | 作用 |
 | --- | --- |
-| `data/watchlist.json` | 静态 watchlist、sector ETF、reddit sources、news keywords |
-| `config/models.yaml` | 模型与服务映射 |
-| `.env` / `config/.env` | 环境变量 |
+| `GET /api/missions/stream` | Mission/agent 日志流 |
+| `GET /api/opportunities/stream` | Opportunity durable event stream |
 
-## 11. 仓库结构
+Opportunity stream 支持 reconnect cursor：
+
+```text
+GET /api/opportunities/stream?since=<lastEventId>
+```
+
+## 目录结构
 
 ```text
 .
-├── README.md
-├── package.json
-├── docker-compose.yml
-├── scripts/
-│   └── start-all.sh
-├── config/
-│   ├── .env.example
-│   └── models.yaml
-├── data/
-│   ├── openclaw.db
-│   └── watchlist.json
-├── dashboard/
-│   ├── package.json
-│   └── src/
-│       ├── App.tsx
-│       ├── api.ts
-│       ├── hooks/useAgentStream.ts
-│       ├── components/Layout.tsx
-│       └── pages/
-│           ├── OpportunityWorkbench.tsx
-│           ├── CommandCenter.tsx
-│           ├── MissionTimeline.tsx
-│           ├── MissionViewer.tsx
-│           ├── Watchlist.tsx
-│           └── Settings.tsx
-├── src/
-│   ├── index.ts
-│   ├── worker.ts
-│   ├── server/app.ts
-│   ├── db/index.ts
-│   ├── utils/
-│   │   ├── task-queue.ts
-│   │   ├── event-bus.ts
-│   │   ├── health-monitor.ts
-│   │   ├── agent-logger.ts
-│   │   ├── trail-renderer.ts
-│   │   ├── telegram.ts
-│   │   ├── openbb-provider.ts
-│   │   └── ta-client.ts
-│   ├── tools/
-│   │   ├── market-data.ts
-│   │   ├── rss-monitor.ts
-│   │   └── edgar-monitor.ts
-│   └── workflows/
-│       ├── mission-submission.ts
-│       ├── dispatch-engine.ts
-│       ├── mission-runs.ts
-│       ├── mission-evidence.ts
-│       ├── mission-diff.ts
-│       ├── opportunities.ts
-│       ├── opportunity-calendars.ts
-│       ├── heat-transfer-graph.ts
-│       ├── opportunity-ranking.ts
-│       ├── opportunity-actions.ts
-│       └── opportunity-playbooks.ts
-└── vendors/
-    ├── openbb/
-    ├── trading-agents/
-    └── trendradar/
+├── src
+│   ├── server
+│   │   ├── app.ts
+│   │   ├── routes
+│   │   └── validation.ts
+│   ├── workflows
+│   │   ├── mission-submission.ts
+│   │   ├── mission-identity.ts
+│   │   ├── mission-index.ts
+│   │   ├── mission-events.ts
+│   │   ├── stream-events.ts
+│   │   ├── opportunities.ts
+│   │   └── dispatch-engine.ts
+│   ├── utils
+│   │   └── task-queue.ts
+│   ├── db
+│   │   └── index.ts
+│   ├── daemon
+│   ├── agents
+│   └── __tests__
+├── dashboard
+│   ├── src
+│   │   ├── pages
+│   │   ├── queries
+│   │   ├── hooks
+│   │   └── api.ts
+│   └── package.json
+├── docs
+│   └── opportunity-runtime-maturity-technical-plan.md
+├── config
+├── data
+└── out
 ```
 
-## 12. 开发与排障
+## 启动与开发
 
-### 12.1 常用命令
+安装依赖：
 
 ```bash
-# 根目录测试
-npm test
+npm install
+npm --prefix dashboard install
+```
 
-# 开发环境预检
-npm run check:dev-env
+启动 API server：
 
-# 一键开发栈（API + daemon + Dashboard + vendors）
-npm run dev:stack
+```bash
+npm run server
+```
 
-# 只跑 OpenClaw API/daemon/Dashboard，不启动 vendors
-npm run dev:stack:no-vendors
+启动 daemon：
 
-# Dashboard 构建
-cd dashboard
-npm run build
-
-# Dashboard 开发
-npm run dev
-
-# 后端 daemon
-cd ..
+```bash
 npm run daemon
 ```
 
-### 12.2 常见问题
-
-#### 1. Dashboard 打开了，但很多卡显示 offline
-
-优先检查：
-
-- `http://localhost:3000/api/health/services`
-- `OPENBB_API_URL`
-- `TRADING_AGENTS_URL`
-
-#### 2. 为什么 T1 没有触发？
-
-因为默认就是关闭的。  
-代码默认值：`T1_SENTINEL_ENABLED_DEFAULT = false`
-
-打开方式：
-
-- `PATCH /api/config`
-- 或设置 `T1_ENABLED=true`
-
-#### 3. 为什么 Telegram 没发消息？
-
-如果未配置 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`，代码会退化成只打印日志，不阻断主流程。
-
-#### 4. 为什么 Settings 改了能保存，但运行时配置重启就没了？
-
-因为两者不是一回事：
-
-- Settings 页修改的是 `config/models.yaml`，会持久化
-- `/api/config` 修改的是运行时内存配置，重启后重置
-
-#### 5. 为什么有些机会卡有了，但还没有 mission？
-
-这是正常的。机会层和执行层是叠加关系，不是强绑定关系：
-
-- 机会卡可以先存在
-- mission 可以之后再由手动动作或自动事件触发
-
-#### 6. 为什么有 evidence / trace / diff，但位置不一样？
-
-因为当前系统故意把“数据库元数据”和“文件型大对象”分开：
-
-- SQLite：索引、状态、事件、快照
-- 文件：大报告、evidence、trace、trail
-
-### 12.3 推荐阅读顺序
-
-如果你要继续开发这个仓库，建议按这个顺序读：
-
-1. `src/worker.ts`
-2. `src/server/app.ts`
-3. `src/workflows/mission-submission.ts`
-4. `src/workflows/dispatch-engine.ts`
-5. `src/workflows/opportunities.ts`
-6. `src/workflows/opportunity-ranking.ts`
-7. `dashboard/src/pages/OpportunityWorkbench.tsx`
-8. `dashboard/src/pages/MissionViewer.tsx`
-9. `docs/system-maturity-improvement-plan.md`
-
----
-
-如果你只想最快跑起来：
+启动前端：
 
 ```bash
-cp config/.env.example .env
-npm install
-cd dashboard && npm install && cd ..
+npm run dev:dashboard
+```
+
+启动本地完整开发栈：
+
+```bash
+npm run dev:stack
+```
+
+如果只想启动不依赖外部 vendor 的开发栈：
+
+```bash
 npm run dev:stack:no-vendors
 ```
 
-然后打开 [http://localhost:5173](http://localhost:5173)。
+## 配置
+
+主要配置入口：
+
+- `.env`
+- `config/models.yaml`
+- `data/watchlist.json`
+
+常见环境变量按当前代码约定配置 OpenClaw、TradingAgents、OpenBB、TrendRadar、Telegram 等服务。
+
+模型配置由 `config/models.yaml` 管理，Dashboard 的 Settings 页面可读取和更新模型配置。
+
+## 验证命令
+
+提交前建议跑完整门禁：
+
+```bash
+npm test
+npm run typecheck
+npm --prefix dashboard run lint
+npm --prefix dashboard run build
+git diff --check
+```
+
+当前基线：
+
+- `npm test`：30 test files，197 tests passed
+- `npm run typecheck`：通过
+- `npm --prefix dashboard run lint`：通过
+- `npm --prefix dashboard run build`：通过
+
+注意：Vite build 目前会提示主 bundle 超过 500 kB。这是体积提醒，不是构建失败。后续可以用 route-level dynamic import 或 chunk splitting 处理。
+
+## 运维与排障
+
+### Mission 没有按预期关联 Opportunity
+
+检查 task 是否保存了完整 input：
+
+- `inputPayload`
+- `inputHash`
+- `dedupeKey`
+- `missionId`
+
+Worker 会校验 `inputHash`。如果 hash mismatch，说明队列中的 payload 和 mission 原始输入不一致，应优先检查提交链路。
+
+### SSE 没收到事件
+
+Opportunity SSE 是 durable projection。排查顺序：
+
+1. 看 `stream_events` 是否有新事件。
+2. 看 `/api/opportunities/stream?since=<id>` 是否能 replay。
+3. 看 API 进程是否能访问同一个 SQLite。
+4. 看 Workbench polling fallback 是否能补上数据。
+
+### Mission artifact 丢失
+
+Mission API 会优先读 SQLite index。如果 artifact 丢失，详情应返回 partial metadata。若仍然 500，检查：
+
+- `missions_index`
+- artifact path
+- `src/workflows/mission-index.ts`
+
+### Opportunity 写入 400
+
+当前写入边界会严格校验 profile：
+
+- score 必须是 0-100。
+- heat edge weight 必须是 0-100。
+- enum 必须使用代码定义值。
+- profile 不允许未知 key。
+
+前端编辑或外部 API 调用如果失败，先看响应里的 `details[].path`。
+
+## 后续路线
+
+短期优先级：
+
+1. 继续拆 API service layer，让 routes 更薄。
+2. 给 Workbench query layer 增加统一 invalidation 和 reconnect 测试。
+3. 把 Mission cancel 进一步传入外部调用链 AbortSignal。
+4. 增加 migrations table，替代 `ALTER TABLE ... catch {}`。
+5. 继续把 Mission canonical state 收敛到 SQLite。
+6. 为 Opportunity 详情增加字段级 provenance 展示。
+7. 做前端 chunk splitting，解决 Vite bundle size warning。
+
+完整技术方案见：
+
+```text
+docs/opportunity-runtime-maturity-technical-plan.md
+```

@@ -12,6 +12,18 @@ function createDbMock(pendingTasks: any[] = []) {
   return {
     __tasks: tasks,
     get: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('SELECT id, missionId, status FROM tasks WHERE idempotencyKey = ?')) {
+        const [idempotencyKey, ...statuses] = params;
+        return Array.from(tasks.values()).find(
+          (task) => task.idempotencyKey === idempotencyKey && statuses.includes(task.status),
+        );
+      }
+      if (sql.includes('SELECT id, missionId, status FROM tasks WHERE dedupeKey = ?')) {
+        const [dedupeKey, ...statuses] = params;
+        return Array.from(tasks.values()).find(
+          (task) => task.dedupeKey === dedupeKey && statuses.includes(task.status),
+        );
+      }
       if (sql.includes('SELECT id, missionId, status FROM tasks WHERE query = ?')) {
         const [query, firstStatus, secondStatus] = params;
         return Array.from(tasks.values()).find(
@@ -49,15 +61,18 @@ function createDbMock(pendingTasks: any[] = []) {
           progress: params[8],
           statePayload: params[9],
           inputPayload: params[10],
-          leaseId: params[11],
-          heartbeatAt: params[12],
-          cancelRequestedAt: params[13],
-          failureCode: params[14],
-          degradedFlags: params[15],
-          createdAt: params[16],
-          startedAt: params[17],
-          completedAt: params[18],
-          error: params[19],
+          dedupeKey: params[11],
+          idempotencyKey: params[12],
+          inputHash: params[13],
+          leaseId: params[14],
+          heartbeatAt: params[15],
+          cancelRequestedAt: params[16],
+          failureCode: params[17],
+          degradedFlags: params[18],
+          createdAt: params[19],
+          startedAt: params[20],
+          completedAt: params[21],
+          error: params[22],
         });
       } else if (_sql.includes('UPDATE tasks SET runId =')) {
         const task = tasks.get(params[1]);
@@ -66,6 +81,20 @@ function createDbMock(pendingTasks: any[] = []) {
         const id = params[2];
         const task = tasks.get(id);
         tasks.set(id, { ...task, status: 'canceled', cancelRequestedAt: params[0], failureCode: params[1] });
+      } else if (_sql.includes("SET status = 'pending'") && _sql.includes("WHERE status = 'running'")) {
+        let changes = 0;
+        for (const [id, task] of tasks.entries()) {
+          if (task.status !== 'running') continue;
+          tasks.set(id, {
+            ...task,
+            status: 'pending',
+            startedAt: null,
+            leaseId: null,
+            heartbeatAt: null,
+          });
+          changes += 1;
+        }
+        return { changes };
       } else if (_sql.includes('UPDATE tasks SET status =')) {
         const id = params[0];
         tasks.set(id, { ...tasks.get(id), status: 'canceled' });
@@ -192,11 +221,47 @@ describe('TaskQueue concurrency', () => {
     const task = await queue.enqueue('Review AI supply chain', 'deep', 'opportunity_action', 90, {
       missionId: 'mission-1',
       inputPayload,
+      dedupeKey: 'mission:v1:abc',
+      idempotencyKey: 'request-1',
+      inputHash: 'input-hash-1',
     });
 
     expect(task?.missionId).toBe('mission-1');
     expect(task?.inputPayload).toBe(inputPayload);
+    expect(task?.dedupeKey).toBe('mission:v1:abc');
+    expect(task?.idempotencyKey).toBe('request-1');
+    expect(task?.inputHash).toBe('input-hash-1');
     expect((db as any).__tasks.get(task!.id).inputPayload).toBe(inputPayload);
+    expect((db as any).__tasks.get(task!.id).dedupeKey).toBe('mission:v1:abc');
+    expect((db as any).__tasks.get(task!.id).inputHash).toBe('input-hash-1');
+  });
+
+  it('dedupes pending tasks by dedupeKey instead of query when provided', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-existing',
+        query: 'Same query',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'pending',
+        dedupeKey: 'mission:v1:existing',
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    const sameQueryDifferentIdentity = await queue.enqueue('Same query', 'deep', 'test', 10, {
+      dedupeKey: 'mission:v1:different',
+    });
+    const sameIdentity = await queue.enqueue('Another query shape', 'deep', 'test', 10, {
+      dedupeKey: 'mission:v1:existing',
+    });
+
+    expect(sameQueryDifferentIdentity).not.toBeNull();
+    expect(sameIdentity).toBeNull();
   });
 
   it('records cancel timestamp and failure code for pending or running tasks', async () => {
@@ -221,5 +286,34 @@ describe('TaskQueue concurrency', () => {
     expect(canceled?.failureCode).toBe('canceled');
     expect(canceled?.cancelRequestedAt).toEqual(expect.any(Number));
     expect((db as any).__tasks.get('task-1').failureCode).toBe('canceled');
+  });
+
+  it('clears stale lease metadata when recovering interrupted running tasks', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-1',
+        query: 'q1',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        leaseId: 'worker:old',
+        heartbeatAt: 123,
+        startedAt: 100,
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    const recovered = await queue.recover();
+    const task = (db as any).__tasks.get('task-1');
+
+    expect(recovered.recoveredRunningTaskIds).toEqual(['task-1']);
+    expect(task.status).toBe('pending');
+    expect(task.leaseId).toBeNull();
+    expect(task.heartbeatAt).toBeNull();
+    expect(task.startedAt).toBeNull();
   });
 });

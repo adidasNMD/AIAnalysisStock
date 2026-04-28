@@ -7,9 +7,6 @@ import {
   fetchOpportunityBoardHealth,
   fetchOpportunityDetail,
   fetchOpportunityInboxItem,
-  fetchOpportunityInbox,
-  fetchOpportunityEvents,
-  fetchOpportunities,
   fetchQueue,
   fetchHeatTransferGraphs,
   refreshNewCodeRadar,
@@ -25,6 +22,13 @@ import {
   type UpdateOpportunityInput,
 } from '../api';
 import { useOpportunityStream, usePolling, type OpportunityStreamEvent } from '../hooks/useAgentStream';
+import { mergeSnapshotPreservingFresh } from '../queries/query-client';
+import {
+  useOpportunityBoardHealthQuery,
+  useOpportunityEventsQuery,
+  useOpportunityInboxQuery,
+  useOpportunityListQuery,
+} from '../queries/opportunity-queries';
 import {
   BOARD_FILTER_QUERY_KEYS,
   BOARD_TYPES,
@@ -126,10 +130,10 @@ export function OpportunityWorkbench() {
     monitor: null,
   });
 
-  const { data: opportunities } = usePolling<OpportunitySummary[]>(() => fetchOpportunities(60), 5000, []);
-  const { data: boardHealth } = usePolling<OpportunityBoardHealthMap | null>(() => fetchOpportunityBoardHealth(60), 5000, []);
-  const { data: inbox } = usePolling<OpportunityInboxItem[]>(() => fetchOpportunityInbox(10), 5000, []);
-  const { data: recentEvents } = usePolling(() => fetchOpportunityEvents(20), 8000, []);
+  const { data: opportunities } = useOpportunityListQuery(60);
+  const { data: boardHealth } = useOpportunityBoardHealthQuery(60);
+  const { data: inbox } = useOpportunityInboxQuery(10);
+  const { data: recentEvents } = useOpportunityEventsQuery(20);
   const { data: queue } = usePolling(() => fetchQueue(), 5000, []);
   const { data: heatGraphs } = usePolling<HeatTransferGraph[]>(() => fetchHeatTransferGraphs(), 10000, []);
   const { events: streamedEvents, isConnected } = useOpportunityStream(20);
@@ -202,13 +206,13 @@ export function OpportunityWorkbench() {
 
   useEffect(() => {
     if (inbox) {
-      setLiveInbox(inbox);
+      setLiveInbox((current) => mergeSnapshotPreservingFresh(current, inbox, 10));
     }
   }, [inbox]);
 
   useEffect(() => {
     if (opportunities) {
-      setLiveOpportunities(opportunities);
+      setLiveOpportunities((current) => mergeSnapshotPreservingFresh(current, opportunities, 60));
     }
   }, [opportunities]);
 

@@ -3,6 +3,7 @@ import { createMissionRecord, deleteMission, getMission, updateMissionRecord } f
 import { appendMissionEvent } from './mission-events';
 import { createMissionRun } from './mission-runs';
 import { linkMissionToOpportunity, markOpportunityMissionQueued } from './opportunities';
+import { buildMissionTaskDedupeKey, hashMissionInput } from './mission-identity';
 import type { MissionInput, MissionMode, UnifiedMission } from './types';
 import type { AnalysisDepth } from '../models/handoff';
 
@@ -15,6 +16,7 @@ export interface QueueMissionRequest {
   tickers?: string[];
   date?: string | undefined;
   opportunityId?: string | undefined;
+  idempotencyKey?: string | undefined;
 }
 
 function inferMissionMode(query: string, tickers?: string[]): MissionMode {
@@ -40,6 +42,7 @@ async function queueMissionRun(
   queuedMessage: string,
 ): Promise<UnifiedMission | null> {
   const input = buildMissionInput(request);
+  const inputPayload = JSON.stringify(input);
   const task = await taskQueue.enqueue(
     input.query,
     input.depth || 'deep',
@@ -47,7 +50,10 @@ async function queueMissionRun(
     request.priority ?? 0,
     {
       missionId: mission.id,
-      inputPayload: JSON.stringify(input),
+      inputPayload,
+      dedupeKey: buildMissionTaskDedupeKey(input),
+      inputHash: hashMissionInput(input),
+      ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     },
   );
 
@@ -81,6 +87,14 @@ async function queueMissionRun(
 }
 
 export async function createQueuedMission(request: QueueMissionRequest): Promise<UnifiedMission | null> {
+  if (request.idempotencyKey) {
+    const existingTask = await taskQueue.getByIdempotencyKey(request.idempotencyKey);
+    if (existingTask?.missionId) {
+      const existingMission = getMission(existingTask.missionId);
+      if (existingMission) return existingMission;
+    }
+  }
+
   const input = buildMissionInput(request);
   const mission = createMissionRecord(input, undefined, 'queued');
   appendMissionEvent(mission.id, mission.createdAt, {

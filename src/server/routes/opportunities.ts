@@ -19,7 +19,10 @@ import {
   detectOpportunityHeatInflection,
   emitOpportunityDerivedEvents,
   getLatestOpportunityDiff,
+  getLatestStreamEventId,
+  getRuntimeEventSourceService,
   getMission,
+  getMissionFromIndex,
   getOpportunity,
   getOpportunityHeatHistory,
   listMissionEvents,
@@ -27,6 +30,8 @@ import {
   listOpportunities,
   listOpportunityEvents,
   listOpportunityEventsAfter,
+  listStreamEventsAfter,
+  listStreamEventsSince,
   syncHeatTransferGraphOpportunities,
   syncNewCodeRadarOpportunities,
   toOpportunityEventEnvelope,
@@ -68,7 +73,9 @@ function loadEdgarWatchCompanies(): string[] {
 }
 
 async function buildOpportunitySummary(opportunity: OpportunityRecord): Promise<OpportunitySummaryRecord> {
-  const latestMission = opportunity.latestMissionId ? getMission(opportunity.latestMissionId) : null;
+  const latestMission = opportunity.latestMissionId
+    ? await getMissionFromIndex(opportunity.latestMissionId) || getMission(opportunity.latestMissionId)
+    : null;
   const runs = latestMission ? await listMissionRuns(latestMission.id) : [];
   const latestRun = runs[0] || null;
   const latestDiff = latestMission ? buildLatestMissionDiff(latestMission, runs) : null;
@@ -243,9 +250,16 @@ opportunitiesRouter.get('/opportunities/stream', async (req: Request, res: Respo
     'Connection': 'keep-alive',
   });
 
+  const connectedAt = new Date().toISOString();
+  let lastSentEventId: string | null = null;
+  const writeAndRemember = (envelope: OpportunityEventEnvelope) => {
+    writeSseEnvelope(res, envelope);
+    lastSentEventId = envelope.id;
+  };
+
   const onEvent = (data: unknown) => {
     const event = data as OpportunityEventRecord;
-    writeSseEnvelope(res, toOpportunityEventEnvelope(event, { service: 'api' }));
+    writeAndRemember(toOpportunityEventEnvelope(event, { service: getRuntimeEventSourceService() }));
   };
 
   eventBus.on('opportunity_event', onEvent);
@@ -253,21 +267,41 @@ opportunitiesRouter.get('/opportunities/stream', async (req: Request, res: Respo
   const replayCursor = getSseReplayCursor(req);
   if (replayCursor) {
     try {
-      const replayEvents = await listOpportunityEventsAfter(replayCursor, 100);
-      replayEvents.forEach((event) => {
-        writeSseEnvelope(res, toOpportunityEventEnvelope(event, { service: 'api' }));
-      });
+      const replayEnvelopes = await listStreamEventsAfter<OpportunityEventRecord>('opportunity', replayCursor, 100);
+      if (replayEnvelopes.length > 0) {
+        replayEnvelopes.forEach(writeAndRemember);
+      } else {
+        const replayEvents = await listOpportunityEventsAfter(replayCursor, 100);
+        replayEvents.forEach((event) => {
+          writeAndRemember(toOpportunityEventEnvelope(event, { service: getRuntimeEventSourceService() }));
+        });
+      }
     } catch (error: unknown) {
       logger.warn(`[SSE] Opportunity replay failed: ${errorMessage(error)}`);
     }
+  } else {
+    lastSentEventId = await getLatestStreamEventId('opportunity');
   }
 
   const heartbeat = setInterval(() => {
     res.write(': heartbeat\n\n');
   }, 15000);
+  const durableTail = setInterval(() => {
+    const eventLoader = lastSentEventId
+      ? listStreamEventsAfter<OpportunityEventRecord>('opportunity', lastSentEventId, 100)
+      : listStreamEventsSince<OpportunityEventRecord>('opportunity', connectedAt, 100);
+    void eventLoader
+      .then((events) => {
+        events.forEach(writeAndRemember);
+      })
+      .catch((error: unknown) => {
+        logger.warn(`[SSE] Opportunity durable tail failed: ${errorMessage(error)}`);
+      });
+  }, 3000);
 
   req.on('close', () => {
     clearInterval(heartbeat);
+    clearInterval(durableTail);
     eventBus.removeListener('opportunity_event', onEvent);
   });
 });

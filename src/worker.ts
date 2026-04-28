@@ -39,6 +39,7 @@ import { startModelsConfigWatcher } from './utils/model-config';
 import { getDb } from './db';
 import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
 import { getRuntimeConfig } from './config';
+import { hashMissionInput } from './workflows/mission-identity';
 
 const TREND_COOLDOWN_MS = 30 * 60 * 1000;
 const T4_CRON_EXPRESSION = T4_INTERVAL_MS === 15 * 60 * 1000
@@ -183,10 +184,18 @@ function parseMissionInputPayload(payload?: string): MissionInput | null {
 
 function resolveMissionInputForTask(task: QueueTask): MissionInput {
   const inputFromTask = parseMissionInputPayload(task.inputPayload);
-  if (inputFromTask) return inputFromTask;
+  if (inputFromTask) {
+    if (task.inputHash && hashMissionInput(inputFromTask) !== task.inputHash) {
+      throw new Error('Mission input payload hash mismatch');
+    }
+    return inputFromTask;
+  }
 
   const mission = task.missionId ? getMission(task.missionId) : null;
   if (mission?.input?.query) {
+    if (task.inputHash && hashMissionInput(mission.input) !== task.inputHash) {
+      throw new Error('Mission input payload hash mismatch');
+    }
     return mission.input;
   }
 

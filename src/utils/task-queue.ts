@@ -18,6 +18,9 @@ export interface QueueTask {
   error?: string;
   statePayload?: string;
   inputPayload?: string;
+  dedupeKey?: string;
+  idempotencyKey?: string;
+  inputHash?: string;
   leaseId?: string;
   heartbeatAt?: number;
   cancelRequestedAt?: number;
@@ -33,6 +36,9 @@ export interface RecoverResult {
 export interface EnqueueTaskOptions {
   missionId?: string;
   inputPayload?: string;
+  dedupeKey?: string;
+  idempotencyKey?: string;
+  inputHash?: string;
 }
 
 const MAX_TASK_AGE_MS = 2 * 60 * 60 * 1000; 
@@ -61,14 +67,36 @@ export class TaskQueue {
     const options: EnqueueTaskOptions = typeof missionOrOptions === 'string'
       ? { missionId: missionOrOptions }
       : missionOrOptions || {};
-    
-    const existing = await db.get(
-      'SELECT id, missionId, status FROM tasks WHERE query = ? AND status IN (?, ?)',
-      query, 'pending', 'running'
-    );
+
+    const existing = options.idempotencyKey
+      ? await db.get(
+          'SELECT id, missionId, status FROM tasks WHERE idempotencyKey = ? AND status IN (?, ?, ?)',
+          options.idempotencyKey,
+          'pending',
+          'running',
+          'done',
+        )
+      : options.dedupeKey
+        ? await db.get(
+            'SELECT id, missionId, status FROM tasks WHERE dedupeKey = ? AND status IN (?, ?)',
+            options.dedupeKey,
+            'pending',
+            'running',
+          )
+        : await db.get(
+            'SELECT id, missionId, status FROM tasks WHERE query = ? AND status IN (?, ?)',
+            query,
+            'pending',
+            'running',
+          );
     if (existing) {
       const missionNote = existing.missionId ? ` mission=${existing.missionId}` : '';
-      logger.info(`[TaskQueue] ⏭️ 跳过重复任务: "${query}" (已存在 ${existing.status} 任务 ${existing.id}${missionNote})`);
+      const identityNote = options.idempotencyKey
+        ? ` idempotencyKey=${options.idempotencyKey}`
+        : options.dedupeKey
+          ? ` dedupeKey=${options.dedupeKey}`
+          : '';
+      logger.info(`[TaskQueue] ⏭️ 跳过重复任务: "${query}" (已存在 ${existing.status} 任务 ${existing.id}${missionNote}${identityNote})`);
       return null;
     }
 
@@ -86,6 +114,15 @@ export class TaskQueue {
     }
     if (options.inputPayload) {
       task.inputPayload = options.inputPayload;
+    }
+    if (options.dedupeKey) {
+      task.dedupeKey = options.dedupeKey;
+    }
+    if (options.idempotencyKey) {
+      task.idempotencyKey = options.idempotencyKey;
+    }
+    if (options.inputHash) {
+      task.inputHash = options.inputHash;
     }
 
     await this.saveTask(task);
@@ -115,6 +152,15 @@ export class TaskQueue {
     return task || null;
   }
 
+  async getByIdempotencyKey(idempotencyKey: string): Promise<QueueTask | null> {
+    const db = await getDb();
+    const task = await db.get<QueueTask>(
+      'SELECT * FROM tasks WHERE idempotencyKey = ? ORDER BY createdAt DESC LIMIT 1',
+      idempotencyKey,
+    );
+    return task || null;
+  }
+
   async recover(): Promise<RecoverResult> {
     const db = await getDb();
     let totalRecovered = 0;
@@ -128,7 +174,14 @@ export class TaskQueue {
     );
     const recoveredRunningTaskIds = recoveredRunningTasks.map(task => task.id);
     
-    const res = await db.run(`UPDATE tasks SET status = 'pending', startedAt = NULL WHERE status = 'running'`);
+    const res = await db.run(`
+      UPDATE tasks
+      SET status = 'pending',
+          startedAt = NULL,
+          leaseId = NULL,
+          heartbeatAt = NULL
+      WHERE status = 'running'
+    `);
     if (res.changes && res.changes > 0) {
       totalRecovered += res.changes;
       logger.info(`[TaskQueue] 🔄 恢复中断任务: ${res.changes} 个`);
@@ -268,10 +321,10 @@ export class TaskQueue {
     await db.run(`
       INSERT INTO tasks (
         id, missionId, runId, query, depth, priority, source, status, progress,
-        statePayload, inputPayload, leaseId, heartbeatAt, cancelRequestedAt,
+        statePayload, inputPayload, dedupeKey, idempotencyKey, inputHash, leaseId, heartbeatAt, cancelRequestedAt,
         failureCode, degradedFlags, createdAt, startedAt, completedAt, error
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         missionId = excluded.missionId,
         runId = excluded.runId,
@@ -279,6 +332,9 @@ export class TaskQueue {
         progress = excluded.progress,
         statePayload = excluded.statePayload,
         inputPayload = COALESCE(excluded.inputPayload, tasks.inputPayload),
+        dedupeKey = COALESCE(excluded.dedupeKey, tasks.dedupeKey),
+        idempotencyKey = COALESCE(excluded.idempotencyKey, tasks.idempotencyKey),
+        inputHash = COALESCE(excluded.inputHash, tasks.inputHash),
         leaseId = excluded.leaseId,
         heartbeatAt = excluded.heartbeatAt,
         cancelRequestedAt = COALESCE(excluded.cancelRequestedAt, tasks.cancelRequestedAt),
@@ -290,9 +346,10 @@ export class TaskQueue {
     `, 
       task.id, task.missionId || null, task.runId || null, task.query, task.depth, task.priority, task.source, 
       task.status, task.progress, task.statePayload || null, task.inputPayload || null,
-      task.leaseId || null, task.heartbeatAt || null, task.cancelRequestedAt || null,
-      task.failureCode || null, task.degradedFlags || null, task.createdAt,
-      task.startedAt || null, task.completedAt || null, task.error || null
+      task.dedupeKey || null, task.idempotencyKey || null, task.inputHash || null, task.leaseId || null,
+      task.heartbeatAt || null, task.cancelRequestedAt || null, task.failureCode || null,
+      task.degradedFlags || null, task.createdAt, task.startedAt || null, task.completedAt || null,
+      task.error || null
     );
   }
 }

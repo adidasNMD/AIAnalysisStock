@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 const getDbMock = vi.fn();
 
@@ -8,9 +11,26 @@ vi.mock('../db', () => ({
 
 function createDbMock() {
   const events = new Map<string, any>();
+  const missions = new Map<string, any>();
 
   return {
+    __missions: missions,
     run: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('INSERT INTO missions_index')) {
+        missions.set(params[0], {
+          id: params[0],
+          status: params[1],
+          mode: params[2],
+          query: params[3],
+          source: params[4],
+          depth: params[5],
+          opportunityId: params[6],
+          createdAt: params[7],
+          updatedAt: params[8],
+          inputPayload: params[9],
+          artifactPath: params[10],
+        });
+      }
       if (sql.includes('INSERT INTO mission_events')) {
         events.set(params[0], {
           id: params[0],
@@ -26,8 +46,18 @@ function createDbMock() {
       }
       return { changes: 1 };
     }),
-    get: vi.fn().mockResolvedValue(null),
+    get: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('SELECT * FROM missions_index WHERE id = ?')) {
+        return missions.get(params[0]) || null;
+      }
+      return null;
+    }),
     all: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('SELECT * FROM missions_index')) {
+        return Array.from(missions.values())
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          .slice(0, params[0]);
+      }
       if (sql.includes('SELECT * FROM mission_events')) {
         return Array.from(events.values())
           .filter((event) => event.missionId === params[0])
@@ -118,5 +148,96 @@ describe('mission index', () => {
         meta: { runId: 'run-1' },
       },
     ]);
+  });
+
+  it('lists indexed missions from SQLite without scanning mission directories', async () => {
+    const db = createDbMock();
+    getDbMock.mockResolvedValue(db as any);
+    const { upsertMissionIndex, listMissionsFromIndex } = await import('../workflows/mission-index');
+
+    await upsertMissionIndex({
+      id: 'mission-1',
+      traceId: 'mission-1',
+      input: {
+        mode: 'review',
+        query: 'AI infrastructure review',
+        tickers: ['NVDA'],
+        depth: 'deep',
+        source: 'opportunity_action',
+        opportunityId: 'opp-1',
+      },
+      status: 'queued',
+      createdAt: '2026-04-26T00:00:00.000Z',
+      updatedAt: '2026-04-26T00:01:00.000Z',
+      openclawReport: null,
+      openclawTickers: [],
+      openclawDurationMs: 0,
+      taResults: [],
+      taDurationMs: 0,
+      openbbData: [],
+      macroData: null,
+      consensus: [],
+      totalDurationMs: 0,
+    }, '/tmp/does-not-exist-mission-1.json');
+
+    await expect(listMissionsFromIndex(10)).resolves.toMatchObject([
+      {
+        id: 'mission-1',
+        status: 'queued',
+        input: {
+          mode: 'review',
+          query: 'AI infrastructure review',
+          tickers: ['NVDA'],
+          opportunityId: 'opp-1',
+        },
+        openclawTickers: [],
+        consensus: [],
+      },
+    ]);
+  });
+
+  it('loads full mission details through the indexed artifact path when present', async () => {
+    const db = createDbMock();
+    getDbMock.mockResolvedValue(db as any);
+    const { upsertMissionIndex, getMissionFromIndex } = await import('../workflows/mission-index');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-index-test-'));
+    const artifactPath = path.join(tempDir, 'mission-1.json');
+    const mission = {
+      id: 'mission-1',
+      traceId: 'mission-1',
+      input: {
+        mode: 'analyze',
+        query: '$NVDA',
+        tickers: ['NVDA'],
+        depth: 'quick',
+        source: 'test',
+      },
+      status: 'fully_enriched',
+      createdAt: '2026-04-26T00:00:00.000Z',
+      updatedAt: '2026-04-26T00:02:00.000Z',
+      openclawReport: 'report',
+      openclawTickers: ['NVDA'],
+      openclawDurationMs: 1000,
+      taResults: [],
+      taDurationMs: 0,
+      openbbData: [],
+      macroData: null,
+      consensus: [],
+      totalDurationMs: 2000,
+    };
+    fs.writeFileSync(artifactPath, JSON.stringify(mission), 'utf-8');
+
+    try {
+      await upsertMissionIndex(mission as any, artifactPath);
+
+      await expect(getMissionFromIndex('mission-1')).resolves.toMatchObject({
+        id: 'mission-1',
+        status: 'fully_enriched',
+        openclawTickers: ['NVDA'],
+        totalDurationMs: 2000,
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

@@ -13,8 +13,8 @@
 }
 
 .sidebar {
-  width: 220px;
-  min-width: 220px;
+  width: var(--app-sidebar-width);
+  min-width: var(--app-sidebar-width);
   background: var(--bg-secondary);
   border-right: 1px solid var(--glass-border);
   display: flex;
@@ -75,6 +75,7 @@
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  padding-bottom: var(--macro-strip-height);
 }
 
 /* ── Pages ── */
@@ -2524,6 +2525,11 @@ button.board-health-chip {
 }
 
 @media (max-width: 720px) {
+  :root {
+    --app-sidebar-width: 0px;
+    --macro-strip-height: 96px;
+  }
+
   .spa-root {
     flex-direction: column;
     height: auto;
@@ -2955,9 +2961,9 @@ button.board-health-chip {
 .macro-strip {
   position: fixed;
   bottom: 0;
-  left: 220px;
+  left: var(--app-sidebar-width);
   right: 0;
-  height: 48px;
+  min-height: var(--macro-strip-height);
   background: rgba(10, 10, 13, 0.95);
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--glass-border);
@@ -2974,17 +2980,16 @@ button.board-health-chip {
 
 @media (max-width: 720px) {
   .macro-strip {
-    left: 0;
     height: auto;
     min-height: 48px;
     justify-content: flex-start;
     flex-wrap: wrap;
     gap: 8px 16px;
-    padding: 8px 18px;
+    padding: 8px max(18px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
   }
 
   .main-content {
-    padding-bottom: 96px;
+    padding-bottom: var(--macro-strip-height);
   }
 }
 

@@ -72,6 +72,9 @@ async function initDb(db: Database) {
       progress TEXT,
       statePayload TEXT,
       inputPayload TEXT,
+      dedupeKey TEXT,
+      idempotencyKey TEXT,
+      inputHash TEXT,
       leaseId TEXT,
       heartbeatAt INTEGER,
       cancelRequestedAt INTEGER,
@@ -100,11 +103,22 @@ async function initDb(db: Database) {
     // Column already exists
   }
   try { await db.exec(`ALTER TABLE tasks ADD COLUMN inputPayload TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN dedupeKey TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN idempotencyKey TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN inputHash TEXT;`); } catch {}
   try { await db.exec(`ALTER TABLE tasks ADD COLUMN leaseId TEXT;`); } catch {}
   try { await db.exec(`ALTER TABLE tasks ADD COLUMN heartbeatAt INTEGER;`); } catch {}
   try { await db.exec(`ALTER TABLE tasks ADD COLUMN cancelRequestedAt INTEGER;`); } catch {}
   try { await db.exec(`ALTER TABLE tasks ADD COLUMN failureCode TEXT;`); } catch {}
   try { await db.exec(`ALTER TABLE tasks ADD COLUMN degradedFlags TEXT;`); } catch {}
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tasks_dedupe_status
+    ON tasks (dedupeKey, status);
+  `);
+  await db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tasks_idempotency_status
+    ON tasks (idempotencyKey, status);
+  `);
 
   // === Mission Runs Table ===
   await db.exec(`
@@ -188,6 +202,25 @@ async function initDb(db: Database) {
   await applyMigration(db, '003_mission_run_lifecycle_columns', `
     ALTER TABLE mission_runs ADD COLUMN cancelRequestedAt TEXT;
     ALTER TABLE mission_runs ADD COLUMN failureCode TEXT;
+  `);
+
+  await applyMigration(db, '004_durable_stream_events', `
+    CREATE TABLE IF NOT EXISTS stream_events (
+      id TEXT PRIMARY KEY,
+      stream TEXT NOT NULL,
+      type TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      entityId TEXT,
+      occurredAt TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      source TEXT NOT NULL,
+      runId TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_stream_events_stream_time
+      ON stream_events (stream, occurredAt ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_stream_events_entity_time
+      ON stream_events (entityId, occurredAt ASC, id ASC);
   `);
 
   // === Opportunities Table ===

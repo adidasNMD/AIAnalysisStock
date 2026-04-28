@@ -4,9 +4,12 @@ import {
   buildLatestMissionDiff,
   createQueuedMission,
   getLatestMissionRun,
+  getMissionFromIndex,
   getMission,
   getMissionEvidence,
+  listMissionEventsFromIndex,
   listMissionEvents,
+  listMissionsFromIndex,
   listMissionRuns,
   listMissions,
   retryMissionRun,
@@ -23,7 +26,8 @@ function errorMessage(error: unknown): string {
 missionsRouter.get('/', async (req: Request, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string, 10) || 50;
-    const missions = listMissions(limit);
+    const indexedMissions = await listMissionsFromIndex(limit);
+    const missions = indexedMissions.length > 0 ? indexedMissions : listMissions(limit);
     const summaries = await Promise.all(missions.map(async (mission) => {
       const runs = await listMissionRuns(mission.id);
       const latestRun = runs[0] || null;
@@ -74,9 +78,9 @@ missionsRouter.get('/stream', (req: Request, res: Response) => {
   });
 });
 
-missionsRouter.get('/:id', (req: Request, res: Response) => {
+missionsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
-    const mission = getMission(req.params.id as string);
+    const mission = await getMissionFromIndex(req.params.id as string) || getMission(req.params.id as string);
     if (!mission) {
       return res.status(404).json({ error: 'Mission not found' });
     }
@@ -86,9 +90,10 @@ missionsRouter.get('/:id', (req: Request, res: Response) => {
   }
 });
 
-missionsRouter.get('/:id/events', (req: Request, res: Response) => {
+missionsRouter.get('/:id/events', async (req: Request, res: Response) => {
   try {
-    res.json(listMissionEvents(req.params.id as string));
+    const indexedEvents = await listMissionEventsFromIndex(req.params.id as string);
+    res.json(indexedEvents.length > 0 ? indexedEvents : listMissionEvents(req.params.id as string));
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error) });
   }
@@ -102,9 +107,9 @@ missionsRouter.get('/:id/runs', async (req: Request, res: Response) => {
   }
 });
 
-missionsRouter.get('/:id/runs/:runId/evidence', (req: Request, res: Response) => {
+missionsRouter.get('/:id/runs/:runId/evidence', async (req: Request, res: Response) => {
   try {
-    const mission = getMission(req.params.id as string);
+    const mission = await getMissionFromIndex(req.params.id as string) || getMission(req.params.id as string);
     if (!mission) {
       return res.status(404).json({ error: 'Mission not found' });
     }
@@ -158,6 +163,8 @@ missionsRouter.post('/', async (req: Request, res: Response) => {
     }
     const body = parsed.data;
     const inputTickers = body.tickers || [];
+    const headerIdempotencyKey = req.header('Idempotency-Key')?.trim();
+    const idempotencyKey = headerIdempotencyKey || body.idempotencyKey;
 
     const input: MissionInput = {
       mode: body.mode || 'explore',
@@ -178,6 +185,7 @@ missionsRouter.post('/', async (req: Request, res: Response) => {
       ...(inputTickers.length > 0 ? { tickers: inputTickers } : {}),
       ...(input.date ? { date: input.date } : {}),
       ...(input.opportunityId ? { opportunityId: input.opportunityId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     if (!mission) {
       return res.status(409).json({ error: 'Task already in queue or running' });

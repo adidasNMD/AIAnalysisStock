@@ -7,6 +7,7 @@ export * from './mission-runs';
 export * from './mission-evidence';
 export * from './mission-index';
 export * from './mission-diff';
+export * from './stream-events';
 export * from './opportunities';
 export * from './opportunity-calendars';
 export * from './opportunity-diff';

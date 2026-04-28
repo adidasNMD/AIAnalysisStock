@@ -1,10 +1,20 @@
 import { getDb } from '../db';
 import { logger } from '../utils/logger';
-import type { MissionEvidenceRecord, UnifiedMission } from './types';
+import * as fs from 'fs';
+import type { MissionEvidenceRecord, MissionInput, MissionStatus, UnifiedMission } from './types';
 import type { MissionEventRecord } from './mission-events';
 
 interface MissionIndexRow {
   id: string;
+  status?: MissionStatus;
+  mode?: MissionInput['mode'];
+  query?: string;
+  source?: string | null;
+  depth?: MissionInput['depth'] | null;
+  opportunityId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  inputPayload?: string;
   artifactPath: string;
 }
 
@@ -32,6 +42,69 @@ function serializeJson(value: unknown): string | null {
 function logIndexError(action: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   logger.warn(`[MissionIndex] ${action} failed: ${message}`);
+}
+
+function parseMissionInput(row: MissionIndexRow): MissionInput {
+  if (row.inputPayload) {
+    try {
+      const parsed = JSON.parse(row.inputPayload) as Partial<MissionInput>;
+      if (parsed.query && parsed.mode) {
+        return {
+          mode: parsed.mode,
+          query: parsed.query,
+          ...(parsed.tickers ? { tickers: parsed.tickers } : {}),
+          ...(parsed.depth ? { depth: parsed.depth } : {}),
+          ...(parsed.source ? { source: parsed.source } : {}),
+          ...(parsed.date ? { date: parsed.date } : {}),
+          ...(parsed.opportunityId ? { opportunityId: parsed.opportunityId } : {}),
+        };
+      }
+    } catch {
+      // Fall back to indexed columns below.
+    }
+  }
+
+  return {
+    mode: row.mode || 'explore',
+    query: row.query || row.id,
+    ...(row.depth ? { depth: row.depth } : {}),
+    ...(row.source ? { source: row.source } : {}),
+    ...(row.opportunityId ? { opportunityId: row.opportunityId } : {}),
+  };
+}
+
+function buildMissionStub(row: MissionIndexRow): UnifiedMission {
+  const createdAt = row.createdAt || new Date(0).toISOString();
+  return {
+    id: row.id,
+    traceId: row.id,
+    input: parseMissionInput(row),
+    status: row.status || 'queued',
+    createdAt,
+    updatedAt: row.updatedAt || createdAt,
+    openclawReport: null,
+    openclawTickers: [],
+    openclawDurationMs: 0,
+    taResults: [],
+    taDurationMs: 0,
+    openbbData: [],
+    macroData: null,
+    consensus: [],
+    totalDurationMs: 0,
+  };
+}
+
+function readMissionArtifact(row: MissionIndexRow): UnifiedMission {
+  if (!row.artifactPath || !fs.existsSync(row.artifactPath)) {
+    return buildMissionStub(row);
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(row.artifactPath, 'utf-8')) as UnifiedMission;
+  } catch (error) {
+    logIndexError(`read mission artifact ${row.id}`, error);
+    return buildMissionStub(row);
+  }
 }
 
 export async function upsertMissionIndex(mission: UnifiedMission, artifactPath: string): Promise<void> {
@@ -79,6 +152,24 @@ export async function getMissionArtifactPath(missionId: string): Promise<string 
     missionId,
   );
   return row?.artifactPath || null;
+}
+
+export async function getMissionFromIndex(missionId: string): Promise<UnifiedMission | null> {
+  const db = await getDb();
+  const row = await db.get<MissionIndexRow>(
+    'SELECT * FROM missions_index WHERE id = ?',
+    missionId,
+  );
+  return row ? readMissionArtifact(row) : null;
+}
+
+export async function listMissionsFromIndex(limit = 50): Promise<UnifiedMission[]> {
+  const db = await getDb();
+  const rows = await db.all<MissionIndexRow[]>(
+    'SELECT * FROM missions_index ORDER BY updatedAt DESC LIMIT ?',
+    limit,
+  );
+  return rows.map(readMissionArtifact);
 }
 
 export async function appendMissionEventIndex(record: MissionEventRecord, artifactPath: string): Promise<void> {

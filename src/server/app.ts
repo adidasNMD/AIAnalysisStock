@@ -71,8 +71,10 @@ app.get('/api/queue', async (req: Request, res: Response) => {
 
 // API: 手动下发任务 (Manual Trigger)
 app.post('/api/trigger', async (req: Request, res: Response) => {
-  const { query, depth, source = 'manual', opportunityId } = req.body;
+  const { query, depth, source = 'manual', opportunityId, idempotencyKey: bodyIdempotencyKey } = req.body;
   if (!query) return res.status(400).json({ error: 'Query is required' });
+  const headerIdempotencyKey = req.header('Idempotency-Key')?.trim();
+  const idempotencyKey = headerIdempotencyKey || bodyIdempotencyKey;
 
   const mission = await createQueuedMission({
     query,
@@ -80,6 +82,7 @@ app.post('/api/trigger', async (req: Request, res: Response) => {
     source,
     priority: 100,
     ...(opportunityId ? { opportunityId } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
   });
   if (mission) {
     const latestRun = await getLatestMissionRun(mission.id);

@@ -403,6 +403,16 @@ export interface OpportunityEventRecord {
   meta?: Record<string, unknown> | undefined;
 }
 
+export type StreamSourceService =
+  | 'api'
+  | 'daemon'
+  | 'worker'
+  | 'scheduler'
+  | 'trendradar'
+  | 'trading_agents'
+  | 'openbb'
+  | 'system';
+
 export interface StreamEnvelope<TPayload> {
   id: string;
   stream: 'mission' | 'opportunity' | 'system';
@@ -412,7 +422,7 @@ export interface StreamEnvelope<TPayload> {
   entityId?: string | undefined;
   payload: TPayload;
   source: {
-    service: 'api' | 'daemon' | 'trendradar' | 'trading_agents' | 'openbb' | 'system';
+    service: StreamSourceService;
     runId?: string | undefined;
   };
 }

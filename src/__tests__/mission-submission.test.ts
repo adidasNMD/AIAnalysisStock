@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(),
   attachRunId: vi.fn(),
+  getByIdempotencyKey: vi.fn(),
   createMissionRecord: vi.fn(),
   deleteMission: vi.fn(),
   updateMissionRecord: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('../utils/task-queue', () => ({
   taskQueue: {
     enqueue: mocks.enqueue,
     attachRunId: mocks.attachRunId,
+    getByIdempotencyKey: mocks.getByIdempotencyKey,
   },
 }));
 
@@ -53,6 +55,7 @@ describe('mission submission', () => {
       createdAt: 1,
     });
     mocks.attachRunId.mockResolvedValue(undefined);
+    mocks.getByIdempotencyKey.mockResolvedValue(null);
     mocks.createMissionRun.mockResolvedValue({ id: 'run-1', attempt: 1 });
     mocks.createMissionRecord.mockImplementation((input, _traceId, status = 'queued') => ({
       id: 'mission-1',
@@ -86,10 +89,12 @@ describe('mission submission', () => {
       expect.objectContaining({
         missionId: 'mission-1',
         inputPayload: expect.any(String),
+        dedupeKey: expect.stringMatching(/^mission:v1:/),
+        inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
     );
 
-    const options = mocks.enqueue.mock.calls[0][4] as { inputPayload: string };
+    const options = mocks.enqueue.mock.calls[0][4] as { inputPayload: string; dedupeKey: string; inputHash: string };
     expect(JSON.parse(options.inputPayload)).toEqual({
       mode: 'review',
       query: 'AI infrastructure review',
@@ -99,5 +104,69 @@ describe('mission submission', () => {
       opportunityId: 'opp-1',
       date: '2026-04-26',
     });
+    expect(options.dedupeKey).toBeTruthy();
+    expect(options.inputHash).toBeTruthy();
+  });
+
+  it('builds distinct queue identities for the same query on different opportunities', async () => {
+    const { buildMissionInput } = await import('../workflows/mission-submission');
+    const { buildMissionTaskDedupeKey } = await import('../workflows/mission-identity');
+
+    const first = buildMissionInput({
+      mode: 'review',
+      query: 'AI infrastructure review',
+      tickers: ['NVDA'],
+      depth: 'deep',
+      source: 'opportunity_action',
+      opportunityId: 'opp-1',
+    });
+    const second = buildMissionInput({
+      mode: 'review',
+      query: 'AI infrastructure review',
+      tickers: ['NVDA'],
+      depth: 'deep',
+      source: 'opportunity_action',
+      opportunityId: 'opp-2',
+    });
+
+    expect(buildMissionTaskDedupeKey(first)).not.toBe(buildMissionTaskDedupeKey(second));
+  });
+
+  it('returns an existing mission for repeated idempotency keys', async () => {
+    const { createQueuedMission } = await import('../workflows/mission-submission');
+    mocks.getByIdempotencyKey.mockResolvedValue({
+      id: 'task-existing',
+      missionId: 'mission-existing',
+      query: 'AI infrastructure review',
+      depth: 'deep',
+      source: 'manual',
+      status: 'pending',
+      priority: 100,
+      createdAt: 1,
+    });
+    mocks.getMission.mockReturnValue({
+      id: 'mission-existing',
+      input: {
+        mode: 'explore',
+        query: 'AI infrastructure review',
+        depth: 'deep',
+        source: 'manual',
+      },
+      status: 'queued',
+      createdAt: '2026-04-26T00:00:00.000Z',
+      updatedAt: '2026-04-26T00:00:00.000Z',
+    });
+
+    const mission = await createQueuedMission({
+      query: 'AI infrastructure review',
+      depth: 'deep',
+      source: 'manual',
+      priority: 100,
+      idempotencyKey: 'request-1',
+    });
+
+    expect(mission?.id).toBe('mission-existing');
+    expect(mocks.createMissionRecord).not.toHaveBeenCalled();
+    expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 });

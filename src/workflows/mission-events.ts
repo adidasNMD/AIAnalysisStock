@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { indexMissionEventAsync } from './mission-index';
+import { appendStreamEvent, getRuntimeEventSourceService } from './stream-events';
 import type { MissionStatus } from './types';
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
@@ -47,6 +48,20 @@ export function appendMissionEvent(
   const filePath = eventFilePath(missionId, createdAt);
   fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf-8');
   indexMissionEventAsync(record, filePath);
+  const metaRunId = typeof record.meta?.runId === 'string' ? record.meta.runId : undefined;
+  void appendStreamEvent({
+    id: record.id,
+    stream: 'mission',
+    type: record.type,
+    version: 1,
+    occurredAt: record.timestamp,
+    entityId: record.missionId,
+    payload: record,
+    source: {
+      service: getRuntimeEventSourceService(),
+      ...(metaRunId ? { runId: metaRunId } : {}),
+    },
+  }).catch(() => undefined);
   return record;
 }
 
