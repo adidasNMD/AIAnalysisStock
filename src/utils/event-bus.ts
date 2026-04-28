@@ -55,7 +55,13 @@ class SwarmEventBus extends EventEmitter {
   }
 
   cleanupMission(missionId: string): void {
+    // Listener ownership is currently global, not mission-scoped. Do not remove
+    // tracked listeners here or one completed mission can accidentally break
+    // concurrent SSE subscribers.
     void missionId;
+  }
+
+  private disposeTrackedListeners(): void {
     this.listenerRegistry.forEach((listeners, event) => {
       listeners.forEach(listener => {
         this.removeListener(event, listener);
@@ -65,6 +71,7 @@ class SwarmEventBus extends EventEmitter {
   }
 
   dispose(): void {
+    this.disposeTrackedListeners();
     this.removeAllListeners();
     this.listenerRegistry.clear();
   }

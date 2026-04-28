@@ -14,6 +14,8 @@ interface MissionRunRow {
   heartbeatAt: string | null;
   completedAt: string | null;
   failureMessage: string | null;
+  cancelRequestedAt: string | null;
+  failureCode: string | null;
   degradedFlags: string | null;
 }
 
@@ -30,6 +32,8 @@ export interface UpdateMissionRunInput {
   heartbeatAt?: string;
   completedAt?: string;
   failureMessage?: string;
+  cancelRequestedAt?: string;
+  failureCode?: string;
   degradedFlags?: string[];
 }
 
@@ -67,6 +71,8 @@ function toMissionRunRecord(row: MissionRunRow): MissionRunRecord {
     ...(row.heartbeatAt ? { heartbeatAt: row.heartbeatAt } : {}),
     ...(row.completedAt ? { completedAt: row.completedAt } : {}),
     ...(row.failureMessage ? { failureMessage: row.failureMessage } : {}),
+    ...(row.cancelRequestedAt ? { cancelRequestedAt: row.cancelRequestedAt } : {}),
+    ...(row.failureCode ? { failureCode: row.failureCode } : {}),
     ...(degradedFlags ? { degradedFlags } : {}),
   };
 }
@@ -141,13 +147,15 @@ export async function updateMissionRun(id: string, updates: UpdateMissionRunInpu
   const nextHeartbeatAt = updates.heartbeatAt ?? current.heartbeatAt ?? null;
   const nextCompletedAt = updates.completedAt ?? current.completedAt ?? null;
   const nextFailureMessage = updates.failureMessage ?? current.failureMessage ?? null;
+  const nextCancelRequestedAt = updates.cancelRequestedAt ?? current.cancelRequestedAt ?? null;
+  const nextFailureCode = updates.failureCode ?? current.failureCode ?? null;
   const nextDegradedFlags = updates.degradedFlags ?? current.degradedFlags ?? null;
 
   const db = await getDb();
   await db.run(
     `UPDATE mission_runs
       SET status = ?, stage = ?, workerLeaseId = ?, startedAt = ?, heartbeatAt = ?,
-          completedAt = ?, failureMessage = ?, degradedFlags = ?
+          completedAt = ?, failureMessage = ?, cancelRequestedAt = ?, failureCode = ?, degradedFlags = ?
       WHERE id = ?`,
     nextStatus,
     nextStage,
@@ -156,6 +164,8 @@ export async function updateMissionRun(id: string, updates: UpdateMissionRunInpu
     nextHeartbeatAt,
     nextCompletedAt,
     nextFailureMessage,
+    nextCancelRequestedAt,
+    nextFailureCode,
     nextDegradedFlags ? JSON.stringify(nextDegradedFlags) : null,
     id,
   );
@@ -208,6 +218,7 @@ export async function failMissionRun(id: string, failureMessage: string): Promis
     heartbeatAt: timestamp,
     completedAt: timestamp,
     failureMessage,
+    failureCode: 'execution_failed',
   });
 }
 
@@ -219,6 +230,8 @@ export async function cancelMissionRun(id: string, failureMessage = 'Canceled'):
     heartbeatAt: timestamp,
     completedAt: timestamp,
     failureMessage,
+    cancelRequestedAt: timestamp,
+    failureCode: 'canceled',
   });
 }
 
@@ -235,7 +248,9 @@ export async function requeueMissionRunsForTasks(taskIds: string[]): Promise<num
           startedAt = NULL,
           heartbeatAt = ?,
           completedAt = NULL,
-          failureMessage = NULL
+          failureMessage = NULL,
+          cancelRequestedAt = NULL,
+          failureCode = NULL
       WHERE taskId IN (${placeholders}) AND status = 'running'`,
     nowIso(),
     ...taskIds,

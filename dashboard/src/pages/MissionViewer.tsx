@@ -311,6 +311,8 @@ export function MissionViewer() {
         intervalRef.current = null;
       }
     };
+  // loadMission intentionally snapshots URL run params while polling.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, requestedRunId, requestedCompareRunId]); // P10 fix: 不再依赖 selectedTicker
 
   useEffect(() => {
@@ -373,6 +375,8 @@ export function MissionViewer() {
     return () => {
       canceled = true;
     };
+  // loadArtifactsForRun reads the current artifact caches and latest trace.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, compareRunId, runs, latestRun?.id, trace]);
 
   const handleSelectRun = async (run: MissionRun) => {

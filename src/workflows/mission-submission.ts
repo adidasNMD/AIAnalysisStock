@@ -45,7 +45,10 @@ async function queueMissionRun(
     input.depth || 'deep',
     input.source || 'manual',
     request.priority ?? 0,
-    mission.id,
+    {
+      missionId: mission.id,
+      inputPayload: JSON.stringify(input),
+    },
   );
 
   if (!task) {

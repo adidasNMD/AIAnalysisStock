@@ -917,8 +917,6 @@ export async function updateOpportunity(id: string, updates: UpdateOpportunityIn
     ...current,
     ...(updates.title !== undefined ? { title: updates.title.trim() } : {}),
     ...(updates.query !== undefined ? { query: updates.query.trim() } : {}),
-    ...(updates.thesis !== undefined ? { thesis: updates.thesis.trim() } : {}),
-    ...(updates.summary !== undefined ? { summary: updates.summary.trim() } : {}),
     ...(updates.stage !== undefined ? { stage: updates.stage } : {}),
     ...(updates.status !== undefined ? { status: updates.status } : {}),
     ...(updates.primaryTicker !== undefined ? { primaryTicker: normalizeTicker(updates.primaryTicker) } : {}),
@@ -926,23 +924,53 @@ export async function updateOpportunity(id: string, updates: UpdateOpportunityIn
     ...(updates.proxyTicker !== undefined ? { proxyTicker: normalizeTicker(updates.proxyTicker) } : {}),
     ...(updates.relatedTickers !== undefined ? { relatedTickers: normalizeTickers(updates.relatedTickers) } : {}),
     ...(updates.relayTickers !== undefined ? { relayTickers: normalizeTickers(updates.relayTickers) } : {}),
-    ...(updates.nextCatalystAt !== undefined
-      ? (updates.nextCatalystAt ? { nextCatalystAt: updates.nextCatalystAt } : {})
-      : {}),
-    ...(updates.supplyOverhang !== undefined
-      ? (updates.supplyOverhang ? { supplyOverhang: updates.supplyOverhang } : {})
-      : {}),
-    ...(updates.policyStatus !== undefined
-      ? (updates.policyStatus ? { policyStatus: updates.policyStatus } : {})
-      : {}),
     scores: mergedScores,
-    ...(nextHeatProfile ? { heatProfile: nextHeatProfile } : {}),
-    ...(nextProxyProfile ? { proxyProfile: nextProxyProfile } : {}),
-    ...(nextIpoProfile ? { ipoProfile: nextIpoProfile } : {}),
     catalystCalendar: nextCatalystCalendar,
     ...(updates.latestMissionId !== undefined ? { latestMissionId: updates.latestMissionId || undefined } : {}),
     updatedAt: new Date().toISOString(),
   };
+
+  if (updates.thesis !== undefined) {
+    const thesis = safeTrim(updates.thesis);
+    if (thesis) next.thesis = thesis;
+    else delete next.thesis;
+  }
+  if (updates.summary !== undefined) {
+    const summary = safeTrim(updates.summary);
+    if (summary) next.summary = summary;
+    else delete next.summary;
+  }
+  if (updates.primaryTicker !== undefined && !next.primaryTicker) delete next.primaryTicker;
+  if (updates.leaderTicker !== undefined && !next.leaderTicker) delete next.leaderTicker;
+  if (updates.proxyTicker !== undefined && !next.proxyTicker) delete next.proxyTicker;
+
+  if (updates.nextCatalystAt !== undefined) {
+    const nextCatalystAt = safeTrim(updates.nextCatalystAt);
+    if (nextCatalystAt) next.nextCatalystAt = nextCatalystAt;
+    else delete next.nextCatalystAt;
+  }
+  if (updates.supplyOverhang !== undefined) {
+    const supplyOverhang = safeTrim(updates.supplyOverhang);
+    if (supplyOverhang) next.supplyOverhang = supplyOverhang;
+    else delete next.supplyOverhang;
+  }
+  if (updates.policyStatus !== undefined) {
+    const policyStatus = safeTrim(updates.policyStatus);
+    if (policyStatus) next.policyStatus = policyStatus;
+    else delete next.policyStatus;
+  }
+  if (updates.heatProfile !== undefined || current.heatProfile) {
+    if (nextHeatProfile) next.heatProfile = nextHeatProfile;
+    else delete next.heatProfile;
+  }
+  if (updates.proxyProfile !== undefined || current.proxyProfile) {
+    if (nextProxyProfile) next.proxyProfile = nextProxyProfile;
+    else delete next.proxyProfile;
+  }
+  if (updates.ipoProfile !== undefined || current.ipoProfile) {
+    if (nextIpoProfile) next.ipoProfile = nextIpoProfile;
+    else delete next.ipoProfile;
+  }
 
   await getDb().then((db) => db.run(
     `UPDATE opportunities SET

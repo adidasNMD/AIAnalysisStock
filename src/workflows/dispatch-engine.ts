@@ -11,6 +11,7 @@ import { buildDecisionTrail, computeConsensus, triggerConsensusAlerts } from './
 import { parseStructuredVerdicts } from '../utils/report-validator';
 import { appendMissionEvent } from './mission-events';
 import { saveMissionEvidence } from './mission-evidence';
+import { deleteMissionIndexAsync, indexMissionAsync } from './mission-index';
 import {
   markOpportunityMissionCanceled,
   markOpportunityMissionCompleted,
@@ -32,16 +33,18 @@ function saveMission(mission: UnifiedMission) {
   ensureMissionsDir();
   const dateDir = path.join(MISSIONS_DIR, mission.createdAt.split('T')[0] || 'unknown');
   if (!fs.existsSync(dateDir)) fs.mkdirSync(dateDir, { recursive: true });
-  fs.writeFileSync(path.join(dateDir, `${mission.id}.json`), JSON.stringify(mission, null, 2), 'utf-8');
+  const artifactPath = path.join(dateDir, `${mission.id}.json`);
+  fs.writeFileSync(artifactPath, JSON.stringify(mission, null, 2), 'utf-8');
   missionCache.set(mission.id, mission);
+  indexMissionAsync(mission, artifactPath);
 }
 
 function isCanceledError(error: unknown): boolean {
   return error instanceof Error && error.message === 'Canceled by user';
 }
 
-async function throwIfCanceled(shouldCancel?: () => Promise<boolean>) {
-  if (await shouldCancel?.()) {
+async function throwIfCanceled(shouldCancel?: () => Promise<boolean>, signal?: AbortSignal) {
+  if (signal?.aborted || await shouldCancel?.()) {
     throw new Error('Canceled by user');
   }
 }
@@ -83,6 +86,7 @@ export function createMissionRecord(
 
 export function deleteMission(id: string): boolean {
   missionCache.delete(id);
+  deleteMissionIndexAsync(id);
   ensureMissionsDir();
   const dateDirs = fs.readdirSync(MISSIONS_DIR).filter(d => fs.statSync(path.join(MISSIONS_DIR, d)).isDirectory());
   for (const dateDir of dateDirs) {
@@ -161,12 +165,13 @@ export function listMissions(limit = 50): UnifiedMission[] {
 
 export async function dispatchMission(
   input: MissionInput,
-  executeOpenClaw: (query: string, depth: string, missionId: string) => Promise<string | null>,
+  executeOpenClaw: (query: string, depth: string, missionId: string, signal?: AbortSignal) => Promise<string | null>,
   existingMissionId?: string,
   shouldCancel?: () => Promise<boolean>,
   runId?: string,
+  signal?: AbortSignal,
 ): Promise<UnifiedMission> {
-  await throwIfCanceled(shouldCancel);
+  await throwIfCanceled(shouldCancel, signal);
   const existingMission = existingMissionId ? getMission(existingMissionId) : null;
   const mission = existingMission
     ? buildMissionRecord(input, existingMission.id, existingMission.createdAt)
@@ -189,31 +194,31 @@ export async function dispatchMission(
 
   try {
     if (input.mode === 'explore') {
-      await runOpenClawPhase(mission, input, executeOpenClaw, shouldCancel);
-      await throwIfCanceled(shouldCancel);
+      await runOpenClawPhase(mission, input, executeOpenClaw, shouldCancel, signal);
+      await throwIfCanceled(shouldCancel, signal);
       const tickers = extractTickersFromReport(mission.openclawReport || '');
       mission.openclawTickers = tickers;
       if (tickers.length > 0) {
-        await runParallelEnrichment(mission, tickers, input.date, shouldCancel);
+        await runParallelEnrichment(mission, tickers, input.date, shouldCancel, signal);
       }
       else mission.status = 'main_only';
     } else if (input.mode === 'analyze') {
       const tickers = input.tickers || [input.query.replace('$', '').toUpperCase()];
       mission.openclawTickers = tickers;
       await Promise.all([
-        runOpenClawPhase(mission, input, executeOpenClaw, shouldCancel),
-        runParallelEnrichment(mission, tickers, input.date, shouldCancel),
+        runOpenClawPhase(mission, input, executeOpenClaw, shouldCancel, signal),
+        runParallelEnrichment(mission, tickers, input.date, shouldCancel, signal),
       ]);
     } else if (input.mode === 'review') {
       const tickers = input.tickers || [];
       mission.openclawTickers = tickers;
       await Promise.all([
-        runOpenClawPhase(mission, input, executeOpenClaw, shouldCancel),
-        runParallelEnrichment(mission, tickers, input.date, shouldCancel),
+        runOpenClawPhase(mission, input, executeOpenClaw, shouldCancel, signal),
+        runParallelEnrichment(mission, tickers, input.date, shouldCancel, signal),
       ]);
     }
 
-    await throwIfCanceled(shouldCancel);
+    await throwIfCanceled(shouldCancel, signal);
     if (mission.openclawReport) {
       try {
         mission.structuredVerdicts = parseStructuredVerdicts(mission.openclawReport, mission.openclawTickers);
@@ -222,12 +227,12 @@ export async function dispatchMission(
       }
     }
 
-    await throwIfCanceled(shouldCancel);
+    await throwIfCanceled(shouldCancel, signal);
     const _consensusResults: ConsensusResult[] = await computeConsensus(mission);
     const lifecycleEngine = new NarrativeLifecycleEngine();
     let antiSellGuards: Array<{ ticker: string; reason: string }> = [];
     try {
-      await throwIfCanceled(shouldCancel);
+      await throwIfCanceled(shouldCancel, signal);
       const lifecycleResult = await lifecycleEngine.evaluateAllActiveNarratives();
       antiSellGuards = lifecycleResult.antiSellGuards;
     } catch (e: any) {
@@ -236,7 +241,7 @@ export async function dispatchMission(
     }
 
     for (const consensus of mission.consensus) {
-      await throwIfCanceled(shouldCancel);
+      await throwIfCanceled(shouldCancel, signal);
       const guard = antiSellGuards.find(g => g.ticker === consensus.ticker);
       if (!guard || (consensus.taVerdict !== 'SELL' && consensus.openclawVerdict !== 'SELL')) continue;
       consensus.vetoed = true;
@@ -245,7 +250,7 @@ export async function dispatchMission(
     }
 
     for (const c of mission.consensus) {
-      await throwIfCanceled(shouldCancel);
+      await throwIfCanceled(shouldCancel, signal);
       if (c.agreement === 'agree' && !c.vetoed && c.openclawVerdict === 'BUY' && c.taVerdict === 'BUY') {
         try {
           await sendEntrySignal(c.ticker, '双脑共识一致看多 — 入场信号');
@@ -254,7 +259,7 @@ export async function dispatchMission(
         }
       }
       if (c.openbbVerdict !== 'FAIL') continue;
-      await throwIfCanceled(shouldCancel);
+      await throwIfCanceled(shouldCancel, signal);
       try {
         await sendStopLossAlert(c.ticker, 'OpenBB 数据评级 FAIL — 风控预警');
       } catch (err) {
@@ -262,11 +267,11 @@ export async function dispatchMission(
       }
     }
 
-    await throwIfCanceled(shouldCancel);
+    await throwIfCanceled(shouldCancel, signal);
     await triggerConsensusAlerts(mission.consensus);
     const vetoedTickers = mission.consensus.filter(c => c.vetoed);
     if (vetoedTickers.length > 0) {
-      await throwIfCanceled(shouldCancel);
+      await throwIfCanceled(shouldCancel, signal);
       try {
         await sendMessage(`⚠️ *双脑共识否决报告*\n\n${vetoedTickers.map(v => `🚫 *${v.ticker}*: ${v.vetoReason ?? ''}`).join('\n')}\n\n_右侧跟风纪律: 双脑冲突时不行动_`);
       } catch (err) {
@@ -274,7 +279,7 @@ export async function dispatchMission(
       }
     }
 
-    await throwIfCanceled(shouldCancel);
+    await throwIfCanceled(shouldCancel, signal);
     mission.decisionTrail = buildDecisionTrail(mission);
     if (mission.decisionTrail.length > 0) {
       try {
@@ -350,17 +355,18 @@ export async function dispatchMission(
 async function runOpenClawPhase(
   mission: UnifiedMission,
   input: MissionInput,
-  executeOpenClaw: (query: string, depth: string, missionId: string) => Promise<string | null>,
+  executeOpenClaw: (query: string, depth: string, missionId: string, signal?: AbortSignal) => Promise<string | null>,
   shouldCancel?: () => Promise<boolean>,
+  signal?: AbortSignal,
 ) {
-  await throwIfCanceled(shouldCancel);
+  await throwIfCanceled(shouldCancel, signal);
   mission.status = 'main_running';
   mission.updatedAt = new Date().toISOString();
   saveMission(mission);
   const t0 = Date.now();
   try {
-    mission.openclawReport = await executeOpenClaw(input.query, input.depth || 'deep', mission.id);
-    await throwIfCanceled(shouldCancel);
+    mission.openclawReport = await executeOpenClaw(input.query, input.depth || 'deep', mission.id, signal);
+    await throwIfCanceled(shouldCancel, signal);
     mission.openclawDurationMs = Date.now() - t0;
     mission.status = 'main_complete';
     mission.updatedAt = new Date().toISOString();
@@ -385,13 +391,14 @@ async function runParallelEnrichment(
   tickers: string[],
   date?: string,
   shouldCancel?: () => Promise<boolean>,
+  signal?: AbortSignal,
 ) {
   if (tickers.length === 0) return;
-  await throwIfCanceled(shouldCancel);
+  await throwIfCanceled(shouldCancel, signal);
   const [openbbResults, taResults, macroData] = await Promise.allSettled([
     (async () => {
-      await throwIfCanceled(shouldCancel);
-      const isOnline = await checkOpenBBHealth();
+      await throwIfCanceled(shouldCancel, signal);
+      const isOnline = await checkOpenBBHealth({ signal });
       if (!isOnline) {
         const msg = '[Dispatcher] ⚠️ OpenBB 数据引擎离线或鉴权拒绝，强行跳过量化数据收集。请前往诊断中心查看详细原因。';
         logger.warn(msg);
@@ -400,15 +407,16 @@ async function runParallelEnrichment(
       }
       const results: OpenBBTickerData[] = [];
       for (const ticker of tickers) {
-        await throwIfCanceled(shouldCancel);
+        await throwIfCanceled(shouldCancel, signal);
         try {
-          const data = await fetchTickerFullData(ticker);
-          await throwIfCanceled(shouldCancel);
+          const data = await fetchTickerFullData(ticker, { signal });
+          await throwIfCanceled(shouldCancel, signal);
           if (data.verdict === 'WARN' && data.verdictReason?.includes('失败')) {
             eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] OpenBB ${ticker} 查询异常: ${data.verdictReason}`);
           }
           results.push(data);
         } catch (e: any) {
+          if (isCanceledError(e)) throw e;
           const msg = `OpenBB ${ticker} 查询崩溃: ${e.message}`;
           logger.error(`[Dispatcher] ${msg}`);
           eventBus.emitSystem('error', `🚨 [CRITICAL ALERT] ${msg}`);
@@ -417,7 +425,7 @@ async function runParallelEnrichment(
       return results;
     })(),
     (async () => {
-      await throwIfCanceled(shouldCancel);
+      await throwIfCanceled(shouldCancel, signal);
       mission.status = 'ta_running';
       mission.updatedAt = new Date().toISOString();
       saveMission(mission);
@@ -427,7 +435,7 @@ async function runParallelEnrichment(
         message: `Enrichment started for ${tickers.length} tickers`,
         meta: { tickers },
       });
-      const isOnline = await checkTAHealth();
+      const isOnline = await checkTAHealth({ signal });
       if (!isOnline) {
         logger.info('[Dispatcher] ⚠️ TradingAgents 离线，跳过第二大脑分析');
         return [] as TAAnalysisResult[];
@@ -435,18 +443,18 @@ async function runParallelEnrichment(
       const t0 = Date.now();
       const results: TAAnalysisResult[] = [];
       for (const ticker of tickers.slice(0, 3)) {
-        await throwIfCanceled(shouldCancel);
+        await throwIfCanceled(shouldCancel, signal);
         eventBus.emitSystem('info', `🟢 TradingAgents 开始分析: ${ticker}`);
-        const result = await analyzeTicker(ticker, date, mission.openclawReport || undefined);
-        await throwIfCanceled(shouldCancel);
+        const result = await analyzeTicker(ticker, date, mission.openclawReport || undefined, { signal });
+        await throwIfCanceled(shouldCancel, signal);
         results.push(result);
       }
       mission.taDurationMs = Date.now() - t0;
       return results;
     })(),
     (async () => {
-      await throwIfCanceled(shouldCancel);
-      return fetchMacroEnvironment();
+      await throwIfCanceled(shouldCancel, signal);
+      return fetchMacroEnvironment({ signal });
     })(),
   ]);
 

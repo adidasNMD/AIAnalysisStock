@@ -446,6 +446,8 @@ export interface MissionRunRecord {
   heartbeatAt?: string;
   completedAt?: string;
   failureMessage?: string;
+  cancelRequestedAt?: string;
+  failureCode?: string;
   degradedFlags?: string[];
 }
 

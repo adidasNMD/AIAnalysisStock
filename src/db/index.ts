@@ -1,6 +1,7 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import * as path from 'path';
+import { logger } from '../utils/logger';
 
 let dbInstance: Database | null = null;
 
@@ -19,9 +20,43 @@ export async function getDb(): Promise<Database> {
   return dbInstance;
 }
 
+async function applyMigration(db: Database, id: string, sql: string): Promise<void> {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    );
+  `);
+  const existing = await db.get<{ id: string }>('SELECT id FROM schema_migrations WHERE id = ?', id);
+  if (existing) return;
+
+  try {
+    await db.exec('BEGIN');
+    await db.exec(sql);
+    await db.run(
+      'INSERT INTO schema_migrations (id, appliedAt) VALUES (?, ?)',
+      id,
+      new Date().toISOString(),
+    );
+    await db.exec('COMMIT');
+  } catch (error) {
+    await db.exec('ROLLBACK').catch(() => undefined);
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`[DB] Migration ${id} failed: ${message}`);
+    throw error;
+  }
+}
+
 async function initDb(db: Database) {
   await db.exec(`PRAGMA journal_mode = WAL;`);
   await db.exec(`PRAGMA busy_timeout = 5000;`);
+
+  await applyMigration(db, '001_core_schema_registry', `
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    );
+  `);
 
   // === Tasks Table ===
   await db.exec(`
@@ -36,6 +71,12 @@ async function initDb(db: Database) {
       status TEXT NOT NULL,
       progress TEXT,
       statePayload TEXT,
+      inputPayload TEXT,
+      leaseId TEXT,
+      heartbeatAt INTEGER,
+      cancelRequestedAt INTEGER,
+      failureCode TEXT,
+      degradedFlags TEXT,
       createdAt INTEGER NOT NULL,
       startedAt INTEGER,
       completedAt INTEGER,
@@ -58,6 +99,12 @@ async function initDb(db: Database) {
   } catch (e: any) {
     // Column already exists
   }
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN inputPayload TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN leaseId TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN heartbeatAt INTEGER;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN cancelRequestedAt INTEGER;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN failureCode TEXT;`); } catch {}
+  try { await db.exec(`ALTER TABLE tasks ADD COLUMN degradedFlags TEXT;`); } catch {}
 
   // === Mission Runs Table ===
   await db.exec(`
@@ -84,6 +131,63 @@ async function initDb(db: Database) {
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_mission_runs_task
     ON mission_runs (taskId);
+  `);
+  await applyMigration(db, '002_mission_canonical_index', `
+    CREATE TABLE IF NOT EXISTS missions_index (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      query TEXT NOT NULL,
+      source TEXT,
+      depth TEXT,
+      opportunityId TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      inputPayload TEXT NOT NULL,
+      artifactPath TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_missions_index_updated
+      ON missions_index (updatedAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_missions_index_status_updated
+      ON missions_index (status, updatedAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_missions_index_opportunity
+      ON missions_index (opportunityId, updatedAt DESC);
+
+    CREATE TABLE IF NOT EXISTS mission_events (
+      id TEXT PRIMARY KEY,
+      missionId TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      type TEXT NOT NULL,
+      status TEXT,
+      phase TEXT,
+      message TEXT NOT NULL,
+      meta TEXT,
+      artifactPath TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mission_events_lookup
+      ON mission_events (missionId, timestamp ASC);
+
+    CREATE TABLE IF NOT EXISTS mission_evidence_refs (
+      id TEXT PRIMARY KEY,
+      missionId TEXT NOT NULL,
+      runId TEXT NOT NULL,
+      capturedAt TEXT NOT NULL,
+      status TEXT NOT NULL,
+      completeness TEXT NOT NULL,
+      artifactPath TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_run
+      ON mission_evidence_refs (runId);
+    CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_mission
+      ON mission_evidence_refs (missionId, capturedAt DESC);
+  `);
+
+  await applyMigration(db, '003_mission_run_lifecycle_columns', `
+    ALTER TABLE mission_runs ADD COLUMN cancelRequestedAt TEXT;
+    ALTER TABLE mission_runs ADD COLUMN failureCode TEXT;
   `);
 
   // === Opportunities Table ===

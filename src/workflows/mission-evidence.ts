@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { indexMissionEvidenceAsync } from './mission-index';
 import type { MissionEvidenceCompleteness, MissionEvidenceRecord, UnifiedMission } from './types';
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
@@ -43,11 +44,9 @@ export function saveMissionEvidence(
     totalDurationMs: mission.totalDurationMs,
   };
 
-  fs.writeFileSync(
-    evidenceFilePath(runId, mission.createdAt),
-    JSON.stringify(record, null, 2),
-    'utf-8',
-  );
+  const filePath = evidenceFilePath(runId, mission.createdAt);
+  fs.writeFileSync(filePath, JSON.stringify(record, null, 2), 'utf-8');
+  indexMissionEvidenceAsync(record, filePath);
 
   return record;
 }

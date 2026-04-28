@@ -28,7 +28,7 @@ export function TrendRadarRaw() {
 
   const { data, loading, error } = usePolling<RawData>(
     async () => {
-      const res = await fetch('http://localhost:3000/api/trendradar/raw');
+      const res = await fetch('/api/trendradar/raw');
       if (!res.ok) throw new Error('API Error');
       return res.json();
     },

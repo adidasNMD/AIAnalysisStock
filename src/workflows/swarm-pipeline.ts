@@ -83,6 +83,7 @@ export class AgentSwarmOrchestrator {
     checkCanceled?: () => Promise<boolean>,
     explicitMissionId?: string,
     explicitRunId?: string,
+    abortSignal?: AbortSignal,
   ): Promise<string | null> {
     console.log(`\n======================================================`);
     console.log(`🦅 OPENCLAW V4 SWARM (Free-form Text Flow) ENGAGED: Target [${query}]`);
@@ -100,6 +101,11 @@ export class AgentSwarmOrchestrator {
     let debateReport = initialState?.debateReport || '';
     let rawSignals: any[] = initialState?.rawSignals || [];
     let enrichedBrief = initialState?.enrichedBrief || '';
+    const throwIfCanceled = async () => {
+      if (abortSignal?.aborted || await checkCanceled?.()) {
+        throw new Error('Canceled by user');
+      }
+    };
 
     if (completedPhases.length > 0) {
       console.log(`[SwarmManager] 🔄 从中断状态恢复任务！已跳过阶段: ${completedPhases.join(', ')}`);
@@ -128,7 +134,7 @@ export class AgentSwarmOrchestrator {
     // ====================================================
     let t0 = Date.now();
     if (!completedPhases.includes('scout')) {
-      if (await checkCanceled?.()) throw new Error('Canceled by user');
+      await throwIfCanceled();
       onProgress?.('scout');
       const scoutRes = await this.scout.scout(query);
       rawSignals = scoutRes.signals;
@@ -171,7 +177,7 @@ export class AgentSwarmOrchestrator {
     
     t0 = Date.now();
     if (!completedPhases.includes('analyst')) {
-        if (await checkCanceled?.()) throw new Error('Canceled by user');
+        await throwIfCanceled();
         onProgress?.('analyst');
         try {
           const analystResult = await this.analyst.analyze(enrichedBrief, query);
@@ -220,7 +226,7 @@ export class AgentSwarmOrchestrator {
     // ====================================================
     t0 = Date.now();
     if (!completedPhases.includes('strategist')) {
-        if (await checkCanceled?.()) throw new Error('Canceled by user');
+        await throwIfCanceled();
         onProgress?.('strategist');
         try {
           strategyReport = await this.strategist.strategize(analysisMemo, investorProfile);
@@ -244,7 +250,7 @@ export class AgentSwarmOrchestrator {
     // ====================================================
     t0 = Date.now();
     if (!completedPhases.includes('council')) {
-        if (await checkCanceled?.()) throw new Error('Canceled by user');
+        await throwIfCanceled();
         onProgress?.('council');
         try {
           if (depth === 'deep') {
@@ -271,7 +277,7 @@ export class AgentSwarmOrchestrator {
     // Phase 5: Synthesis — 最终研报生成 (standard + deep)
     // ====================================================
     t0 = Date.now();
-    if (await checkCanceled?.()) throw new Error('Canceled by user');
+    await throwIfCanceled();
     onProgress?.('synthesis');
     let finalReport = '';
     

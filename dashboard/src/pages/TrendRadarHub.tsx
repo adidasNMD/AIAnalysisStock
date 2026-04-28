@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Radar, TrendingUp, Radio, Activity, ExternalLink, RefreshCw, Calendar, FileText } from 'lucide-react';
 import { fetchTrendRadarLatest, fetchTrendRadarDates, type TrendRadarResult } from '../api';
 
@@ -16,38 +16,38 @@ export function TrendRadarHub() {
   const [htmlReports, setHtmlReports] = useState<HtmlReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<HtmlReport | null>(null);
 
-  const loadData = async (date?: string) => {
+  const loadData = useCallback(async (date?: string) => {
     setLoading(true);
     const result = await fetchTrendRadarLatest(date);
     setData(result);
     setLoading(false);
-  };
+  }, []);
 
-  const loadHtmlReports = async () => {
+  const loadHtmlReports = useCallback(async () => {
     try {
       const res = await fetch('/api/trendradar/reports');
       if (res.ok) {
         const reports: HtmlReport[] = await res.json();
         setHtmlReports(reports);
-        if (reports.length > 0 && !selectedReport) {
-          setSelectedReport(reports[0]!);
-        }
+        setSelectedReport((current) => current || reports[0] || null);
       }
     } catch { /* ignore */ }
-  };
+  }, []);
 
   // 首次加载：获取可用日期 + 拉取最新数据
   useEffect(() => {
-    fetchTrendRadarDates().then(setDates);
-    loadData();
-    loadHtmlReports();
-    const interval = setInterval(() => loadData(selectedDate), 300000);
+    void fetchTrendRadarDates().then(setDates);
+    void loadHtmlReports();
+  }, [loadHtmlReports]);
+
+  useEffect(() => {
+    void loadData(selectedDate);
+    const interval = setInterval(() => void loadData(selectedDate), 300000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadData, selectedDate]);
 
   const handleDateChange = (date: string) => {
     setSelectedDate(date || undefined);
-    loadData(date || undefined);
   };
 
   if (loading && !data) {

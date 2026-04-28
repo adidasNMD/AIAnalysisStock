@@ -17,11 +17,22 @@ export interface QueueTask {
   completedAt?: number;
   error?: string;
   statePayload?: string;
+  inputPayload?: string;
+  leaseId?: string;
+  heartbeatAt?: number;
+  cancelRequestedAt?: number;
+  failureCode?: string;
+  degradedFlags?: string;
 }
 
 export interface RecoverResult {
   totalRecovered: number;
   recoveredRunningTaskIds: string[];
+}
+
+export interface EnqueueTaskOptions {
+  missionId?: string;
+  inputPayload?: string;
 }
 
 const MAX_TASK_AGE_MS = 2 * 60 * 60 * 1000; 
@@ -39,8 +50,17 @@ export class TaskQueue {
     this.processCallback = callback;
   }
 
-  async enqueue(query: string, depth: AnalysisDepth, source: string, priority = 0, missionId?: string): Promise<QueueTask | null> {
+  async enqueue(
+    query: string,
+    depth: AnalysisDepth,
+    source: string,
+    priority = 0,
+    missionOrOptions?: string | EnqueueTaskOptions,
+  ): Promise<QueueTask | null> {
     const db = await getDb();
+    const options: EnqueueTaskOptions = typeof missionOrOptions === 'string'
+      ? { missionId: missionOrOptions }
+      : missionOrOptions || {};
     
     const existing = await db.get(
       'SELECT id, missionId, status FROM tasks WHERE query = ? AND status IN (?, ?)',
@@ -61,12 +81,15 @@ export class TaskQueue {
       status: 'pending',
       createdAt: Date.now(),
     };
-    if (missionId) {
-      task.missionId = missionId;
+    if (options.missionId) {
+      task.missionId = options.missionId;
+    }
+    if (options.inputPayload) {
+      task.inputPayload = options.inputPayload;
     }
 
     await this.saveTask(task);
-    const missionNote = missionId ? ` mission=${missionId}` : '';
+    const missionNote = options.missionId ? ` mission=${options.missionId}` : '';
     logger.info(`[TaskQueue] 📥 入队: "${query}" [${depth}] 来源=${source} 优先级=${priority}${missionNote}`);
     
     this.processNext();
@@ -131,6 +154,7 @@ export class TaskQueue {
 
     task.status = 'running';
     task.startedAt = Date.now();
+    task.heartbeatAt = task.startedAt;
     await this.saveTask(task);
 
     logger.info(`[TaskQueue] 🔄 并发: ${this.runningCount}/${this.concurrency}`);
@@ -142,6 +166,10 @@ export class TaskQueue {
       task.completedAt = Date.now();
       if (persistedTask?.status === 'canceled') {
         task.status = 'canceled';
+        if (persistedTask.cancelRequestedAt !== undefined) {
+          task.cancelRequestedAt = persistedTask.cancelRequestedAt;
+        }
+        task.failureCode = 'canceled';
         await this.saveTask(task);
         logger.info(`[TaskQueue] 🛑 已取消: "${task.query}"`);
       } else {
@@ -153,7 +181,15 @@ export class TaskQueue {
       const persistedTask = await this.getTask(task.id);
       const canceled = persistedTask?.status === 'canceled' || e.message === 'Canceled by user';
       task.status = canceled ? 'canceled' : 'failed';
-      task.error = canceled ? undefined : e.message;
+      if (canceled) {
+        delete task.error;
+      } else {
+        task.error = e.message;
+      }
+      if (persistedTask?.cancelRequestedAt !== undefined) {
+        task.cancelRequestedAt = persistedTask.cancelRequestedAt;
+      }
+      task.failureCode = canceled ? 'canceled' : 'execution_failed';
       task.completedAt = Date.now();
       await this.saveTask(task);
       if (canceled) {
@@ -176,9 +212,15 @@ export class TaskQueue {
     const db = await getDb();
     const task = await db.get<QueueTask>('SELECT * FROM tasks WHERE id = ?', id);
     if (task && (task.status === 'pending' || task.status === 'running')) {
-      await db.run("UPDATE tasks SET status = 'canceled' WHERE id = ?", id);
+      const cancelRequestedAt = Date.now();
+      await db.run(
+        "UPDATE tasks SET status = 'canceled', cancelRequestedAt = ?, failureCode = ? WHERE id = ?",
+        cancelRequestedAt,
+        'canceled',
+        id,
+      );
       logger.info(`[TaskQueue] 🛑 强制中止任务: "${task.query}" (id=${task.id})`);
-      return { ...task, status: 'canceled' };
+      return { ...task, status: 'canceled', cancelRequestedAt, failureCode: 'canceled' };
     }
     return task || null;
   }
@@ -191,6 +233,16 @@ export class TaskQueue {
   async attachRunId(id: string, runId: string) {
     const db = await getDb();
     await db.run('UPDATE tasks SET runId = ? WHERE id = ?', runId, id);
+  }
+
+  async attachLease(id: string, leaseId: string) {
+    const db = await getDb();
+    await db.run('UPDATE tasks SET leaseId = ?, heartbeatAt = ? WHERE id = ?', leaseId, Date.now(), id);
+  }
+
+  async touchHeartbeat(id: string) {
+    const db = await getDb();
+    await db.run('UPDATE tasks SET heartbeatAt = ? WHERE id = ?', Date.now(), id);
   }
 
   getRunningCount(): number {
@@ -214,20 +266,33 @@ export class TaskQueue {
   private async saveTask(task: QueueTask) {
     const db = await getDb();
     await db.run(`
-      INSERT INTO tasks (id, missionId, runId, query, depth, priority, source, status, progress, statePayload, createdAt, startedAt, completedAt, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (
+        id, missionId, runId, query, depth, priority, source, status, progress,
+        statePayload, inputPayload, leaseId, heartbeatAt, cancelRequestedAt,
+        failureCode, degradedFlags, createdAt, startedAt, completedAt, error
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         missionId = excluded.missionId,
         runId = excluded.runId,
         status = excluded.status,
         progress = excluded.progress,
         statePayload = excluded.statePayload,
+        inputPayload = COALESCE(excluded.inputPayload, tasks.inputPayload),
+        leaseId = excluded.leaseId,
+        heartbeatAt = excluded.heartbeatAt,
+        cancelRequestedAt = COALESCE(excluded.cancelRequestedAt, tasks.cancelRequestedAt),
+        failureCode = excluded.failureCode,
+        degradedFlags = excluded.degradedFlags,
         startedAt = excluded.startedAt,
         completedAt = excluded.completedAt,
         error = excluded.error
     `, 
       task.id, task.missionId || null, task.runId || null, task.query, task.depth, task.priority, task.source, 
-      task.status, task.progress, task.statePayload || null, task.createdAt, task.startedAt || null, task.completedAt || null, task.error || null
+      task.status, task.progress, task.statePayload || null, task.inputPayload || null,
+      task.leaseId || null, task.heartbeatAt || null, task.cancelRequestedAt || null,
+      task.failureCode || null, task.degradedFlags || null, task.createdAt,
+      task.startedAt || null, task.completedAt || null, task.error || null
     );
   }
 }

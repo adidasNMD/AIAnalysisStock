@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type DependencyList } from 'react';
 
 export interface AgentLog {
   missionId: string;
@@ -6,7 +6,7 @@ export interface AgentLog {
   phase: string;
   content: string;
   timestamp: number;
-  meta?: any;
+  meta?: Record<string, unknown>;
 }
 
 export interface OpportunityStreamEvent {
@@ -15,7 +15,7 @@ export interface OpportunityStreamEvent {
   type: string;
   message: string;
   timestamp: string;
-  meta?: any;
+  meta?: Record<string, unknown>;
 }
 
 interface StreamEnvelope<TPayload> {
@@ -53,6 +53,20 @@ function normalizeOpportunityStreamEvent(value: unknown): OpportunityStreamEvent
   return null;
 }
 
+function getEventSourceUrl(path: string): string {
+  return new URL(path, window.location.origin).toString();
+}
+
+function getEnvelopeId(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const maybeEnvelope = value as { id?: unknown };
+  return typeof maybeEnvelope.id === 'string' ? maybeEnvelope.id : null;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '未知错误';
+}
+
 /**
  * Hook for subscribing to Agent SSE stream
  * B1 fix: 手动重连逻辑，防止服务端断连后不恢复
@@ -70,8 +84,7 @@ export function useAgentStream(maxLogs = 100) {
     function connect() {
       if (unmounted) return;
       
-      const sseBase = import.meta.env.PROD ? '' : 'http://localhost:3000';
-      const sse = new EventSource(`${sseBase}/api/missions/stream`);
+      const sse = new EventSource(getEventSourceUrl('/api/missions/stream'));
       sseRef.current = sse;
 
       sse.onopen = () => {
@@ -127,8 +140,7 @@ export function useOpportunityStream(maxEvents = 100) {
     function connect() {
       if (unmounted) return;
 
-      const sseBase = import.meta.env.PROD ? '' : 'http://localhost:3000';
-      const streamUrl = new URL(`${sseBase}/api/opportunities/stream`, window.location.origin);
+      const streamUrl = new URL(getEventSourceUrl('/api/opportunities/stream'));
       if (lastEventId.current) {
         streamUrl.searchParams.set('since', lastEventId.current);
       }
@@ -153,12 +165,14 @@ export function useOpportunityStream(maxEvents = 100) {
 
       sse.onmessage = (e) => {
         try {
-          const parsed = JSON.parse(e.data);
+          const parsed: unknown = JSON.parse(e.data);
           const event = normalizeOpportunityStreamEvent(parsed);
           if (!event) return;
-          lastEventId.current = e.lastEventId || (typeof parsed?.id === 'string' ? parsed.id : event.id);
+          lastEventId.current = e.lastEventId || getEnvelopeId(parsed) || event.id;
           setEvents((prev) => [event, ...prev].slice(0, maxEvents));
-        } catch {}
+        } catch {
+          // Ignore heartbeats and malformed replay frames.
+        }
       };
     }
 
@@ -183,7 +197,7 @@ export function useOpportunityStream(maxEvents = 100) {
 export function usePolling<T>(
   fetcher: () => Promise<T>,
   intervalMs = 5000,
-  deps: any[] = []
+  deps: DependencyList = []
 ) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -195,13 +209,14 @@ export function usePolling<T>(
       try {
         const result = await fetcher();
         if (active) { setData(result); setError(null); setLoading(false); }
-      } catch (e: any) {
-        if (active) { setError(e?.message || '未知错误'); setLoading(false); }
+      } catch (e: unknown) {
+        if (active) { setError(errorMessage(e)); setLoading(false); }
       }
     };
     poll();
     const interval = setInterval(poll, intervalMs);
     return () => { active = false; clearInterval(interval); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
   return { data, error, loading };

@@ -1,6 +1,5 @@
-// In Docker (behind Nginx proxy), API is at /api
-// In dev mode (Vite), API is at localhost:3000/api
-const API_BASE = import.meta.env.PROD ? '/api' : 'http://localhost:3000/api';
+// Keep calls relative so Vite dev proxy and production reverse proxy share one path.
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 // ===== 原有类型 =====
 
@@ -467,6 +466,36 @@ export interface MissionSummary {
   latestDiff?: MissionDiffSummary;
 }
 
+export interface OpenBBCoreMetrics {
+  priceVsSma20?: 'above' | 'below' | string;
+  marketCap?: number;
+  institutionalOwnership?: number;
+  insiderNetDirection?: string;
+  [key: string]: unknown;
+}
+
+export interface OpenBBAuxiliaryMetrics {
+  peRatio?: number;
+  psRatio?: number;
+  revenueGrowthYoY?: number;
+  freeCashFlow?: number;
+  [key: string]: unknown;
+}
+
+export interface OpenBBBackgroundMetrics {
+  rsi14?: number;
+  [key: string]: unknown;
+}
+
+export interface OpenBBTickerData {
+  ticker: string;
+  core: OpenBBCoreMetrics;
+  auxiliary: OpenBBAuxiliaryMetrics;
+  background: OpenBBBackgroundMetrics;
+  verdict: 'PASS' | 'WARN' | 'FAIL';
+  verdictReason: string;
+}
+
 export interface MissionFull {
   id: string;
   input: { mode: string; query: string; tickers?: string[]; depth?: string; source?: string };
@@ -489,15 +518,8 @@ export interface MissionFull {
     error?: string;
   }>;
   taDurationMs: number;
-  openbbData: Array<{
-    ticker: string;
-    core: any;
-    auxiliary: any;
-    background: any;
-    verdict: 'PASS' | 'WARN' | 'FAIL';
-    verdictReason: string;
-  }>;
-  macroData: any;
+  openbbData: OpenBBTickerData[];
+  macroData: unknown;
   consensus: MissionConsensus[];
   totalDurationMs: number;
 }
@@ -526,6 +548,8 @@ export interface MissionRun {
   heartbeatAt?: string;
   completedAt?: string;
   failureMessage?: string;
+  cancelRequestedAt?: string;
+  failureCode?: string;
   degradedFlags?: string[];
 }
 
@@ -617,7 +641,7 @@ export const fetchTraces = async (): Promise<TraceItem[]> => {
   return res.json();
 };
 
-export const fetchTraceContent = async (date: string, filename: string): Promise<any> => {
+export const fetchTraceContent = async (date: string, filename: string): Promise<unknown> => {
   const res = await fetch(`${API_BASE}/traces/content?${new URLSearchParams({ date, filename })}`);
   if (!res.ok) throw new Error('Failed');
   return (await res.json()).content;
@@ -738,6 +762,15 @@ export interface CreateOpportunityInput {
   catalystCalendar?: OpportunityCatalystItem[];
 }
 
+export type UpdateOpportunityInput = Partial<Omit<
+  CreateOpportunityInput,
+  'nextCatalystAt' | 'supplyOverhang' | 'policyStatus'
+>> & {
+  nextCatalystAt?: string | null;
+  supplyOverhang?: string | null;
+  policyStatus?: string | null;
+};
+
 export const createOpportunity = async (input: CreateOpportunityInput): Promise<OpportunitySummary> => {
   const res = await fetch(`${API_BASE}/opportunities`, {
     method: 'POST',
@@ -751,7 +784,7 @@ export const createOpportunity = async (input: CreateOpportunityInput): Promise<
   return res.json();
 };
 
-export const updateOpportunity = async (id: string, input: Partial<CreateOpportunityInput>): Promise<OpportunitySummary> => {
+export const updateOpportunity = async (id: string, input: UpdateOpportunityInput): Promise<OpportunitySummary> => {
   const res = await fetch(`${API_BASE}/opportunities/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -929,8 +962,8 @@ export interface TraceContent {
     agentName: string;
     timestamp: string;
     phase: string;
-    input: any;
-    output: any;
+    input: unknown;
+    output: unknown;
     durationMs: number;
   }>;
 }

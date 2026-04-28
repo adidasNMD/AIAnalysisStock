@@ -180,7 +180,7 @@ export function CommandCenter() {
             disabled={isLoading}
           />
           <div className="trigger-controls">
-            <select value={depth} onChange={(e) => setDepth(e.target.value as any)}>
+            <select value={depth} onChange={(e) => setDepth(e.target.value as 'quick' | 'standard' | 'deep')}>
               <option value="quick">⚡ Quick</option>
               <option value="standard">📊 Standard</option>
               <option value="deep">🔬 Deep</option>

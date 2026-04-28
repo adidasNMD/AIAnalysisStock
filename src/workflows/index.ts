@@ -5,6 +5,7 @@ export * from './mission-submission';
 export * from './mission-events';
 export * from './mission-runs';
 export * from './mission-evidence';
+export * from './mission-index';
 export * from './mission-diff';
 export * from './opportunities';
 export * from './opportunity-calendars';

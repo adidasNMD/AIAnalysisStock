@@ -10,11 +10,33 @@ function createDbMock(pendingTasks: any[] = []) {
   const tasks = new Map<string, any>(pendingTasks.map((task) => [task.id, { ...task }]));
 
   return {
-    get: vi.fn(),
-    all: vi.fn().mockImplementation(async () => Array.from(tasks.values()).filter((task) => task.status === 'pending')),
+    __tasks: tasks,
+    get: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('SELECT id, missionId, status FROM tasks WHERE query = ?')) {
+        const [query, firstStatus, secondStatus] = params;
+        return Array.from(tasks.values()).find(
+          (task) => task.query === query && (task.status === firstStatus || task.status === secondStatus),
+        );
+      }
+      if (sql.includes('SELECT * FROM tasks WHERE id = ?')) {
+        return tasks.get(params[0]);
+      }
+      if (sql.includes('SELECT COUNT(*) as c FROM tasks WHERE status = ?')) {
+        return { c: Array.from(tasks.values()).filter((task) => task.status === params[0]).length };
+      }
+      return undefined;
+    }),
+    all: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('SELECT id FROM tasks WHERE status = ?')) {
+        return Array.from(tasks.values())
+          .filter((task) => task.status === params[0])
+          .map((task) => ({ id: task.id }));
+      }
+      return Array.from(tasks.values()).filter((task) => task.status === 'pending');
+    }),
     run: vi.fn().mockImplementation(async (_sql: string, ...params: any[]) => {
-      const id = params[0] && typeof params[0] === 'string' ? params[0] : undefined;
-      if (id && _sql.includes('INSERT INTO tasks')) {
+      if (_sql.includes('INSERT INTO tasks')) {
+        const id = params[0];
         tasks.set(id, {
           id,
           missionId: params[1],
@@ -26,23 +48,45 @@ function createDbMock(pendingTasks: any[] = []) {
           status: params[7],
           progress: params[8],
           statePayload: params[9],
-          createdAt: params[10],
-          startedAt: params[11],
-          completedAt: params[12],
-          error: params[13],
+          inputPayload: params[10],
+          leaseId: params[11],
+          heartbeatAt: params[12],
+          cancelRequestedAt: params[13],
+          failureCode: params[14],
+          degradedFlags: params[15],
+          createdAt: params[16],
+          startedAt: params[17],
+          completedAt: params[18],
+          error: params[19],
         });
-      } else if (id && _sql.includes('UPDATE tasks SET runId =')) {
+      } else if (_sql.includes('UPDATE tasks SET runId =')) {
         const task = tasks.get(params[1]);
         tasks.set(params[1], { ...task, runId: params[0] });
-      } else if (id && _sql.includes('UPDATE tasks SET status =')) {
+      } else if (_sql.includes("UPDATE tasks SET status = 'canceled'")) {
+        const id = params[2];
+        const task = tasks.get(id);
+        tasks.set(id, { ...task, status: 'canceled', cancelRequestedAt: params[0], failureCode: params[1] });
+      } else if (_sql.includes('UPDATE tasks SET status =')) {
+        const id = params[0];
         tasks.set(id, { ...tasks.get(id), status: 'canceled' });
-      } else if (id && _sql.includes('UPDATE tasks SET progress =')) {
+      } else if (_sql.includes('UPDATE tasks SET progress =')) {
+        const id = params[1];
         const task = tasks.get(id);
         tasks.set(id, { ...task, progress: params[0] });
-      } else if (id && _sql.includes('UPDATE tasks SET statePayload =')) {
+      } else if (_sql.includes('UPDATE tasks SET statePayload =')) {
+        const id = params[1];
         const task = tasks.get(id);
         tasks.set(id, { ...task, statePayload: params[0] });
-      } else if (id && _sql.includes('UPDATE tasks SET')) {
+      } else if (_sql.includes('UPDATE tasks SET leaseId =')) {
+        const id = params[2];
+        const task = tasks.get(id);
+        tasks.set(id, { ...task, leaseId: params[0], heartbeatAt: params[1] });
+      } else if (_sql.includes('UPDATE tasks SET heartbeatAt =')) {
+        const id = params[1];
+        const task = tasks.get(id);
+        tasks.set(id, { ...task, heartbeatAt: params[0] });
+      } else if (_sql.includes('UPDATE tasks SET')) {
+        const id = params[0];
         const task = tasks.get(id);
         tasks.set(id, { ...task, status: task?.status === 'running' || task?.status === 'pending' ? task.status : task?.status });
       }
@@ -128,5 +172,54 @@ describe('TaskQueue concurrency', () => {
 
     expect((queue as any).runningCount).toBe(0);
     expect(db.run).toHaveBeenCalled();
+  });
+
+  it('persists the full mission input payload when enqueuing a mission task', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock();
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    const inputPayload = JSON.stringify({
+      mode: 'review',
+      query: 'Review AI supply chain',
+      tickers: ['NVDA', 'TSM'],
+      depth: 'deep',
+      source: 'opportunity_action',
+      opportunityId: 'opp-1',
+    });
+
+    const task = await queue.enqueue('Review AI supply chain', 'deep', 'opportunity_action', 90, {
+      missionId: 'mission-1',
+      inputPayload,
+    });
+
+    expect(task?.missionId).toBe('mission-1');
+    expect(task?.inputPayload).toBe(inputPayload);
+    expect((db as any).__tasks.get(task!.id).inputPayload).toBe(inputPayload);
+  });
+
+  it('records cancel timestamp and failure code for pending or running tasks', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-1',
+        query: 'q1',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    const canceled = await queue.cancelTask('task-1');
+
+    expect(canceled?.status).toBe('canceled');
+    expect(canceled?.failureCode).toBe('canceled');
+    expect(canceled?.cancelRequestedAt).toEqual(expect.any(Number));
+    expect((db as any).__tasks.get('task-1').failureCode).toBe('canceled');
   });
 });

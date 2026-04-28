@@ -14,7 +14,7 @@ import { MacroContextEngine } from './agents/macro/macro-context';
 import { updatePerformance, formatPerformanceReport } from './utils/performance-tracker';
 import { NarrativeLifecycleEngine } from './agents/lifecycle/engine';
 import { healthMonitor } from './utils/health-monitor';
-import { taskQueue } from './utils/task-queue';
+import { taskQueue, type QueueTask } from './utils/task-queue';
 import { startServer } from './server/app';
 import {
   syncHeatTransferGraphOpportunities,
@@ -31,6 +31,7 @@ import {
   failMissionRun,
   cancelMissionRun,
   requeueMissionRunsForTasks,
+  type MissionInput,
 } from './workflows';
 import { eventBus } from './utils/event-bus';
 import { logger } from './utils/logger';
@@ -131,6 +132,67 @@ function normalizeRecoverResult(
   };
 }
 
+function inferMissionInputFromTask(task: Pick<QueueTask, 'query' | 'depth' | 'source'>): MissionInput {
+  const normalizedQuery = task.query.trim();
+  const normalizedTicker = normalizedQuery.replace('$', '').toUpperCase();
+  const isTicker = /^\$?[A-Z]{1,5}$/.test(normalizedQuery);
+
+  return {
+    mode: isTicker ? 'analyze' : 'explore',
+    query: task.query,
+    tickers: isTicker ? [normalizedTicker] : [],
+    depth: task.depth,
+    source: task.source,
+  };
+}
+
+function parseMissionInputPayload(payload?: string): MissionInput | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as Partial<MissionInput> | null;
+    if (!parsed || typeof parsed.query !== 'string' || parsed.query.trim().length === 0) {
+      return null;
+    }
+    const mode = parsed.mode === 'analyze' || parsed.mode === 'review' || parsed.mode === 'explore'
+      ? parsed.mode
+      : inferMissionInputFromTask({
+          query: parsed.query,
+          depth: parsed.depth || 'deep',
+          source: parsed.source || 'queued_payload',
+        }).mode;
+    const depth = parsed.depth === 'quick' || parsed.depth === 'standard' || parsed.depth === 'deep'
+      ? parsed.depth
+      : undefined;
+    const tickers = Array.isArray(parsed.tickers)
+      ? parsed.tickers.filter((ticker): ticker is string => typeof ticker === 'string')
+      : [];
+
+    return {
+      mode,
+      query: parsed.query,
+      tickers,
+      ...(depth ? { depth } : {}),
+      ...(typeof parsed.source === 'string' ? { source: parsed.source } : {}),
+      ...(typeof parsed.date === 'string' ? { date: parsed.date } : {}),
+      ...(typeof parsed.opportunityId === 'string' ? { opportunityId: parsed.opportunityId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveMissionInputForTask(task: QueueTask): MissionInput {
+  const inputFromTask = parseMissionInputPayload(task.inputPayload);
+  if (inputFromTask) return inputFromTask;
+
+  const mission = task.missionId ? getMission(task.missionId) : null;
+  if (mission?.input?.query) {
+    return mission.input;
+  }
+
+  return inferMissionInputFromTask(task);
+}
+
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
 // 多级触发哨兵模式 + TrendRadar 趋势雷达 + 实时交互(Interactive Bot)
@@ -167,37 +229,46 @@ if (SHOULD_BOOTSTRAP_WORKER) {
   taskQueue.onProcess(async (task) => {
     const runId = task.runId;
     const workerLeaseId = `worker:${process.pid}:${task.id}`;
+    const abortController = new AbortController();
     const currentRunStage = () => {
       if (!task.progress) return 'dispatch' as const;
       return task.progress;
     };
     const shouldCancel = async () => {
+      if (abortController.signal.aborted) return true;
       const currentTask = await taskQueue.getTask(task.id);
-      return currentTask?.status === 'canceled';
+      const canceled = currentTask?.status === 'canceled';
+      if (canceled) {
+        abortController.abort(new Error('Canceled by user'));
+      }
+      return canceled;
     };
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     try {
+      task.leaseId = workerLeaseId;
+      task.heartbeatAt = Date.now();
+      await taskQueue.attachLease(task.id, workerLeaseId);
       if (runId) {
         await markMissionRunRunning(runId, workerLeaseId);
-        heartbeatTimer = setInterval(() => {
-          void touchMissionRunHeartbeat(runId, currentRunStage());
-        }, 15_000);
       }
+      heartbeatTimer = setInterval(() => {
+        void taskQueue.touchHeartbeat(task.id);
+        void shouldCancel().catch((error) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.warn(`[TaskQueue] Cancel poll failed for ${task.id}: ${msg}`);
+        });
+        if (runId) {
+          void touchMissionRunHeartbeat(runId, currentRunStage());
+        }
+      }, 15_000);
 
       // === 使用 Mission Dispatcher 封装 OpenClaw + TA + OpenBB 并行执行 ===
-      const isTicker = /^\$?[A-Z]{1,5}$/.test(task.query.trim());
-      const mode = isTicker ? 'analyze' as const : 'explore' as const;
+      const missionInput = resolveMissionInputForTask(task);
 
       const mission = await dispatchMission(
-        {
-          mode,
-          query: task.query,
-          tickers: isTicker ? [task.query.replace('$', '').toUpperCase()] : [],
-          depth: task.depth,
-          source: task.source,
-        },
+        missionInput,
         // executeOpenClaw 回调: 调用原始 orchestrator
-        async (query: string, depth: string, missionId: string) => {
+        async (query: string, depth: string, missionId: string, signal?: AbortSignal) => {
           const result = await orchestrator.executeMission(
             query,
             depth as any,
@@ -226,13 +297,15 @@ if (SHOULD_BOOTSTRAP_WORKER) {
             },
             shouldCancel,
             missionId,
-            runId
+            runId,
+            signal,
           );
           return typeof result === 'string' ? result : JSON.stringify(result);
         },
         task.missionId,
         shouldCancel,
         runId,
+        abortController.signal,
       );
 
       const latestTask = await taskQueue.getTask(task.id);
@@ -261,6 +334,11 @@ if (SHOULD_BOOTSTRAP_WORKER) {
 
       if (runId) {
         const degradedFlags = mission.status === 'main_only' ? ['main_only'] : undefined;
+        if (degradedFlags) {
+          task.degradedFlags = JSON.stringify(degradedFlags);
+        } else {
+          delete task.degradedFlags;
+        }
         await completeMissionRun(runId, degradedFlags);
       }
 

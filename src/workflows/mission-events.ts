@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { indexMissionEventAsync } from './mission-index';
 import type { MissionStatus } from './types';
 
 const MISSIONS_DIR = path.join(process.cwd(), 'out', 'missions');
@@ -43,7 +44,9 @@ export function appendMissionEvent(
     ...(event.meta ? { meta: event.meta } : {}),
   };
 
-  fs.appendFileSync(eventFilePath(missionId, createdAt), `${JSON.stringify(record)}\n`, 'utf-8');
+  const filePath = eventFilePath(missionId, createdAt);
+  fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf-8');
+  indexMissionEventAsync(record, filePath);
   return record;
 }
 
