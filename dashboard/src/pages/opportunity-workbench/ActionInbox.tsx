@@ -1,5 +1,8 @@
-import type { ReactNode } from 'react';
-import type { OpportunityInboxItem, OpportunitySummary } from '../../api';
+import type {
+  OpportunityInboxItem,
+  OpportunitySuggestedMission,
+  OpportunitySummary,
+} from '../../api';
 import type { OpportunityStreamEvent } from '../../hooks/useAgentStream';
 import {
   timelineDecisionLabel,
@@ -10,6 +13,8 @@ import {
 } from './model';
 import { inboxLaneMeta } from './live';
 import { buildInboxPrimaryAction } from './selectors';
+import { InboxOpportunityCard } from './InboxOpportunityCard';
+import type { MissionRecoveryAction } from './recovery';
 
 type LanePriorityView = {
   items: OpportunityInboxItem[];
@@ -31,11 +36,12 @@ type ActionInboxProps = {
   focusedLane: InboxLane | null;
   setLaneRef: (lane: InboxLane, node: HTMLElement | null) => void;
   executePrimaryAction: (opportunity: OpportunitySummary, action: OpportunityPrimaryAction) => void | Promise<void>;
-  renderInboxCard: (
-    item: OpportunityInboxItem,
-    livePriorityEvent?: OpportunityStreamEvent | null,
-    liveRank?: number,
-  ) => ReactNode;
+  liveNow: number;
+  recoveringMissionActionKey?: string | null;
+  onOpenOpportunity: (opportunity: OpportunitySummary) => void;
+  onLaunchOpportunityAnalysis: (opportunity: OpportunitySummary, suggested?: OpportunitySuggestedMission) => void;
+  onRecoverMission: (opportunity: OpportunitySummary, action: MissionRecoveryAction) => void;
+  onOpenMission: (missionId: string) => void;
 };
 
 export function ActionInbox({
@@ -47,7 +53,12 @@ export function ActionInbox({
   focusedLane,
   setLaneRef,
   executePrimaryAction,
-  renderInboxCard,
+  liveNow,
+  recoveringMissionActionKey,
+  onOpenOpportunity,
+  onLaunchOpportunityAnalysis,
+  onRecoverMission,
+  onOpenMission,
 }: ActionInboxProps) {
   return (
     <div className="today-summary glass-panel">
@@ -155,7 +166,21 @@ export function ActionInbox({
                 {items.length === 0 ? (
                   <div className="today-empty">{meta.empty}</div>
                 ) : (
-                  items.map((item, index) => renderInboxCard(item, laneView.recentEvents.get(item.id), index))
+                  items.map((item, index) => (
+                    <InboxOpportunityCard
+                      key={item.id}
+                      item={item}
+                      liveNow={liveNow}
+                      livePriorityEvent={laneView.recentEvents.get(item.id)}
+                      liveRank={index}
+                      recoveringMissionActionKey={recoveringMissionActionKey}
+                      onOpenOpportunity={onOpenOpportunity}
+                      onExecutePrimaryAction={executePrimaryAction}
+                      onLaunchOpportunityAnalysis={onLaunchOpportunityAnalysis}
+                      onRecoverMission={onRecoverMission}
+                      onOpenMission={onOpenMission}
+                    />
+                  ))
                 )}
               </div>
             </section>

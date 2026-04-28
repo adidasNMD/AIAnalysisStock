@@ -14,6 +14,16 @@ const parser = new Parser({
 
 const GOOGLE_NEWS_RSS_BASE = 'https://news.google.com/rss/search';
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error('Canceled by user');
+  }
+}
+
 export const DEFAULT_NEWS_KEYWORDS = [
   // === 机器智能与脑机 (Machine Intelligence & BCI) ===
   'Embodied AI humanoid robot',
@@ -53,8 +63,10 @@ export interface GoogleNewsItem {
 export async function fetchGoogleNewsRSS(
   query: string,
   lang: string = 'en',
-  limit: number = 10
+  limit: number = 10,
+  options: RequestOptions = {},
 ): Promise<GoogleNewsItem[]> {
+  throwIfCanceled(options.signal);
   const items: GoogleNewsItem[] = [];
 
   try {
@@ -66,6 +78,7 @@ export async function fetchGoogleNewsRSS(
       
     const url = `${GOOGLE_NEWS_RSS_BASE}?q=${encodeURIComponent(query)}&${langParams}`;
     const feed = await parser.parseURL(url);
+    throwIfCanceled(options.signal);
 
     for (const entry of (feed.items || []).slice(0, limit)) {
       items.push({
@@ -77,6 +90,7 @@ export async function fetchGoogleNewsRSS(
       });
     }
   } catch (e: any) {
+    throwIfCanceled(options.signal);
     console.error(`[GoogleNews] ⚠️ RSS fetch failed for "${query}": ${e.message}`);
   }
 
@@ -96,7 +110,8 @@ function extractSourceFromTitle(title: string): string {
  */
 export async function scanMultipleKeywords(
   keywords: string[] = DEFAULT_NEWS_KEYWORDS,
-  limit: number = 5
+  limit: number = 5,
+  options: RequestOptions = {},
 ): Promise<GoogleNewsItem[]> {
   console.log(`[GoogleNews] 📰 扫描 ${keywords.length} 个关键词...`);
 
@@ -105,7 +120,8 @@ export async function scanMultipleKeywords(
 
   for (const keyword of keywords) {
     try {
-      const items = await fetchGoogleNewsRSS(keyword, 'en', limit);
+      throwIfCanceled(options.signal);
+      const items = await fetchGoogleNewsRSS(keyword, 'en', limit, options);
       for (const item of items) {
         // 标题去重
         const titleKey = item.title.toLowerCase().trim();
@@ -115,8 +131,16 @@ export async function scanMultipleKeywords(
         }
       }
       // 小延迟避免触发 Google 速率限制
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(resolve, 300);
+        const onAbort = () => {
+          clearTimeout(timeoutId);
+          reject(new Error('Canceled by user'));
+        };
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+      });
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[GoogleNews] Failed for "${keyword}": ${e.message}`);
     }
   }

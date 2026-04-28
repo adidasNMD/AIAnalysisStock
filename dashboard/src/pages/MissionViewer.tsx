@@ -1,8 +1,26 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Brain, BarChart3, Shield, TrendingUp, TrendingDown, Clock, Zap, Target, Activity, CheckCircle, Search, Filter } from 'lucide-react';
+import { ArrowLeft, Brain, BarChart3, Shield, TrendingUp, TrendingDown, Clock, Zap, Target, Activity, CheckCircle, Search, Filter, RotateCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { fetchMissionDetail, fetchMissionEvents, fetchMissionRunEvidence, fetchMissionRuns, fetchTraceByMissionId, fetchTraceByMissionRun, retryMission, type MissionEvidence, type MissionEvent, type MissionFull, type MissionRun, type TraceContent } from '../api';
+import {
+  createMission,
+  fetchMissionDetail,
+  fetchMissionEvents,
+  fetchMissionRecovery,
+  fetchMissionRunEvidence,
+  fetchMissionRuns,
+  fetchTraceByMissionId,
+  fetchTraceByMissionRun,
+  retryMission,
+  type MissionEvidence,
+  type MissionEvent,
+  type MissionFull,
+  type MissionRecoveryAction,
+  type MissionRecoverySuggestion,
+  type MissionRun,
+  type TraceContent,
+} from '../api';
+import { getFailureCodeInfo } from '../utils/recovery';
 
 // 终态集合 — 这些状态不会再变化，到达后停止轮询
 const TERMINAL_STATES = new Set(['fully_enriched', 'main_only', 'failed', 'canceled']);
@@ -178,6 +196,8 @@ export function MissionViewer() {
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
+  const [recovery, setRecovery] = useState<MissionRecoverySuggestion | null>(null);
+  const [recoveryActionId, setRecoveryActionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
@@ -228,65 +248,74 @@ export function MissionViewer() {
     setMission(data);
     setSelectedTicker((current) => current || data?.openclawTickers?.[0] || null);
 
-    if (data?.id) {
-      const [eventData, runData, trData] = await Promise.all([
-        fetchMissionEvents(data.id),
-        fetchMissionRuns(data.id),
-        fetchTraceByMissionId(data.id),
-        ]);
-        setEvents(eventData);
-        setRuns(runData);
-        setTrace(trData);
-        if (runData[0]) {
-          traceCacheRef.current[runData[0].id] = trData;
-        }
-
-        const nextSelectedRunId = requestedRunId && runData.some((run) => run.id === requestedRunId)
-          ? requestedRunId
-          : selectedRunIdRef.current && runData.some((run) => run.id === selectedRunIdRef.current)
-            ? selectedRunIdRef.current
-            : (runData[0]?.id || null);
-        const nextCompareRunId = nextSelectedRunId
-          ? requestedCompareRunId && requestedCompareRunId !== nextSelectedRunId && runData.some((run) => run.id === requestedCompareRunId)
-            ? requestedCompareRunId
-            : defaultCompareRunId(runData, nextSelectedRunId)
-          : null;
-
-        if (nextSelectedRunId !== selectedRunIdRef.current) {
-          selectedRunIdRef.current = nextSelectedRunId;
-          setSelectedRunId(nextSelectedRunId);
-          const selectedRun = nextSelectedRunId ? runData.find((run) => run.id === nextSelectedRunId) : null;
-          if (selectedRun && selectedRun.id !== runData[0]?.id) {
-            const artifacts = await loadArtifactsForRun(data.id, selectedRun);
-            setSelectedEvidence(artifacts.evidence);
-            setSelectedTrace(artifacts.trace);
-            setActionError(!artifacts.evidence ? '未找到该次运行的证据快照' : null);
-            setSelectedTicker((current) => {
-              const payload = artifacts.evidence ?? data;
-              if (current && payload.openclawTickers.includes(current)) return current;
-              return payload.openclawTickers[0] || null;
-            });
-          } else {
-            setSelectedEvidence(null);
-            setSelectedTrace(null);
-            setActionError(null);
-          }
-        } else if (!nextSelectedRunId) {
-          setSelectedRunId(null);
-          setSelectedEvidence(null);
-          setSelectedTrace(null);
-        }
-        setCompareRunId(nextCompareRunId);
-        setCompareEvidence(null);
-        setCompareTrace(null);
-        if (
-          nextSelectedRunId !== requestedRunId ||
-          (nextCompareRunId || null) !== (requestedCompareRunId || null)
-        ) {
-          syncRunParams(nextSelectedRunId, nextCompareRunId);
-        }
-      }
+    if (!data?.id) {
+      setEvents([]);
+      setRuns([]);
+      setTrace(null);
+      setRecovery(null);
       setLoading(false);
+      return;
+    }
+
+    const [eventData, runData, trData, recoveryData] = await Promise.all([
+      fetchMissionEvents(data.id),
+      fetchMissionRuns(data.id),
+      fetchTraceByMissionId(data.id),
+      fetchMissionRecovery(data.id),
+    ]);
+    setEvents(eventData);
+    setRuns(runData);
+    setTrace(trData);
+    setRecovery(recoveryData);
+    if (runData[0]) {
+      traceCacheRef.current[runData[0].id] = trData;
+    }
+
+    const nextSelectedRunId = requestedRunId && runData.some((run) => run.id === requestedRunId)
+      ? requestedRunId
+      : selectedRunIdRef.current && runData.some((run) => run.id === selectedRunIdRef.current)
+        ? selectedRunIdRef.current
+        : (runData[0]?.id || null);
+    const nextCompareRunId = nextSelectedRunId
+      ? requestedCompareRunId && requestedCompareRunId !== nextSelectedRunId && runData.some((run) => run.id === requestedCompareRunId)
+        ? requestedCompareRunId
+        : defaultCompareRunId(runData, nextSelectedRunId)
+      : null;
+
+    if (nextSelectedRunId !== selectedRunIdRef.current) {
+      selectedRunIdRef.current = nextSelectedRunId;
+      setSelectedRunId(nextSelectedRunId);
+      const selectedRun = nextSelectedRunId ? runData.find((run) => run.id === nextSelectedRunId) : null;
+      if (selectedRun && selectedRun.id !== runData[0]?.id) {
+        const artifacts = await loadArtifactsForRun(data.id, selectedRun);
+        setSelectedEvidence(artifacts.evidence);
+        setSelectedTrace(artifacts.trace);
+        setActionError(!artifacts.evidence ? '未找到该次运行的证据快照' : null);
+        setSelectedTicker((current) => {
+          const payload = artifacts.evidence ?? data;
+          if (current && payload.openclawTickers.includes(current)) return current;
+          return payload.openclawTickers[0] || null;
+        });
+      } else {
+        setSelectedEvidence(null);
+        setSelectedTrace(null);
+        setActionError(null);
+      }
+    } else if (!nextSelectedRunId) {
+      setSelectedRunId(null);
+      setSelectedEvidence(null);
+      setSelectedTrace(null);
+    }
+    setCompareRunId(nextCompareRunId);
+    setCompareEvidence(null);
+    setCompareTrace(null);
+    if (
+      nextSelectedRunId !== requestedRunId ||
+      (nextCompareRunId || null) !== (requestedCompareRunId || null)
+    ) {
+      syncRunParams(nextSelectedRunId, nextCompareRunId);
+    }
+    setLoading(false);
 
     if (data && TERMINAL_STATES.has(data.status)) {
       if (intervalRef.current) {
@@ -413,30 +442,78 @@ export function MissionViewer() {
     });
   };
 
+  const resetRunSelection = () => {
+    selectedRunIdRef.current = null;
+    setSelectedRunId(null);
+    setSelectedEvidence(null);
+    setSelectedTrace(null);
+    setCompareRunId(null);
+    setCompareEvidence(null);
+    setCompareTrace(null);
+    syncRunParams(null, null);
+  };
+
+  const restartMissionPolling = (missionId: string) => {
+    if (!intervalRef.current) {
+      intervalRef.current = setInterval(() => {
+        void loadMission(missionId);
+      }, 10000);
+    }
+  };
+
   const handleRetry = async () => {
     if (!id || !canRetry) return;
     setRetrying(true);
     setActionError(null);
     try {
       await retryMission(id, mission?.input.depth as 'quick' | 'standard' | 'deep' | undefined);
-      selectedRunIdRef.current = null;
-      setSelectedRunId(null);
-      setSelectedEvidence(null);
-      setSelectedTrace(null);
-      setCompareRunId(null);
-      setCompareEvidence(null);
-      setCompareTrace(null);
-      syncRunParams(null, null);
+      resetRunSelection();
       await loadMission(id);
-      if (!intervalRef.current) {
-        intervalRef.current = setInterval(() => {
-          void loadMission(id);
-        }, 10000);
-      }
+      restartMissionPolling(id);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Mission retry failed');
     }
     setRetrying(false);
+  };
+
+  const handleRecoveryAction = async (action: MissionRecoveryAction) => {
+    if (!id || !mission) return;
+
+    if (action.kind === 'inspect') {
+      if (latestRun) await handleSelectRun(latestRun);
+      return;
+    }
+
+    if (action.kind === 'diagnostic') {
+      navigate('/command-center');
+      return;
+    }
+
+    setRecoveryActionId(action.id);
+    setActionError(null);
+    try {
+      const queuedMission = action.kind === 'review'
+        ? await createMission(
+            'review',
+            mission.input.query,
+            mission.input.tickers,
+            action.depth || 'standard',
+            mission.input.opportunityId,
+            'mission_recovery_review',
+          )
+        : await retryMission(id, action.depth);
+
+      resetRunSelection();
+      if (queuedMission.missionId === id) {
+        await loadMission(id);
+        restartMissionPolling(id);
+      }
+      navigate(`/missions/${queuedMission.missionId}`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Mission recovery failed');
+    } finally {
+      setRecoveryActionId(null);
+    }
   };
 
   if (loading && !mission) return <div className="page loading-state"><Clock size={32} className="spin" /> 加载分析脑波中...</div>;
@@ -452,6 +529,13 @@ export function MissionViewer() {
   const diffItems = activeRun && compareRun && comparePayload
     ? summarizeRunDiff(activeRun, activePayload, activeTrace, compareRun, comparePayload, compareTraceSnapshot)
     : [];
+  const recoveryBadgeTone = recovery?.summary.severity === 'critical'
+    ? 'disagree'
+    : recovery?.summary.severity === 'warning'
+      ? 'partial'
+      : 'pending';
+  const visibleRecoveryActions = recovery?.suggestedActions || [];
+  const recoveryFailureInfo = getFailureCodeInfo(recovery?.reason.failureCode);
 
   // C1: optional chaining 安全取值
   const currentOpenBB = activePayload.openbbData?.find(d => d.ticker === selectedTicker);
@@ -479,6 +563,46 @@ export function MissionViewer() {
         </div>
       </div>
       {actionError && <div className="mode-hint" style={{ color: 'var(--accent-crimson)', marginBottom: '12px' }}>{actionError}</div>}
+
+      {recovery && (recovery.recoverable || visibleRecoveryActions.length > 0) && (
+        <section className="mission-recovery-banner glass-panel">
+          <div className="mission-recovery-banner-main">
+            <span className={`consensus-badge ${recoveryBadgeTone}`}>{recovery.summary.severity.toUpperCase()}</span>
+            <div>
+              <h4>{recovery.summary.label}</h4>
+              <p>{recovery.summary.detail}</p>
+              <div className="mission-recovery-meta">
+                {recoveryFailureInfo && (
+                  <span title={recoveryFailureInfo.detail}>failure: {recoveryFailureInfo.label}</span>
+                )}
+                {recovery.reason.stage && <span>stage: {recovery.reason.stage}</span>}
+                {recovery.reason.degradedFlags?.length ? <span>degraded: {recovery.reason.degradedFlags.join(', ')}</span> : null}
+              </div>
+            </div>
+          </div>
+          <div className="mission-recovery-banner-actions">
+            {visibleRecoveryActions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                className="secondary-btn tiny"
+                title={action.detail}
+                disabled={Boolean(recoveryActionId)}
+                onClick={() => {
+                  void handleRecoveryAction(action);
+                }}
+              >
+                {action.kind === 'diagnostic'
+                  ? <Activity size={12} />
+                  : action.kind === 'inspect'
+                    ? <Search size={12} />
+                    : <RotateCw size={12} />}
+                {recoveryActionId === action.id ? '处理中...' : action.label}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Ticker 专属标签栏 */}
       {activePayload.openclawTickers.length > 0 && (

@@ -1,5 +1,6 @@
 import { getDb } from '../db';
 import type { MissionRunRecord, MissionRunStage, MissionRunStatus } from './types';
+import type { ExecutionFailureCode } from '../utils/error-classification';
 
 interface MissionRunRow {
   id: string;
@@ -33,7 +34,7 @@ export interface UpdateMissionRunInput {
   completedAt?: string;
   failureMessage?: string;
   cancelRequestedAt?: string;
-  failureCode?: string;
+  failureCode?: ExecutionFailureCode | string;
   degradedFlags?: string[];
 }
 
@@ -210,7 +211,11 @@ export async function completeMissionRun(id: string, degradedFlags?: string[]): 
   });
 }
 
-export async function failMissionRun(id: string, failureMessage: string): Promise<MissionRunRecord | null> {
+export async function failMissionRun(
+  id: string,
+  failureMessage: string,
+  failureCode: ExecutionFailureCode | string = 'execution_failed',
+): Promise<MissionRunRecord | null> {
   const timestamp = nowIso();
   return updateMissionRun(id, {
     status: 'failed',
@@ -218,7 +223,7 @@ export async function failMissionRun(id: string, failureMessage: string): Promis
     heartbeatAt: timestamp,
     completedAt: timestamp,
     failureMessage,
-    failureCode: 'execution_failed',
+    failureCode,
   });
 }
 

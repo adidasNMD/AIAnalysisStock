@@ -87,4 +87,38 @@ describe('mission runs lifecycle fields', () => {
     });
     expect(canceled?.cancelRequestedAt).toEqual(expect.any(String));
   });
+
+  it('records specific failure codes when failing a run', async () => {
+    const db = createMissionRunDbMock([
+      {
+        id: 'run-1',
+        missionId: 'mission-1',
+        taskId: 'task-1',
+        status: 'running',
+        stage: 'analyst',
+        attempt: 1,
+        workerLeaseId: 'worker:1',
+        createdAt: '2026-04-26T00:00:00.000Z',
+        startedAt: '2026-04-26T00:01:00.000Z',
+        heartbeatAt: '2026-04-26T00:02:00.000Z',
+        completedAt: null,
+        failureMessage: null,
+        cancelRequestedAt: null,
+        failureCode: null,
+        degradedFlags: null,
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+    const { failMissionRun } = await import('../workflows/mission-runs');
+
+    const failed = await failMissionRun('run-1', 'LLM timeout', 'timeout');
+
+    expect(failed).toMatchObject({
+      id: 'run-1',
+      status: 'failed',
+      stage: 'failed',
+      failureMessage: 'LLM timeout',
+      failureCode: 'timeout',
+    });
+  });
 });

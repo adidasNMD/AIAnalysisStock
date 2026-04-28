@@ -40,6 +40,7 @@ import { getDb } from './db';
 import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
 import { getRuntimeConfig } from './config';
 import { hashMissionInput } from './workflows/mission-identity';
+import { classifyExecutionFailure, getErrorMessage } from './utils/error-classification';
 
 const TREND_COOLDOWN_MS = 30 * 60 * 1000;
 const T4_CRON_EXPRESSION = T4_INTERVAL_MS === 15 * 60 * 1000
@@ -239,6 +240,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
     const runId = task.runId;
     const workerLeaseId = `worker:${process.pid}:${task.id}`;
     const abortController = new AbortController();
+    const unregisterAbortController = taskQueue.registerAbortController(task.id, abortController);
     const currentRunStage = () => {
       if (!task.progress) return 'dispatch' as const;
       return task.progress;
@@ -353,8 +355,9 @@ if (SHOULD_BOOTSTRAP_WORKER) {
 
       healthMonitor.recordSuccess();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const canceled = msg === 'Canceled by user';
+      const msg = getErrorMessage(e);
+      const failureCode = classifyExecutionFailure(e);
+      const canceled = failureCode === 'canceled';
       if (task.missionId && canceled) {
         markMissionCanceled(task.missionId, msg);
       }
@@ -362,7 +365,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
         if (canceled) {
           await cancelMissionRun(runId, msg);
         } else {
-          await failMissionRun(runId, msg);
+          await failMissionRun(runId, msg, failureCode);
         }
       }
       if (!canceled) {
@@ -370,6 +373,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
       }
       throw e;
     } finally {
+      unregisterAbortController();
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
       }

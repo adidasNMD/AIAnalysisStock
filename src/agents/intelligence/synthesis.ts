@@ -2,6 +2,10 @@ import { generateTextCompletion } from '../../utils/llm';
 import { MAX_SINGLE_POSITION_PCT, PROBE_POSITION_PCT } from '../../utils/position-guard';
 import { validateTradeDecision } from '../../utils/report-validator';
 
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
 /**
  * Extract a verdict keyword near a ticker mention in the report text.
  * Returns 'BUY' | 'SELL' | 'HOLD' | 'SKIP' or null if indeterminate.
@@ -72,6 +76,7 @@ export class SynthesisAgent {
     macroAppendix?: string,
     performanceAppendix?: string,
     investorProfile?: string,
+    options: AgentRequestOptions = {},
   ): Promise<string> {
     console.log(`\n[SynthesisAgent] 📝 Synthesizing Executive Daily Brief via LLM...`);
 
@@ -134,7 +139,10 @@ ${debateReport}`;
 ## 📊 操作建议
 仓位建议、入场/止盈时机、风险提示`;
 
-    let report = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
+    let report = await generateTextCompletion(systemPrompt, userPrompt, {
+      streamToConsole: true,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
     try {
       const combinedSources = `${analysisMemo} ${strategyReport} ${debateReport}`;
       const tickerMatches = combinedSources.match(/\$[A-Z]{1,5}/g) || [];

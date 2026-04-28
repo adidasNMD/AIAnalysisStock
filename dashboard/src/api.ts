@@ -1,5 +1,8 @@
 // Keep calls relative so Vite dev proxy and production reverse proxy share one path.
+import { createApiClient } from './lib/api-client';
+
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+const api = createApiClient(API_BASE);
 
 // ===== 原有类型 =====
 
@@ -21,9 +24,31 @@ export interface TaskQueueResponse {
     source: string;
     createdAt: number;
     startedAt?: number;
+    heartbeatAt?: number;
+    cancelRequestedAt?: number;
     completedAt?: number;
+    failureCode?: string;
+    degradedFlags?: string;
     error?: string;
   }>;
+}
+
+export interface QueueRecoveryResponse {
+  success: boolean;
+  message: string;
+  missionId?: string;
+  runId?: string;
+  taskId?: string;
+}
+
+export interface StaleQueueRecoveryResponse {
+  success: boolean;
+  message: string;
+  totalRecovered: number;
+  recoveredRunningTaskIds: string[];
+  skippedActiveTaskIds: string[];
+  staleThresholdMs: number;
+  requeuedRuns: number;
 }
 
 export interface DynamicTicker {
@@ -498,7 +523,7 @@ export interface OpenBBTickerData {
 
 export interface MissionFull {
   id: string;
-  input: { mode: string; query: string; tickers?: string[]; depth?: string; source?: string };
+  input: { mode: string; query: string; tickers?: string[]; depth?: string; source?: string; opportunityId?: string };
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -553,6 +578,36 @@ export interface MissionRun {
   degradedFlags?: string[];
 }
 
+export interface MissionRecoveryAction {
+  id: 'retry_same' | 'retry_quick' | 'retry_deep' | 'review_recovery' | 'inspect_trace' | 'check_services';
+  label: string;
+  detail: string;
+  kind: 'retry' | 'retry_depth' | 'review' | 'inspect' | 'diagnostic';
+  depth?: 'quick' | 'standard' | 'deep';
+  priority: number;
+}
+
+export interface MissionRecoverySuggestion {
+  missionId: string;
+  recoverable: boolean;
+  latestRun?: MissionRun;
+  summary: {
+    label: string;
+    detail: string;
+    severity: 'info' | 'warning' | 'critical';
+  };
+  suggestedActions: MissionRecoveryAction[];
+  reason: {
+    status: string;
+    runStatus?: MissionRun['status'];
+    stage?: MissionRun['stage'];
+    failureCode?: string;
+    failureMessage?: string;
+    degradedFlags?: string[];
+    cancelRequestedAt?: string;
+  };
+}
+
 export interface MissionEvidence {
   id: string;
   missionId: string;
@@ -560,7 +615,7 @@ export interface MissionEvidence {
   capturedAt: string;
   status: string;
   completeness: 'full' | 'partial' | 'failed' | 'canceled';
-  input: { mode: string; query: string; tickers?: string[]; depth?: string; source?: string };
+  input: { mode: string; query: string; tickers?: string[]; depth?: string; source?: string; opportunityId?: string };
   openclawReport: string | null;
   openclawTickers: string[];
   openclawDurationMs: number;
@@ -588,140 +643,108 @@ export interface ModelsConfig {
 // ===== 原有 API =====
 
 export const fetchHealth = async (): Promise<HealthStatus> => {
-  const res = await fetch(`${API_BASE}/health`);
-  if (!res.ok) throw new Error('Failed');
-  return res.json();
+  return api.get<HealthStatus>('/health', { errorMessage: 'Failed' });
 };
 
 export const fetchQueue = async (): Promise<TaskQueueResponse> => {
-  const res = await fetch(`${API_BASE}/queue`);
-  if (!res.ok) throw new Error('Failed');
-  return res.json();
+  return api.get<TaskQueueResponse>('/queue', { errorMessage: 'Failed' });
 };
 
 export const fetchDynamicWatchlist = async (): Promise<DynamicTicker[]> => {
-  const res = await fetch(`${API_BASE}/watchlist/dynamic`);
-  if (!res.ok) throw new Error('Failed');
-  return res.json();
+  return api.get<DynamicTicker[]>('/watchlist/dynamic', { errorMessage: 'Failed' });
 };
 
 export const triggerMission = async (query: string, depth: 'quick' | 'standard' | 'deep' = 'deep'): Promise<CreateMissionResponse> => {
-  const res = await fetch(`${API_BASE}/trigger`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, depth, source: 'manual' })
+  return api.post<CreateMissionResponse>('/trigger', { query, depth, source: 'manual' }, {
+    errorMessage: 'Failed to trigger mission',
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to trigger mission');
-  }
-  return res.json();
 };
 
 export const cancelMission = async (id: string): Promise<boolean> => {
-  const res = await fetch(`${API_BASE}/queue/${id}`, { method: 'DELETE' });
-  return res.ok;
+  return api.deleteOk(`/queue/${encodeURIComponent(id)}`);
+};
+
+export const recoverQueueTask = async (id: string): Promise<QueueRecoveryResponse> => {
+  return api.post<QueueRecoveryResponse>(`/queue/${encodeURIComponent(id)}/recover`, undefined, {
+    errorMessage: 'Failed to recover task',
+  });
+};
+
+export const recoverStaleQueueTasks = async (staleThresholdMs?: number): Promise<StaleQueueRecoveryResponse> => {
+  return api.post<StaleQueueRecoveryResponse>(
+    '/queue/recover-stale',
+    staleThresholdMs ? { staleThresholdMs } : {},
+    { errorMessage: 'Failed to recover stale tasks' },
+  );
 };
 
 export const fetchReports = async (): Promise<ReportItem[]> => {
-  const res = await fetch(`${API_BASE}/reports`);
-  if (!res.ok) throw new Error('Failed');
-  return res.json();
+  return api.get<ReportItem[]>('/reports', { errorMessage: 'Failed' });
 };
 
 export const fetchReportContent = async (date: string, filename: string): Promise<string> => {
-  const res = await fetch(`${API_BASE}/reports/content?${new URLSearchParams({ date, filename })}`);
-  if (!res.ok) throw new Error('Failed');
-  return (await res.json()).content;
+  const data = await api.get<{ content: string }>('/reports/content', {
+    params: { date, filename },
+    errorMessage: 'Failed',
+  });
+  return data.content;
 };
 
 export const fetchTraces = async (): Promise<TraceItem[]> => {
-  const res = await fetch(`${API_BASE}/traces`);
-  if (!res.ok) throw new Error('Failed');
-  return res.json();
+  return api.get<TraceItem[]>('/traces', { errorMessage: 'Failed' });
 };
 
 export const fetchTraceContent = async (date: string, filename: string): Promise<unknown> => {
-  const res = await fetch(`${API_BASE}/traces/content?${new URLSearchParams({ date, filename })}`);
-  if (!res.ok) throw new Error('Failed');
-  return (await res.json()).content;
+  const data = await api.get<{ content: unknown }>('/traces/content', {
+    params: { date, filename },
+    errorMessage: 'Failed',
+  });
+  return data.content;
 };
 
 // ===== 新增 API: Missions =====
 
 export const fetchMissions = async (limit = 50): Promise<MissionSummary[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/missions?limit=${limit}`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<MissionSummary[]>('/missions', { params: { limit }, fallback: [] });
 };
 
 export const fetchOpportunities = async (limit = 50): Promise<OpportunitySummary[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunities?limit=${limit}`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<OpportunitySummary[]>('/opportunities', { params: { limit }, fallback: [] });
 };
 
 export const fetchOpportunityDetail = async (id: string): Promise<OpportunitySummary | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunities/${id}`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<OpportunitySummary | null>(`/opportunities/${encodeURIComponent(id)}`, { fallback: null });
 };
 
 export const fetchOpportunityBoardHealth = async (limit = 50): Promise<OpportunityBoardHealthMap | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunities/board-health?limit=${limit}`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<OpportunityBoardHealthMap | null>('/opportunities/board-health', {
+    params: { limit },
+    fallback: null,
+  });
 };
 
 export const fetchOpportunityEvents = async (limit = 50): Promise<OpportunityEvent[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunity-events?limit=${limit}`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<OpportunityEvent[]>('/opportunity-events', { params: { limit }, fallback: [] });
 };
 
 export const fetchOpportunityInbox = async (limit = 12): Promise<OpportunityInboxItem[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunities/inbox?limit=${limit}`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<OpportunityInboxItem[]>('/opportunities/inbox', { params: { limit }, fallback: [] });
 };
 
 export const fetchOpportunityInboxItem = async (id: string): Promise<OpportunityInboxItem | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunities/inbox/${id}`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<OpportunityInboxItem | null>(`/opportunities/inbox/${encodeURIComponent(id)}`, {
+    fallback: null,
+  });
 };
 
 export const fetchHeatTransferGraphs = async (): Promise<HeatTransferGraph[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/opportunities/graphs/heat-transfer`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<HeatTransferGraph[]>('/opportunities/graphs/heat-transfer', { fallback: [] });
 };
 
 export const syncHeatTransferGraphs = async (): Promise<{ syncedCount: number }> => {
-  const res = await fetch(`${API_BASE}/opportunities/graphs/heat-transfer/sync`, {
-    method: 'POST',
+  return api.post<{ syncedCount: number }>('/opportunities/graphs/heat-transfer/sync', undefined, {
+    errorMessage: 'Failed to sync heat transfer graphs',
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to sync heat transfer graphs');
-  }
-  return res.json();
 };
 
 export const refreshNewCodeRadar = async (): Promise<{
@@ -729,14 +752,13 @@ export const refreshNewCodeRadar = async (): Promise<{
   syncedCount: number;
   candidates: NewCodeRadarCandidate[];
 }> => {
-  const res = await fetch(`${API_BASE}/opportunities/radar/new-codes/refresh`, {
-    method: 'POST',
+  return api.post<{
+    filingCount: number;
+    syncedCount: number;
+    candidates: NewCodeRadarCandidate[];
+  }>('/opportunities/radar/new-codes/refresh', undefined, {
+    errorMessage: 'Failed to refresh New Code Radar',
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to refresh New Code Radar');
-  }
-  return res.json();
 };
 
 export interface CreateOpportunityInput {
@@ -772,61 +794,40 @@ export type UpdateOpportunityInput = Partial<Omit<
 };
 
 export const createOpportunity = async (input: CreateOpportunityInput): Promise<OpportunitySummary> => {
-  const res = await fetch(`${API_BASE}/opportunities`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+  return api.post<OpportunitySummary>('/opportunities', input, {
+    errorMessage: 'Failed to create opportunity',
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to create opportunity');
-  }
-  return res.json();
 };
 
 export const updateOpportunity = async (id: string, input: UpdateOpportunityInput): Promise<OpportunitySummary> => {
-  const res = await fetch(`${API_BASE}/opportunities/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+  return api.patch<OpportunitySummary>(`/opportunities/${encodeURIComponent(id)}`, input, {
+    errorMessage: 'Failed to update opportunity',
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to update opportunity');
-  }
-  return res.json();
 };
 
 export const fetchMissionDetail = async (id: string): Promise<MissionFull | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/missions/${id}`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<MissionFull | null>(`/missions/${encodeURIComponent(id)}`, { fallback: null });
 };
 
 export const fetchMissionEvents = async (id: string): Promise<MissionEvent[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/missions/${id}/events`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<MissionEvent[]>(`/missions/${encodeURIComponent(id)}/events`, { fallback: [] });
 };
 
 export const fetchMissionRuns = async (id: string): Promise<MissionRun[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/missions/${id}/runs`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<MissionRun[]>(`/missions/${encodeURIComponent(id)}/runs`, { fallback: [] });
+};
+
+export const fetchMissionRecovery = async (id: string): Promise<MissionRecoverySuggestion | null> => {
+  return api.get<MissionRecoverySuggestion | null>(`/missions/${encodeURIComponent(id)}/recovery`, {
+    fallback: null,
+  });
 };
 
 export const fetchMissionRunEvidence = async (missionId: string, runId: string): Promise<MissionEvidence | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/missions/${missionId}/runs/${runId}/evidence`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<MissionEvidence | null>(
+    `/missions/${encodeURIComponent(missionId)}/runs/${encodeURIComponent(runId)}/evidence`,
+    { fallback: null },
+  );
 };
 
 export interface CreateMissionResponse {
@@ -844,58 +845,33 @@ export const createMission = async (
   opportunityId?: string,
   source = 'manual',
 ): Promise<CreateMissionResponse> => {
-  const res = await fetch(`${API_BASE}/missions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode, query, tickers, depth, source, opportunityId })
+  return api.post<CreateMissionResponse>('/missions', { mode, query, tickers, depth, source, opportunityId }, {
+    errorMessage: 'Failed to create mission',
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to create mission');
-  }
-  return res.json();
 };
 
 export const retryMission = async (missionId: string, depth?: 'quick' | 'standard' | 'deep'): Promise<CreateMissionResponse> => {
-  const res = await fetch(`${API_BASE}/missions/${missionId}/retry`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(depth ? { depth } : {}),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Failed to retry mission');
-  }
-  return res.json();
+  return api.post<CreateMissionResponse>(
+    `/missions/${encodeURIComponent(missionId)}/retry`,
+    depth ? { depth } : {},
+    { errorMessage: 'Failed to retry mission' },
+  );
 };
 
 // ===== 新增 API: Config =====
 
 export const fetchModelsConfig = async (): Promise<ModelsConfig | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/config/models`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<ModelsConfig | null>('/config/models', { fallback: null });
 };
 
 export const saveModelsConfig = async (config: ModelsConfig): Promise<boolean> => {
-  const res = await fetch(`${API_BASE}/config/models`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config)
-  });
-  return res.ok;
+  return api.putOk('/config/models', config);
 };
 
 // ===== 新增 API: Service Health =====
 
 export const fetchServiceHealth = async (): Promise<ServiceHealth | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/health/services`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<ServiceHealth | null>('/health/services', { fallback: null });
 };
 
 export interface DiagnosticsResult {
@@ -909,11 +885,7 @@ export interface DiagnosticsResult {
 }
 
 export const fetchDiagnostics = async (): Promise<DiagnosticsResult | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/diagnostics`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<DiagnosticsResult | null>('/diagnostics', { fallback: null });
 };
 
 // ===== 新增 API: TrendRadar 原生全景雷达 =====
@@ -933,20 +905,14 @@ export interface TrendRadarResult {
 }
 
 export const fetchTrendRadarLatest = async (date?: string): Promise<TrendRadarResult | null> => {
-  try {
-    const params = date ? `?date=${encodeURIComponent(date)}` : '';
-    const res = await fetch(`${API_BASE}/trendradar/latest${params}`);
-    if (!res.ok) return null;
-    return res.json();
-  } catch { return null; }
+  return api.get<TrendRadarResult | null>('/trendradar/latest', {
+    params: date ? { date } : undefined,
+    fallback: null,
+  });
 };
 
 export const fetchTrendRadarDates = async (): Promise<string[]> => {
-  try {
-    const res = await fetch(`${API_BASE}/trendradar/dates`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch { return []; }
+  return api.get<string[]>('/trendradar/dates', { fallback: [] });
 };
 
 // ===== 新增 API: Trace Content =====
@@ -969,19 +935,17 @@ export interface TraceContent {
 }
 
 export const fetchTraceByMissionId = async (missionId: string): Promise<TraceContent | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/traces/byMission/${encodeURIComponent(missionId)}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.content;
-  } catch { return null; }
+  const data = await api.get<{ content: TraceContent } | null>(
+    `/traces/byMission/${encodeURIComponent(missionId)}`,
+    { fallback: null },
+  );
+  return data?.content || null;
 };
 
 export const fetchTraceByMissionRun = async (missionId: string, runId: string): Promise<TraceContent | null> => {
-  try {
-    const res = await fetch(`${API_BASE}/traces/byMission/${encodeURIComponent(missionId)}/runs/${encodeURIComponent(runId)}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.content;
-  } catch { return null; }
+  const data = await api.get<{ content: TraceContent } | null>(
+    `/traces/byMission/${encodeURIComponent(missionId)}/runs/${encodeURIComponent(runId)}`,
+    { fallback: null },
+  );
+  return data?.content || null;
 };

@@ -1,9 +1,22 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Crosshair, Rocket, Activity, Search, BarChart3, RefreshCw } from 'lucide-react';
-import { cancelMission, createMission, fetchHealth, fetchMissions, fetchQueue, fetchDiagnostics, retryMission } from '../api';
+import {
+  cancelMission,
+  createMission,
+  fetchDiagnostics,
+  fetchHealth,
+  fetchMissions,
+  fetchQueue,
+  recoverQueueTask,
+  recoverStaleQueueTasks,
+  retryMission,
+} from '../api';
 import type { HealthStatus, MissionSummary, TaskQueueResponse, DiagnosticsResult } from '../api';
 import { useAgentStream, usePolling } from '../hooks/useAgentStream';
+import { getFailureCodeInfo } from '../utils/recovery';
+
+const STALE_TASK_THRESHOLD_MS = 2 * 60 * 1000;
 
 function missionStatusBadge(status: string) {
   switch (status) {
@@ -39,8 +52,11 @@ export function CommandCenter() {
   const [depth, setDepth] = useState<'quick' | 'standard' | 'deep'>('deep');
   const [isLoading, setIsLoading] = useState(false);
   const [cancelingTaskId, setCancelingTaskId] = useState<string | null>(null);
+  const [recoveringTaskId, setRecoveringTaskId] = useState<string | null>(null);
+  const [recoveringStale, setRecoveringStale] = useState(false);
   const [retryingMissionId, setRetryingMissionId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const { logs, isConnected } = useAgentStream(80);
 
   const { data: health } = usePolling<HealthStatus>(() => fetchHealth(), 5000, []);
@@ -50,6 +66,12 @@ export function CommandCenter() {
 
   const isExecuting = queue?.tasks.some(t => t.status === 'running');
   const runningTask = queue?.tasks.find(t => t.status === 'running');
+  const isTaskStale = (task: TaskQueueResponse['tasks'][number]) => (
+    task.status === 'running'
+    && (!task.heartbeatAt || currentTime - task.heartbeatAt > STALE_TASK_THRESHOLD_MS)
+  );
+  const staleRunningTasks = (queue?.tasks || []).filter(isTaskStale);
+  const recoverableQueueTasks = (queue?.tasks || []).filter((task) => ['failed', 'canceled'].includes(task.status));
   const liveMissions = (recentMissions || []).filter((mission) => ['queued', 'main_running', 'ta_running'].includes(mission.status));
   const attentionMissions = (recentMissions || []).filter((mission) => ['failed', 'canceled', 'main_only'].includes(mission.status));
   const readyMissions = (recentMissions || []).filter((mission) => mission.status === 'fully_enriched');
@@ -72,6 +94,11 @@ export function CommandCenter() {
       return bTime.localeCompare(aTime);
     })
     .slice(0, 6);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 3000);
+    return () => clearInterval(timer);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,6 +141,38 @@ export function CommandCenter() {
       setSubmitError(error instanceof Error ? error.message : '任务重试失败');
     }
     setRetryingMissionId(null);
+  };
+
+  const handleRecoverTask = async (taskId: string) => {
+    if (recoveringTaskId) return;
+    setRecoveringTaskId(taskId);
+    setSubmitError(null);
+    try {
+      const recovered = await recoverQueueTask(taskId);
+      if (recovered.missionId) {
+        navigate(`/missions/${recovered.missionId}`);
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '任务恢复失败');
+    }
+    setRecoveringTaskId(null);
+  };
+
+  const handleRecoverStaleTasks = async () => {
+    if (recoveringStale) return;
+    setRecoveringStale(true);
+    setSubmitError(null);
+    try {
+      const result = await recoverStaleQueueTasks(STALE_TASK_THRESHOLD_MS);
+      if (result.totalRecovered === 0) {
+        setSubmitError(result.skippedActiveTaskIds.length > 0
+          ? '检测到本进程仍在执行的任务，暂不自动恢复'
+          : '没有需要恢复的卡住任务');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '卡住任务恢复失败');
+    }
+    setRecoveringStale(false);
   };
 
   const openMissionCompare = (mission: MissionSummary) => {
@@ -221,6 +280,10 @@ export function CommandCenter() {
             Depth: <span className="tag">{runningTask.depth.toUpperCase()}</span> |
             Source: {runningTask.source} |
             Phase: <span className="tag accent">{runningTask.progress?.toUpperCase() || 'INIT'}</span>
+            {runningTask.heartbeatAt && (
+              <> | Heartbeat: {Math.round((currentTime - runningTask.heartbeatAt) / 1000)}s ago</>
+            )}
+            {isTaskStale(runningTask) && <> | <span className="tag danger">STALE</span></>}
           </div>
           <div className="trigger-controls" style={{ marginTop: '12px' }}>
             <button
@@ -230,6 +293,15 @@ export function CommandCenter() {
             >
               {cancelingTaskId === runningTask.id ? '取消中...' : '取消任务'}
             </button>
+            {isTaskStale(runningTask) && (
+              <button
+                type="button"
+                onClick={handleRecoverStaleTasks}
+                disabled={recoveringStale}
+              >
+                {recoveringStale ? '恢复中...' : '恢复卡住任务'}
+              </button>
+            )}
           </div>
 
           <div className="pipeline-steps">
@@ -386,6 +458,14 @@ export function CommandCenter() {
       <div className="queue-section">
         <h3>任务队列</h3>
         <div className="queue-stats">{queue?.summary || '加载中...'}</div>
+        {staleRunningTasks.length > 0 && (
+          <div className="queue-recovery-banner">
+            <span>{staleRunningTasks.length} 个运行任务心跳超时</span>
+            <button type="button" onClick={handleRecoverStaleTasks} disabled={recoveringStale}>
+              {recoveringStale ? '恢复中...' : '恢复卡住任务'}
+            </button>
+          </div>
+        )}
         {queue?.tasks.filter(t => t.status === 'pending').slice(0, 5).map(task => (
           <div
             key={task.id}
@@ -411,6 +491,41 @@ export function CommandCenter() {
             </button>
           </div>
         ))}
+        {recoverableQueueTasks.slice(0, 5).map(task => {
+          const failureInfo = getFailureCodeInfo(task.failureCode);
+          return (
+            <div
+              key={task.id}
+              className="queue-card recoverable"
+              style={{ cursor: task.missionId ? 'pointer' : 'default' }}
+              onClick={() => {
+                if (task.missionId) {
+                  navigate(`/missions/${task.missionId}`);
+                }
+              }}
+            >
+              <span className="queue-query">{task.query}</span>
+              <span className="queue-depth">{task.status}</span>
+              <div className="queue-card-actions">
+                {failureInfo && (
+                  <span className={`queue-failure-code ${failureInfo.tone}`} title={failureInfo.detail}>
+                    {failureInfo.label}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleRecoverTask(task.id);
+                  }}
+                  disabled={recoveringTaskId === task.id}
+                >
+                  {recoveringTaskId === task.id ? '恢复中...' : '恢复'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

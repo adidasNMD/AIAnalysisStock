@@ -31,6 +31,11 @@ interface MissionEventRow {
 
 interface MissionEvidenceRefRow {
   id: string;
+  missionId?: string;
+  runId?: string;
+  capturedAt?: string;
+  status?: MissionEvidenceRecord['status'];
+  completeness?: MissionEvidenceRecord['completeness'];
   artifactPath: string;
 }
 
@@ -104,6 +109,19 @@ function readMissionArtifact(row: MissionIndexRow): UnifiedMission {
   } catch (error) {
     logIndexError(`read mission artifact ${row.id}`, error);
     return buildMissionStub(row);
+  }
+}
+
+function readMissionEvidenceArtifact(row: MissionEvidenceRefRow): MissionEvidenceRecord | null {
+  if (!row.artifactPath || !fs.existsSync(row.artifactPath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(row.artifactPath, 'utf-8')) as MissionEvidenceRecord;
+  } catch (error) {
+    logIndexError(`read evidence artifact ${row.id}`, error);
+    return null;
   }
 }
 
@@ -247,6 +265,15 @@ export async function getMissionEvidenceArtifactPath(runId: string): Promise<str
     runId,
   );
   return row?.artifactPath || null;
+}
+
+export async function getMissionEvidenceFromIndex(runId: string): Promise<MissionEvidenceRecord | null> {
+  const db = await getDb();
+  const row = await db.get<MissionEvidenceRefRow>(
+    'SELECT * FROM mission_evidence_refs WHERE runId = ? ORDER BY capturedAt DESC LIMIT 1',
+    runId,
+  );
+  return row ? readMissionEvidenceArtifact(row) : null;
 }
 
 export function indexMissionAsync(mission: UnifiedMission, artifactPath: string): void {

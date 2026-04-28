@@ -1,5 +1,9 @@
 import { AutonomousAgent } from '../core/agent';
 
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
 /**
  * LeadAnalystAgent — 首席市场分析师
  * 
@@ -33,7 +37,11 @@ export class LeadAnalystAgent extends AutonomousAgent {
    * 分析情报并输出事件推导备忘录
    * @returns { analysisMemo: string, shouldProceed: boolean }
    */
-  async analyze(intelligenceBrief: string, query: string): Promise<{ analysisMemo: string, shouldProceed: boolean }> {
+  async analyze(
+    intelligenceBrief: string,
+    query: string,
+    options: AgentRequestOptions = {},
+  ): Promise<{ analysisMemo: string, shouldProceed: boolean }> {
     console.log(`\n[LeadAnalyst] 🧠 开始深度事件分析...`);
 
     const analysisMemo = await this.executeTextTask(
@@ -58,7 +66,8 @@ export class LeadAnalystAgent extends AutonomousAgent {
 
 ## 📊 追踪建议
 在这里明确写 "**建议深入追踪**" 或 "**无需追踪**"，并详细说明理由。`,
-      intelligenceBrief
+      intelligenceBrief,
+      { ...(options.signal ? { signal: options.signal } : {}) },
     );
 
     // 从文本中检测是否建议深入

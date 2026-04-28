@@ -11,10 +11,10 @@ export const firecrawlTool: AgentTool<{ query: string, limit?: number }> = {
     query: z.string().describe('The contextual search query, e.g., "Federal reserve rate hike supply chain impact 2026"'),
     limit: z.number().optional().describe('Number of lengthy articles to scrape, default is 3')
   }),
-  execute: async (args) => {
+  execute: async (args, options) => {
     console.log(`\n[Tool Exec] 🔧 LLM invoked Firecrawl Tool: Scraping Deep Web for "${args.query}"`);
     const collector = new FirecrawlCollector(process.env.FIRECRAWL_API_KEY || process.env.TAVILY_API_KEY || '');
-    const signals = await collector.scrapeNews(args.query, args.limit || 3);
+    const signals = await collector.scrapeNews(args.query, args.limit || 3, options);
     
     if (!signals.length) {
       return "No lengthy articles or reports found on the deep web.";

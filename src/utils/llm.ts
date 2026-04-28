@@ -7,6 +7,7 @@ export interface LLMConfig {
   baseUrl: string;
   model: string;
   streamToConsole?: boolean;
+  signal?: AbortSignal;
   /** 模型分级：primary = 主力模型，secondary = 小模型（节省 Token） */
   tier?: 'primary' | 'secondary';
 }
@@ -52,6 +53,46 @@ const FALLBACK_MODELS: string[] = [];
 
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
+function isExternallyAborted(signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted);
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (isExternallyAborted(signal)) {
+    throw new Error('Canceled by user');
+  }
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfCanceled(signal);
+  let onAbort: (() => void) | null = null;
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(resolve, ms);
+    onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(new Error('Canceled by user'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  }).finally(() => {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  });
+}
+
+function createRequestController(timeoutMs: number, externalSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort(externalSignal?.reason);
+  externalSignal?.addEventListener('abort', onAbort, { once: true });
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      externalSignal?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
 /**
  * 生成一个万能容错体系。
  * 针对用户“深度对话，不要硬性格式化，不要阻断”的核心指令：
@@ -89,6 +130,7 @@ export async function generateStructuredOutput<T>(
   const apiKey = config?.apiKey || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || '';
   const baseUrl = config?.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
   let model = config?.model || process.env.LLM_MODEL || 'gpt-4o-mini';
+  throwIfCanceled(config?.signal);
 
   // 动态生成严谨的 JSON Schema (避免传入 Name 参数产生 $ref 嵌套，直接打平)
   const jsonSchemaString = JSON.stringify(zodToJsonSchema(schema as any), null, 2);
@@ -198,14 +240,16 @@ export async function generateStructuredOutput<T>(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const currentModel = attempt === 0 ? model : (modelsToTry[Math.min(attempt, modelsToTry.length - 1)] || model);
+    let request: ReturnType<typeof createRequestController> | null = null;
 
     if (attempt > 0) {
       const delay = Math.pow(2, attempt) * 1000; // 指数退避: 2s, 4s
       console.log(`[LLM Utility] ⏳ 第 ${attempt + 1}/${MAX_RETRIES} 次重试 (${delay}ms 后)，使用模型: ${currentModel}`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await abortableDelay(delay, config?.signal);
     }
 
     try {
+      throwIfCanceled(config?.signal);
       let endpoint = '';
       let headers: any = {};
       let requestBody: any = {};
@@ -246,18 +290,14 @@ export async function generateStructuredOutput<T>(
         };
       }
 
-      // 使用 AbortController 实现超时
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-      const response = await fetch(endpoint, {
+      request = createRequestController(REQUEST_TIMEOUT_MS, config?.signal);
+      let response: Response;
+      response = await fetch(endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(requestBody),
-        signal: controller.signal,
+        signal: request.signal,
       });
-
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorBody = await response.text();
@@ -328,6 +368,7 @@ export async function generateStructuredOutput<T>(
         console.warn(`[DEBUG LLM] Response data dumping:`, JSON.stringify(responseData || {}, null, 2));
         console.warn(`\n⚠️ [LLM Utility] 检测到大模型返回了彻底空的数据 (可能是 Proxy 抛弃或被 0 token 截断)。`);
         console.warn(`💡 [系统指令] 根据"不因为格式化阻断"要求，将采用【纯文本对话穿透兜底】向下流转。`);
+        request.cleanup();
         return createGracefulFallback('[模型此次请求没有返回任何实质文字]') as T;
       }
 
@@ -346,6 +387,7 @@ export async function generateStructuredOutput<T>(
         console.warn(`AI 没有按机器格式排版，而是输出了对话文本:\n${cleanedContent}`);
         console.warn(`💡 [系统指令] 按照“非强制格式化”原则，系统不进行报错阻断，已自动将对话原意通过 Proxy 发放给下游 Agent 继续深度推进！`);
         console.warn(`======================================\n`);
+        request.cleanup();
         return createGracefulFallback(cleanedContent) as T;
       }
 
@@ -353,9 +395,14 @@ export async function generateStructuredOutput<T>(
       if (!parsedResult.success) {
         console.warn(`\n⚠️ [LLM Utility] 宽松模式: AI 输出与预期结构不完全匹配 (缺失或类型错误)，已强制放行。\n不匹配细节: ${parsedResult.error.issues.map((err: any) => `${err.path.join('.')}: ${err.message}`).join(', ')}\n`);
       }
+      request.cleanup();
       return parsedJson as T;
     } catch (err: unknown) {
+      request?.cleanup();
       lastError = err instanceof Error ? err : new Error(String(err));
+      if (isExternallyAborted(config?.signal) || lastError.message === 'Canceled by user') {
+        throw new Error('Canceled by user');
+      }
       const isTimeout = lastError.name === 'AbortError';
       const isParseError = lastError instanceof SyntaxError || ('issues' in lastError && Array.isArray((lastError as Record<string, unknown>).issues));
       const isRetryable = isTimeout || isParseError || (lastError.message && (lastError.message.includes('429') || lastError.message.includes('500') || lastError.message.includes('503')));
@@ -383,6 +430,7 @@ export async function generateTextCompletion(
 ): Promise<string> {
   const apiKey = config?.apiKey || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || '';
   const baseUrl = config?.baseUrl || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
+  throwIfCanceled(config?.signal);
 
   // 模型分级：secondary tier 强制使用小模型以节省 Token
   const isSecondary = config?.tier === 'secondary';
@@ -395,6 +443,7 @@ export async function generateTextCompletion(
   }
 
   if (process.env.MOCK_LLM === 'true' || apiKey.includes('your_gen')) {
+    throwIfCanceled(config?.signal);
     console.log('[MockLLM] 🟢 Intercepting chat request...');
     return `# Mock 深度分析报告\n\n## 事件概述\n这是系统生成的模拟深度分析回复。\n\n## 产业链推导\n- 第一层：直接受益方（已充分定价）\n- 第二层：瓶颈堵点（光模块、先进封装）\n- 第三层：滞后洼地（散户套利主战场）\n\n## 核心标的\n- $NVDA — 赛道龙头，已充分定价\n- $AAOI — 光模块瓶颈，筹码干净\n- $WDC — 存储洼地，量价齐飞拐点\n\n## 多空辩论\n### 🐂 多方论据\n产业逻辑坚实，订单可见度高\n\n### 🐻 空方论据\n估值已高，地缘风险不可忽视\n\n## 铁血止损\n- 龙头跌破 20日均线\n- 法案延期超过 2 周\n\n## 结论\n**建议深入追踪**，当前处于右侧跟风套利的最佳窗口期。`;
   }
@@ -405,14 +454,16 @@ export async function generateTextCompletion(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const currentModel = attempt === 0 ? model : (modelsToTry[Math.min(attempt, modelsToTry.length - 1)] || model);
+    let request: ReturnType<typeof createRequestController> | null = null;
 
     if (attempt > 0) {
       const delay = Math.pow(2, attempt) * 1000;
       console.log(`[LLM Text] ⏳ 第 ${attempt + 1}/${MAX_RETRIES} 次重试 (${delay}ms 后)，使用模型: ${currentModel}`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await abortableDelay(delay, config?.signal);
     }
 
     try {
+      throwIfCanceled(config?.signal);
       const isAnthropic = !!process.env.ANTHROPIC_AUTH_TOKEN;
       let endpoint = '';
       let headers: any = {};
@@ -453,18 +504,14 @@ export async function generateTextCompletion(
         };
       }
 
-      // 使用 AbortController 实现超时
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-      const response = await fetch(endpoint, {
+      request = createRequestController(REQUEST_TIMEOUT_MS, config?.signal);
+      let response: Response;
+      response = await fetch(endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(requestBody),
-        signal: controller.signal,
+        signal: request.signal,
       });
-
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorBody = await response.text();
@@ -478,6 +525,7 @@ export async function generateTextCompletion(
       if (requestBody.stream && response.body) {
         const body = response.body as any;
         for await (const chunk of body) {
+          throwIfCanceled(config?.signal);
           const decoded = new TextDecoder('utf-8').decode(chunk);
           const lines = decoded.split('\n').filter(l => l.trim() !== '');
           for (const line of lines) {
@@ -523,10 +571,15 @@ export async function generateTextCompletion(
         throw new Error('LLM 接口返回了空文本。');
       }
 
+      request.cleanup();
       return rawContent;
 
     } catch (err: unknown) {
+      request?.cleanup();
       lastError = err instanceof Error ? err : new Error(String(err));
+      if (isExternallyAborted(config?.signal) || lastError.message === 'Canceled by user') {
+        throw new Error('Canceled by user');
+      }
       const isTimeout = lastError.name === 'AbortError';
       const isRetryable = isTimeout || (lastError.message && (lastError.message.includes('429') || lastError.message.includes('500') || lastError.message.includes('503') || lastError.message.includes('空数据') || lastError.message.includes('空文本')));
 

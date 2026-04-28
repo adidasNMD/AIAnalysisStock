@@ -12,5 +12,5 @@ export interface AgentTool<T = any> {
   // 强类型限定的大模型入参（大模型一旦输出违法参数将直接被 Zod 拦截阻断）
   parameters: z.ZodType<any>;
   // 真实的运行时执行体，必须返回字符串结果喂回给大模型
-  execute: (args: T) => Promise<string>;
+  execute: (args: T, options?: { signal?: AbortSignal }) => Promise<string>;
 }

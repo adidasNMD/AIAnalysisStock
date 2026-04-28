@@ -1,20 +1,19 @@
 import { Router, Request, Response } from 'express';
 import { eventBus } from '../../utils/event-bus';
 import {
-  buildLatestMissionDiff,
   createQueuedMission,
   getLatestMissionRun,
-  getMissionFromIndex,
-  getMission,
-  getMissionEvidence,
-  listMissionEventsFromIndex,
-  listMissionEvents,
-  listMissionsFromIndex,
-  listMissionRuns,
-  listMissions,
-  retryMissionRun,
   type MissionInput,
 } from '../../workflows';
+import {
+  getMissionDetail,
+  getMissionEvidenceForApi,
+  getMissionRecoveryForApi,
+  listMissionEventsForApi,
+  listMissionRunsForApi,
+  listMissionSummaries,
+  retryMissionForApi,
+} from '../services/mission-service';
 import { missionPayloadSchema, sendValidationError } from '../validation';
 
 export const missionsRouter = Router();
@@ -26,30 +25,7 @@ function errorMessage(error: unknown): string {
 missionsRouter.get('/', async (req: Request, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string, 10) || 50;
-    const indexedMissions = await listMissionsFromIndex(limit);
-    const missions = indexedMissions.length > 0 ? indexedMissions : listMissions(limit);
-    const summaries = await Promise.all(missions.map(async (mission) => {
-      const runs = await listMissionRuns(mission.id);
-      const latestRun = runs[0] || null;
-      const latestDiff = buildLatestMissionDiff(mission, runs);
-
-      return {
-        id: mission.id,
-        mode: mission.input.mode,
-        query: mission.input.query,
-        source: mission.input.source,
-        status: mission.status,
-        createdAt: mission.createdAt,
-        updatedAt: mission.updatedAt,
-        openclawTickers: mission.openclawTickers,
-        taCount: mission.taResults.length,
-        consensus: mission.consensus,
-        totalDurationMs: mission.totalDurationMs,
-        ...(latestRun ? { latestRun } : {}),
-        ...(latestDiff ? { latestDiff } : {}),
-      };
-    }));
-    res.json(summaries);
+    res.json(await listMissionSummaries(limit));
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error) });
   }
@@ -78,9 +54,22 @@ missionsRouter.get('/stream', (req: Request, res: Response) => {
   });
 });
 
+missionsRouter.get('/:id/recovery', async (req: Request, res: Response) => {
+  try {
+    const result = await getMissionRecoveryForApi(req.params.id as string);
+    if (result.status === 'mission_not_found') {
+      return res.status(404).json({ error: 'Mission not found' });
+    }
+
+    res.json(result.recovery);
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
 missionsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
-    const mission = await getMissionFromIndex(req.params.id as string) || getMission(req.params.id as string);
+    const mission = await getMissionDetail(req.params.id as string);
     if (!mission) {
       return res.status(404).json({ error: 'Mission not found' });
     }
@@ -92,8 +81,7 @@ missionsRouter.get('/:id', async (req: Request, res: Response) => {
 
 missionsRouter.get('/:id/events', async (req: Request, res: Response) => {
   try {
-    const indexedEvents = await listMissionEventsFromIndex(req.params.id as string);
-    res.json(indexedEvents.length > 0 ? indexedEvents : listMissionEvents(req.params.id as string));
+    res.json(await listMissionEventsForApi(req.params.id as string));
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error) });
   }
@@ -101,7 +89,7 @@ missionsRouter.get('/:id/events', async (req: Request, res: Response) => {
 
 missionsRouter.get('/:id/runs', async (req: Request, res: Response) => {
   try {
-    res.json(await listMissionRuns(req.params.id as string));
+    res.json(await listMissionRunsForApi(req.params.id as string));
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error) });
   }
@@ -109,17 +97,15 @@ missionsRouter.get('/:id/runs', async (req: Request, res: Response) => {
 
 missionsRouter.get('/:id/runs/:runId/evidence', async (req: Request, res: Response) => {
   try {
-    const mission = await getMissionFromIndex(req.params.id as string) || getMission(req.params.id as string);
-    if (!mission) {
+    const result = await getMissionEvidenceForApi(req.params.id as string, req.params.runId as string);
+    if (result.status === 'mission_not_found') {
       return res.status(404).json({ error: 'Mission not found' });
     }
-
-    const evidence = getMissionEvidence(req.params.runId as string);
-    if (!evidence || evidence.missionId !== mission.id) {
+    if (result.status === 'evidence_not_found') {
       return res.status(404).json({ error: 'Mission evidence not found' });
     }
 
-    res.json(evidence);
+    res.json(result.evidence);
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error) });
   }
@@ -128,28 +114,15 @@ missionsRouter.get('/:id/runs/:runId/evidence', async (req: Request, res: Respon
 missionsRouter.post('/:id/retry', async (req: Request, res: Response) => {
   try {
     const missionId = req.params.id as string;
-    const existingMission = getMission(missionId);
-    if (!existingMission) {
+    const result = await retryMissionForApi(missionId, req.body as Partial<MissionInput>);
+    if (result.status === 'mission_not_found') {
       return res.status(404).json({ error: 'Mission not found' });
     }
-
-    const body = req.body as Partial<MissionInput>;
-    const mission = await retryMissionRun(missionId, {
-      source: body.source || 'manual_retry',
-      priority: 90,
-      ...(body.depth ? { depth: body.depth } : {}),
-    });
-    if (!mission) {
+    if (result.status === 'conflict') {
       return res.status(409).json({ error: 'Task already in queue or running' });
     }
 
-    const latestRun = await getLatestMissionRun(mission.id);
-    res.status(202).json({
-      success: true,
-      message: 'Mission retry queued',
-      missionId: mission.id,
-      runId: latestRun?.id,
-    });
+    res.status(202).json(result.response);
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error) });
   }

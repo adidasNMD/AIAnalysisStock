@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   OpportunityBoardHealthSummary,
+  OpportunityBoardHealthMap,
   OpportunityInboxItem,
   OpportunitySuggestedMission,
   OpportunitySummary,
@@ -16,6 +17,8 @@ import {
   mergeInboxItem,
 } from '../../dashboard/src/pages/opportunity-workbench/live';
 import { createDraftState } from '../../dashboard/src/pages/opportunity-workbench/model';
+import { buildCreateOpportunityInput } from '../../dashboard/src/pages/opportunity-workbench/actions';
+import { createDraftFromTemplate } from '../../dashboard/src/pages/opportunity-workbench/draft-state';
 import {
   buildOpportunityUpdateInput,
   createOpportunityEditDraft,
@@ -33,6 +36,7 @@ import {
   buildSavedViewLabel,
   countBoardFilters,
   filterOpportunitiesBySearch,
+  parseBoardFiltersFromSearchParams,
   parseStoredWorkbenchViews,
 } from '../../dashboard/src/pages/opportunity-workbench/view-state';
 import {
@@ -372,6 +376,45 @@ describe('opportunity workbench view state', () => {
       focusLane: 'review',
     })).toBe('NVDA supplier rela... / 2 filters / REVIEW');
   });
+
+  it('normalizes URL board filters against the current board health metrics', () => {
+    const boardHealth: OpportunityBoardHealthMap = {
+      ipo_spinout: {
+        type: 'ipo_spinout',
+        headline: 'IPO',
+        summary: 'IPO board',
+        metrics: [{ key: 'window_open', label: 'Window', value: 1, tone: 'positive', opportunityIds: ['op-1'] }],
+      },
+      relay_chain: {
+        type: 'relay_chain',
+        headline: 'Relay',
+        summary: 'Relay board',
+        metrics: [{ key: 'confirmed', label: 'Confirmed', value: 0, tone: 'neutral', opportunityIds: [] }],
+      },
+      proxy_narrative: {
+        type: 'proxy_narrative',
+        headline: 'Proxy',
+        summary: 'Proxy board',
+        metrics: [{ key: 'crowded', label: 'Crowded', value: 1, tone: 'warning', opportunityIds: ['op-2'] }],
+      },
+    };
+    const params = new URLSearchParams({
+      ipoMetric: 'window_open',
+      relayMetric: 'confirmed',
+      proxyMetric: 'crowded',
+      q: 'NVDA',
+    });
+
+    const result = parseBoardFiltersFromSearchParams(params, boardHealth);
+
+    expect(result.filters).toEqual({
+      ipo_spinout: 'window_open',
+      proxy_narrative: 'crowded',
+    });
+    expect(result.normalized).toBe(true);
+    expect(result.normalizedParams.get('relayMetric')).toBeNull();
+    expect(result.normalizedParams.get('q')).toBe('NVDA');
+  });
 });
 
 describe('opportunity workbench edit state', () => {
@@ -419,6 +462,47 @@ describe('opportunity workbench edit state', () => {
     expect(validateOpportunityEditDraft({ ...draft, title: '' })).toBe('机会标题不能为空');
     expect(validateOpportunityEditDraft({ ...draft, retainedStakePercentText: 'not-a-number' })).toBe('Retained stake 需要是数字');
     expect(validateOpportunityEditDraft(draft)).toBeNull();
+  });
+});
+
+describe('opportunity workbench draft state', () => {
+  it('builds create payloads from draft text fields and ticker lists', () => {
+    const draft = createDraftState('relay_chain', {
+      title: '  AI relay  ',
+      query: '  NVDA suppliers  ',
+      thesis: '  Follow heat transfer  ',
+      primaryTicker: ' NVDA ',
+      leaderTicker: ' SMCI ',
+      relatedTickersText: 'NVDA, SMCI, VRT',
+      relayTickersText: 'AAOI, WDC',
+      nextCatalystAt: ' 2026-05-01 ',
+    });
+
+    expect(buildCreateOpportunityInput(draft)).toMatchObject({
+      type: 'relay_chain',
+      title: 'AI relay',
+      query: 'NVDA suppliers',
+      thesis: 'Follow heat transfer',
+      primaryTicker: 'NVDA',
+      leaderTicker: 'SMCI',
+      relatedTickers: ['NVDA', 'SMCI', 'VRT'],
+      relayTickers: ['AAOI', 'WDC'],
+      nextCatalystAt: '2026-05-01',
+    });
+  });
+
+  it('preserves title and query when applying a different creation template', () => {
+    const current = createDraftState('relay_chain', {
+      title: 'AI infrastructure relay',
+      query: 'AI data center suppliers',
+    });
+
+    const next = createDraftFromTemplate('ipo_spinout', current);
+
+    expect(next.type).toBe('ipo_spinout');
+    expect(next.title).toBe('AI infrastructure relay');
+    expect(next.query).toBe('AI data center suppliers');
+    expect(next.stage).toBe('radar');
   });
 });
 

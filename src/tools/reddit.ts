@@ -11,6 +11,16 @@ import { v4 as uuidv4 } from 'uuid';
 const REDDIT_BASE = 'https://www.reddit.com';
 const USER_AGENT = 'OpenClaw-Sentinel/1.0 (Stock Intelligence Bot)';
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error('Canceled by user');
+  }
+}
+
 // 预设的金融相关 subreddit 列表
 export const DEFAULT_SUBREDDITS = [
   'wallstreetbets',
@@ -40,7 +50,8 @@ export interface RedditPost {
 /**
  * 从 Reddit .json API 获取帖子
  */
-async function fetchRedditJSON(endpoint: string): Promise<RedditPost[]> {
+async function fetchRedditJSON(endpoint: string, options: RequestOptions = {}): Promise<RedditPost[]> {
+  throwIfCanceled(options.signal);
   const posts: RedditPost[] = [];
 
   try {
@@ -52,6 +63,7 @@ async function fetchRedditJSON(endpoint: string): Promise<RedditPost[]> {
         'User-Agent': USER_AGENT,
         'Accept': 'application/json',
       },
+      ...(options.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {
@@ -82,6 +94,7 @@ async function fetchRedditJSON(endpoint: string): Promise<RedditPost[]> {
       });
     }
   } catch (e: any) {
+    throwIfCanceled(options.signal);
     const errorMsg = `[Reddit] Fetch failed for ${endpoint}: ${e.message}`;
     console.error(errorMsg);
     require('../utils/event-bus').eventBus.emitSystem('error', errorMsg);
@@ -93,28 +106,33 @@ async function fetchRedditJSON(endpoint: string): Promise<RedditPost[]> {
 /**
  * 获取 subreddit 热帖
  */
-export async function fetchHotPosts(subreddit: string, limit: number = 10): Promise<RedditPost[]> {
-  const posts = await fetchRedditJSON(`/r/${subreddit}/hot`);
+export async function fetchHotPosts(subreddit: string, limit: number = 10, options: RequestOptions = {}): Promise<RedditPost[]> {
+  const posts = await fetchRedditJSON(`/r/${subreddit}/hot`, options);
   return posts.slice(0, limit);
 }
 
 /**
  * 获取 subreddit 新帖
  */
-export async function fetchNewPosts(subreddit: string, limit: number = 10): Promise<RedditPost[]> {
-  const posts = await fetchRedditJSON(`/r/${subreddit}/new`);
+export async function fetchNewPosts(subreddit: string, limit: number = 10, options: RequestOptions = {}): Promise<RedditPost[]> {
+  const posts = await fetchRedditJSON(`/r/${subreddit}/new`, options);
   return posts.slice(0, limit);
 }
 
 /**
  * Reddit 关键词搜索
  */
-export async function searchPosts(query: string, subreddit?: string, limit: number = 10): Promise<RedditPost[]> {
+export async function searchPosts(
+  query: string,
+  subreddit?: string,
+  limit: number = 10,
+  options: RequestOptions = {},
+): Promise<RedditPost[]> {
   const endpoint = subreddit
     ? `/r/${subreddit}/search?q=${encodeURIComponent(query)}&restrict_sr=on&sort=relevance&t=day`
     : `/search?q=${encodeURIComponent(query)}&sort=relevance&t=day`;
 
-  const posts = await fetchRedditJSON(endpoint);
+  const posts = await fetchRedditJSON(endpoint, options);
   return posts.slice(0, limit);
 }
 
@@ -123,7 +141,8 @@ export async function searchPosts(query: string, subreddit?: string, limit: numb
  */
 export async function scanMultipleSubreddits(
   subreddits: string[] = DEFAULT_SUBREDDITS,
-  limit: number = 5
+  limit: number = 5,
+  options: RequestOptions = {},
 ): Promise<RedditPost[]> {
   console.log(`[Reddit] 📡 批量扫描 ${subreddits.length} 个 subreddit...`);
 
@@ -132,11 +151,20 @@ export async function scanMultipleSubreddits(
   // 串行请求避免被 Reddit 限流
   for (const sub of subreddits) {
     try {
-      const posts = await fetchHotPosts(sub, limit);
+      throwIfCanceled(options.signal);
+      const posts = await fetchHotPosts(sub, limit, options);
       allPosts.push(...posts);
       // 小延迟避免触发 Reddit 速率限制
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(resolve, 500);
+        const onAbort = () => {
+          clearTimeout(timeoutId);
+          reject(new Error('Canceled by user'));
+        };
+        options.signal?.addEventListener('abort', onAbort, { once: true });
+      });
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[Reddit] Failed to scan r/${sub}: ${e.message}`);
     }
   }
@@ -196,14 +224,14 @@ export const redditTool: AgentTool<{ query: string; limit?: number }> = {
     query: z.string().describe('The search query. Can include stock symbols like "NVDA" or topics like "nuclear energy"'),
     limit: z.number().optional().describe('Number of posts to fetch per subreddit, default is 5'),
   }),
-  execute: async (args) => {
+  execute: async (args, options) => {
     console.log(`\n[Tool Exec] 🔧 Reddit Tool: Searching for "${args.query}"`);
 
     // 搜索 + 热帖双管齐下
     const [searchResults, wsbHot, stocksHot] = await Promise.all([
-      searchPosts(args.query, undefined, args.limit || 10),
-      fetchHotPosts('wallstreetbets', 5),
-      fetchHotPosts('stocks', 5),
+      searchPosts(args.query, undefined, args.limit || 10, options),
+      fetchHotPosts('wallstreetbets', 5, options),
+      fetchHotPosts('stocks', 5, options),
     ]);
 
     const allPosts = [...searchResults, ...wsbHot, ...stocksHot];

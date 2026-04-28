@@ -44,6 +44,12 @@ function createDbMock(pendingTasks: any[] = []) {
           .filter((task) => task.status === params[0])
           .map((task) => ({ id: task.id }));
       }
+      if (sql.includes('SELECT * FROM tasks WHERE status = ?')) {
+        return Array.from(tasks.values()).filter((task) => task.status === params[0]);
+      }
+      if (sql.includes('SELECT * FROM tasks')) {
+        return Array.from(tasks.values());
+      }
       return Array.from(tasks.values()).filter((task) => task.status === 'pending');
     }),
     run: vi.fn().mockImplementation(async (_sql: string, ...params: any[]) => {
@@ -81,6 +87,24 @@ function createDbMock(pendingTasks: any[] = []) {
         const id = params[2];
         const task = tasks.get(id);
         tasks.set(id, { ...task, status: 'canceled', cancelRequestedAt: params[0], failureCode: params[1] });
+      } else if (_sql.includes("SET status = 'pending'") && _sql.includes("WHERE id IN")) {
+        let changes = 0;
+        for (const id of params) {
+          const task = tasks.get(id);
+          if (!task) continue;
+          tasks.set(id, {
+            ...task,
+            status: 'pending',
+            progress: null,
+            startedAt: null,
+            leaseId: null,
+            heartbeatAt: null,
+            error: null,
+            failureCode: null,
+          });
+          changes += 1;
+        }
+        return { changes };
       } else if (_sql.includes("SET status = 'pending'") && _sql.includes("WHERE status = 'running'")) {
         let changes = 0;
         for (const [id, task] of tasks.entries()) {
@@ -95,6 +119,21 @@ function createDbMock(pendingTasks: any[] = []) {
           changes += 1;
         }
         return { changes };
+      } else if (_sql.includes("SET status = 'pending'") && _sql.includes('WHERE id = ?')) {
+        const id = params[0];
+        const task = tasks.get(id);
+        tasks.set(id, {
+          ...task,
+          status: 'pending',
+          progress: null,
+          startedAt: null,
+          completedAt: null,
+          leaseId: null,
+          heartbeatAt: null,
+          cancelRequestedAt: null,
+          failureCode: null,
+          error: null,
+        });
       } else if (_sql.includes('UPDATE tasks SET status =')) {
         const id = params[0];
         tasks.set(id, { ...tasks.get(id), status: 'canceled' });
@@ -203,6 +242,35 @@ describe('TaskQueue concurrency', () => {
     expect(db.run).toHaveBeenCalled();
   });
 
+  it('persists actionable failure codes when task execution fails', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-1',
+        query: 'q1',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'pending',
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+    const timeout = new Error('The operation was aborted');
+    timeout.name = 'AbortError';
+
+    const queue = new TaskQueue();
+    queue.onProcess(vi.fn().mockRejectedValue(timeout));
+
+    await queue.processNext();
+
+    expect((db as any).__tasks.get('task-1')).toMatchObject({
+      status: 'failed',
+      failureCode: 'timeout',
+      error: 'The operation was aborted',
+    });
+  });
+
   it('persists the full mission input payload when enqueuing a mission task', async () => {
     const { TaskQueue } = await loadQueue();
     const db = createDbMock();
@@ -286,6 +354,123 @@ describe('TaskQueue concurrency', () => {
     expect(canceled?.failureCode).toBe('canceled');
     expect(canceled?.cancelRequestedAt).toEqual(expect.any(Number));
     expect((db as any).__tasks.get('task-1').failureCode).toBe('canceled');
+  });
+
+  it('aborts registered in-flight controllers when canceling running tasks', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-1',
+        query: 'q1',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    const controller = new AbortController();
+    queue.registerAbortController('task-1', controller);
+
+    await queue.cancelTask('task-1');
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(controller.signal.reason).toBeInstanceOf(Error);
+    expect((controller.signal.reason as Error).message).toBe('Canceled by user');
+  });
+
+  it('recovers stale running tasks while skipping tasks active in this process', async () => {
+    const { TaskQueue } = await loadQueue();
+    const now = Date.now();
+    const db = createDbMock([
+      {
+        id: 'task-stale',
+        query: 'stale',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        heartbeatAt: now - 10 * 60 * 1000,
+        leaseId: 'worker:old',
+        startedAt: now - 20 * 60 * 1000,
+        createdAt: now - 30 * 60 * 1000,
+      },
+      {
+        id: 'task-active',
+        query: 'active',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        heartbeatAt: now - 10 * 60 * 1000,
+        leaseId: 'worker:local',
+        startedAt: now - 20 * 60 * 1000,
+        createdAt: now - 30 * 60 * 1000,
+      },
+      {
+        id: 'task-fresh',
+        query: 'fresh',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        heartbeatAt: now,
+        leaseId: 'worker:fresh',
+        startedAt: now - 1000,
+        createdAt: now - 2000,
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    queue.registerAbortController('task-active', new AbortController());
+
+    const result = await queue.recoverStaleRunning(2 * 60 * 1000);
+
+    expect(result).toMatchObject({
+      totalRecovered: 1,
+      recoveredRunningTaskIds: ['task-stale'],
+      skippedActiveTaskIds: ['task-active'],
+    });
+    expect((db as any).__tasks.get('task-stale').status).toBe('pending');
+    expect((db as any).__tasks.get('task-active').status).toBe('running');
+    expect((db as any).__tasks.get('task-fresh').status).toBe('running');
+  });
+
+  it('requeues failed standalone tasks without preserving terminal metadata', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-1',
+        query: 'q1',
+        depth: 'deep',
+        priority: 0,
+        source: 'test',
+        status: 'failed',
+        heartbeatAt: 123,
+        completedAt: 456,
+        failureCode: 'execution_failed',
+        error: 'boom',
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+    const requeued = await queue.requeueTask('task-1');
+
+    expect(requeued?.status).toBe('pending');
+    expect(requeued?.failureCode).toBeUndefined();
+    expect(requeued?.error).toBeUndefined();
+    expect((db as any).__tasks.get('task-1')).toMatchObject({
+      status: 'pending',
+      failureCode: null,
+      error: null,
+      completedAt: null,
+    });
   });
 
   it('clears stale lease metadata when recovering interrupted running tasks', async () => {

@@ -7,6 +7,11 @@ let dbInstance: Database | null = null;
 
 const DB_PATH = path.join(process.cwd(), 'data', 'openclaw.db');
 
+interface SchemaMigration {
+  id: string;
+  apply: (db: Database) => Promise<void>;
+}
+
 export async function getDb(): Promise<Database> {
   if (!dbInstance) {
     dbInstance = await open({
@@ -20,43 +25,204 @@ export async function getDb(): Promise<Database> {
   return dbInstance;
 }
 
-async function applyMigration(db: Database, id: string, sql: string): Promise<void> {
+async function ensureMigrationTable(db: Database): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
       appliedAt TEXT NOT NULL
     );
   `);
-  const existing = await db.get<{ id: string }>('SELECT id FROM schema_migrations WHERE id = ?', id);
+}
+
+async function hasColumn(db: Database, tableName: string, columnName: string): Promise<boolean> {
+  const columns = await db.all<Array<{ name: string }>>(`PRAGMA table_info(${tableName})`);
+  return columns.some(column => column.name === columnName);
+}
+
+async function addColumnIfMissing(
+  db: Database,
+  tableName: string,
+  columnName: string,
+  definition: string,
+): Promise<void> {
+  if (await hasColumn(db, tableName, columnName)) return;
+  await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
+}
+
+async function applyMigration(db: Database, migration: SchemaMigration): Promise<void> {
+  const existing = await db.get<{ id: string }>(
+    'SELECT id FROM schema_migrations WHERE id = ?',
+    migration.id,
+  );
   if (existing) return;
 
   try {
     await db.exec('BEGIN');
-    await db.exec(sql);
+    await migration.apply(db);
     await db.run(
       'INSERT INTO schema_migrations (id, appliedAt) VALUES (?, ?)',
-      id,
+      migration.id,
       new Date().toISOString(),
     );
     await db.exec('COMMIT');
   } catch (error) {
     await db.exec('ROLLBACK').catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
-    logger.error(`[DB] Migration ${id} failed: ${message}`);
+    logger.error(`[DB] Migration ${migration.id} failed: ${message}`);
     throw error;
   }
 }
 
-async function initDb(db: Database) {
+async function applyMigrations(db: Database, migrations: SchemaMigration[]): Promise<void> {
+  await ensureMigrationTable(db);
+  for (const migration of migrations) {
+    await applyMigration(db, migration);
+  }
+}
+
+const SCHEMA_MIGRATIONS: SchemaMigration[] = [
+  {
+    id: '001_core_schema_registry',
+    apply: ensureMigrationTable,
+  },
+  {
+    id: '002_mission_canonical_index',
+    apply: async (db) => {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS missions_index (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          query TEXT NOT NULL,
+          source TEXT,
+          depth TEXT,
+          opportunityId TEXT,
+          createdAt TEXT NOT NULL,
+          updatedAt TEXT NOT NULL,
+          inputPayload TEXT NOT NULL,
+          artifactPath TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_missions_index_updated
+          ON missions_index (updatedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_missions_index_status_updated
+          ON missions_index (status, updatedAt DESC);
+        CREATE INDEX IF NOT EXISTS idx_missions_index_opportunity
+          ON missions_index (opportunityId, updatedAt DESC);
+
+        CREATE TABLE IF NOT EXISTS mission_events (
+          id TEXT PRIMARY KEY,
+          missionId TEXT NOT NULL,
+          timestamp TEXT NOT NULL,
+          type TEXT NOT NULL,
+          status TEXT,
+          phase TEXT,
+          message TEXT NOT NULL,
+          meta TEXT,
+          artifactPath TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mission_events_lookup
+          ON mission_events (missionId, timestamp ASC);
+
+        CREATE TABLE IF NOT EXISTS mission_evidence_refs (
+          id TEXT PRIMARY KEY,
+          missionId TEXT NOT NULL,
+          runId TEXT NOT NULL,
+          capturedAt TEXT NOT NULL,
+          status TEXT NOT NULL,
+          completeness TEXT NOT NULL,
+          artifactPath TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_run
+          ON mission_evidence_refs (runId);
+        CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_mission
+          ON mission_evidence_refs (missionId, capturedAt DESC);
+      `);
+    },
+  },
+  {
+    id: '003_mission_run_lifecycle_columns',
+    apply: async (db) => {
+      await addColumnIfMissing(db, 'mission_runs', 'cancelRequestedAt', 'TEXT');
+      await addColumnIfMissing(db, 'mission_runs', 'failureCode', 'TEXT');
+    },
+  },
+  {
+    id: '004_durable_stream_events',
+    apply: async (db) => {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS stream_events (
+          id TEXT PRIMARY KEY,
+          stream TEXT NOT NULL,
+          type TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          entityId TEXT,
+          occurredAt TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          source TEXT NOT NULL,
+          runId TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_stream_events_stream_time
+          ON stream_events (stream, occurredAt ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_stream_events_entity_time
+          ON stream_events (entityId, occurredAt ASC, id ASC);
+      `);
+    },
+  },
+  {
+    id: '005_task_runtime_columns',
+    apply: async (db) => {
+      await addColumnIfMissing(db, 'tasks', 'missionId', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'runId', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'statePayload', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'inputPayload', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'dedupeKey', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'idempotencyKey', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'inputHash', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'leaseId', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'heartbeatAt', 'INTEGER');
+      await addColumnIfMissing(db, 'tasks', 'cancelRequestedAt', 'INTEGER');
+      await addColumnIfMissing(db, 'tasks', 'failureCode', 'TEXT');
+      await addColumnIfMissing(db, 'tasks', 'degradedFlags', 'TEXT');
+      await db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_dedupe_status
+        ON tasks (dedupeKey, status);
+      `);
+      await db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_idempotency_status
+        ON tasks (idempotencyKey, status);
+      `);
+    },
+  },
+  {
+    id: '006_opportunity_profile_columns',
+    apply: async (db) => {
+      await addColumnIfMissing(db, 'opportunities', 'heatProfile', 'TEXT');
+      await addColumnIfMissing(db, 'opportunities', 'proxyProfile', 'TEXT');
+      await addColumnIfMissing(db, 'opportunities', 'ipoProfile', 'TEXT');
+      await addColumnIfMissing(db, 'opportunities', 'catalystCalendar', "TEXT NOT NULL DEFAULT '[]'");
+    },
+  },
+  {
+    id: '007_narrative_lifecycle_columns',
+    apply: async (db) => {
+      await addColumnIfMissing(db, 'narratives', 'title', 'TEXT');
+      await addColumnIfMissing(db, 'narratives', 'stage', "TEXT DEFAULT 'earlyFermentation'");
+      await addColumnIfMissing(db, 'narratives', 'status', "TEXT DEFAULT 'active'");
+      await addColumnIfMissing(db, 'narratives', 'impactScore', 'REAL DEFAULT 0');
+      await addColumnIfMissing(db, 'narratives', 'coreTicker', 'TEXT');
+      await addColumnIfMissing(db, 'narratives', 'lastUpdatedAt', 'INTEGER');
+    },
+  },
+];
+
+export async function initDb(db: Database) {
   await db.exec(`PRAGMA journal_mode = WAL;`);
   await db.exec(`PRAGMA busy_timeout = 5000;`);
-
-  await applyMigration(db, '001_core_schema_registry', `
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      id TEXT PRIMARY KEY,
-      appliedAt TEXT NOT NULL
-    );
-  `);
+  await ensureMigrationTable(db);
 
   // === Tasks Table ===
   await db.exec(`
@@ -86,40 +252,6 @@ async function initDb(db: Database) {
       error TEXT
     );
   `);
-  // Handle migrations for existing DB
-  try {
-    await db.exec(`ALTER TABLE tasks ADD COLUMN missionId TEXT;`);
-  } catch (e: any) {
-    // Column already exists
-  }
-  try {
-    await db.exec(`ALTER TABLE tasks ADD COLUMN runId TEXT;`);
-  } catch (e: any) {
-    // Column already exists
-  }
-  try {
-    await db.exec(`ALTER TABLE tasks ADD COLUMN statePayload TEXT;`);
-  } catch (e: any) {
-    // Column already exists
-  }
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN inputPayload TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN dedupeKey TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN idempotencyKey TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN inputHash TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN leaseId TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN heartbeatAt INTEGER;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN cancelRequestedAt INTEGER;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN failureCode TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE tasks ADD COLUMN degradedFlags TEXT;`); } catch {}
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_tasks_dedupe_status
-    ON tasks (dedupeKey, status);
-  `);
-  await db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_tasks_idempotency_status
-    ON tasks (idempotencyKey, status);
-  `);
-
   // === Mission Runs Table ===
   await db.exec(`
     CREATE TABLE IF NOT EXISTS mission_runs (
@@ -145,82 +277,6 @@ async function initDb(db: Database) {
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_mission_runs_task
     ON mission_runs (taskId);
-  `);
-  await applyMigration(db, '002_mission_canonical_index', `
-    CREATE TABLE IF NOT EXISTS missions_index (
-      id TEXT PRIMARY KEY,
-      status TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      query TEXT NOT NULL,
-      source TEXT,
-      depth TEXT,
-      opportunityId TEXT,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      inputPayload TEXT NOT NULL,
-      artifactPath TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_missions_index_updated
-      ON missions_index (updatedAt DESC);
-    CREATE INDEX IF NOT EXISTS idx_missions_index_status_updated
-      ON missions_index (status, updatedAt DESC);
-    CREATE INDEX IF NOT EXISTS idx_missions_index_opportunity
-      ON missions_index (opportunityId, updatedAt DESC);
-
-    CREATE TABLE IF NOT EXISTS mission_events (
-      id TEXT PRIMARY KEY,
-      missionId TEXT NOT NULL,
-      timestamp TEXT NOT NULL,
-      type TEXT NOT NULL,
-      status TEXT,
-      phase TEXT,
-      message TEXT NOT NULL,
-      meta TEXT,
-      artifactPath TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_mission_events_lookup
-      ON mission_events (missionId, timestamp ASC);
-
-    CREATE TABLE IF NOT EXISTS mission_evidence_refs (
-      id TEXT PRIMARY KEY,
-      missionId TEXT NOT NULL,
-      runId TEXT NOT NULL,
-      capturedAt TEXT NOT NULL,
-      status TEXT NOT NULL,
-      completeness TEXT NOT NULL,
-      artifactPath TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_run
-      ON mission_evidence_refs (runId);
-    CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_mission
-      ON mission_evidence_refs (missionId, capturedAt DESC);
-  `);
-
-  await applyMigration(db, '003_mission_run_lifecycle_columns', `
-    ALTER TABLE mission_runs ADD COLUMN cancelRequestedAt TEXT;
-    ALTER TABLE mission_runs ADD COLUMN failureCode TEXT;
-  `);
-
-  await applyMigration(db, '004_durable_stream_events', `
-    CREATE TABLE IF NOT EXISTS stream_events (
-      id TEXT PRIMARY KEY,
-      stream TEXT NOT NULL,
-      type TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      entityId TEXT,
-      occurredAt TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      source TEXT NOT NULL,
-      runId TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_stream_events_stream_time
-      ON stream_events (stream, occurredAt ASC, id ASC);
-    CREATE INDEX IF NOT EXISTS idx_stream_events_entity_time
-      ON stream_events (entityId, occurredAt ASC, id ASC);
   `);
 
   // === Opportunities Table ===
@@ -263,10 +319,6 @@ async function initDb(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_opportunities_status_updated
     ON opportunities (status, updatedAt DESC);
   `);
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN heatProfile TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN proxyProfile TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN ipoProfile TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE opportunities ADD COLUMN catalystCalendar TEXT NOT NULL DEFAULT '[]';`); } catch {}
 
   // === Opportunity Snapshots Table ===
   await db.exec(`
@@ -309,10 +361,6 @@ async function initDb(db: Database) {
       meta TEXT
     );
   `);
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN title TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN stage TEXT DEFAULT 'earlyFermentation';`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN status TEXT DEFAULT 'active';`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN impactScore REAL DEFAULT 0;`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN coreTicker TEXT;`); } catch {}
-  try { await db.exec(`ALTER TABLE narratives ADD COLUMN lastUpdatedAt INTEGER;`); } catch {}
+
+  await applyMigrations(db, SCHEMA_MIGRATIONS);
 }

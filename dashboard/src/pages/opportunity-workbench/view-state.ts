@@ -1,14 +1,19 @@
 import type {
+  OpportunityBoardHealthMap,
   OpportunityBoardType,
   OpportunityInboxItem,
   OpportunitySummary,
 } from '../../api';
-import type { BoardFilterState, InboxLane } from './model';
+import {
+  BOARD_FILTER_QUERY_KEYS,
+  BOARD_TYPES,
+  type BoardFilterState,
+  type InboxLane,
+} from './model';
 
 export const WORKBENCH_VIEW_STORAGE_KEY = 'opportunity-workbench-saved-views-v1';
 export const MAX_WORKBENCH_SAVED_VIEWS = 8;
 
-const BOARD_FILTER_TYPES: OpportunityBoardType[] = ['ipo_spinout', 'relay_chain', 'proxy_narrative'];
 const LANE_VALUES: InboxLane[] = ['act', 'review', 'monitor'];
 
 export type WorkbenchSavedView = {
@@ -62,7 +67,7 @@ export function filterOpportunitiesBySearch<T extends OpportunitySummary | Oppor
 }
 
 export function cleanBoardFilters(filters: BoardFilterState): BoardFilterState {
-  return BOARD_FILTER_TYPES.reduce<BoardFilterState>((next, type) => {
+  return BOARD_TYPES.reduce<BoardFilterState>((next, type) => {
     const value = filters[type];
     if (typeof value === 'string' && value.trim()) {
       next[type] = value.trim();
@@ -73,6 +78,49 @@ export function cleanBoardFilters(filters: BoardFilterState): BoardFilterState {
 
 export function countBoardFilters(filters: BoardFilterState) {
   return Object.values(cleanBoardFilters(filters)).filter(Boolean).length;
+}
+
+export function boardFilterExists(
+  boardHealth: OpportunityBoardHealthMap | null,
+  type: OpportunityBoardType,
+  metricKey: string,
+): boolean {
+  if (!boardHealth) return true;
+  return boardHealth[type].metrics.some((metric) => (
+    metric.key === metricKey && metric.opportunityIds.length > 0
+  ));
+}
+
+export function parseBoardFiltersFromSearchParams(
+  searchParams: URLSearchParams,
+  boardHealth: OpportunityBoardHealthMap | null,
+): {
+  filters: BoardFilterState;
+  normalizedParams: URLSearchParams;
+  normalized: boolean;
+} {
+  const filters: BoardFilterState = {};
+  let normalized = false;
+  const normalizedParams = new URLSearchParams(searchParams);
+
+  BOARD_TYPES.forEach((type) => {
+    const queryKey = BOARD_FILTER_QUERY_KEYS[type];
+    const value = searchParams.get(queryKey);
+    if (!value) return;
+
+    if (boardFilterExists(boardHealth, type, value)) {
+      filters[type] = value;
+    } else {
+      normalizedParams.delete(queryKey);
+      normalized = true;
+    }
+  });
+
+  return {
+    filters,
+    normalizedParams,
+    normalized,
+  };
 }
 
 export function buildSavedViewLabel(snapshot: Omit<WorkbenchViewSnapshot, 'label'>) {

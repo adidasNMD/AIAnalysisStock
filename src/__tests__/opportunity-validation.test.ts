@@ -142,4 +142,31 @@ describe('opportunity payload validation', () => {
     expect(result.success).toBe(false);
     expect(issuePaths(result)).toContain('scores.purityScore');
   });
+
+  it('rejects unknown top-level and catalyst fields', () => {
+    const result = createOpportunityPayloadSchema.safeParse({
+      title: 'Unexpected Payload',
+      query: 'Unexpected payload',
+      unsafeField: true,
+      catalystCalendar: [
+        {
+          label: 'Earnings',
+          status: 'upcoming',
+          arbitraryNestedPayload: { unsafe: true },
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(issuePaths(result)).toEqual(expect.arrayContaining(['', 'catalystCalendar.0']));
+  });
+
+  it('requires title or query when creating opportunities', () => {
+    const result = createOpportunityPayloadSchema.safeParse({
+      thesis: 'No title or query should fail before persistence.',
+    });
+
+    expect(result.success).toBe(false);
+    expect(issuePaths(result)).toContain('title');
+  });
 });

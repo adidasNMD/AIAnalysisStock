@@ -11,6 +11,7 @@ vi.mock('../db', () => ({
 
 function createDbMock() {
   const events = new Map<string, any>();
+  const evidenceRefs = new Map<string, any>();
   const missions = new Map<string, any>();
 
   return {
@@ -44,11 +45,28 @@ function createDbMock() {
           artifactPath: params[8],
         });
       }
+      if (sql.includes('INSERT INTO mission_evidence_refs')) {
+        evidenceRefs.set(params[2], {
+          id: params[0],
+          missionId: params[1],
+          runId: params[2],
+          capturedAt: params[3],
+          status: params[4],
+          completeness: params[5],
+          artifactPath: params[6],
+        });
+      }
       return { changes: 1 };
     }),
     get: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
       if (sql.includes('SELECT * FROM missions_index WHERE id = ?')) {
         return missions.get(params[0]) || null;
+      }
+      if (sql.includes('SELECT * FROM mission_evidence_refs WHERE runId = ?')) {
+        return evidenceRefs.get(params[0]) || null;
+      }
+      if (sql.includes('SELECT id, artifactPath FROM mission_evidence_refs WHERE runId = ?')) {
+        return evidenceRefs.get(params[0]) || null;
       }
       return null;
     }),
@@ -66,6 +84,7 @@ function createDbMock() {
       return [];
     }),
     __events: events,
+    __evidenceRefs: evidenceRefs,
   };
 }
 
@@ -235,6 +254,54 @@ describe('mission index', () => {
         status: 'fully_enriched',
         openclawTickers: ['NVDA'],
         totalDurationMs: 2000,
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads mission evidence through the indexed artifact reference', async () => {
+    const db = createDbMock();
+    getDbMock.mockResolvedValue(db as any);
+    const {
+      getMissionEvidenceArtifactPath,
+      getMissionEvidenceFromIndex,
+      upsertMissionEvidenceRef,
+    } = await import('../workflows/mission-index');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mission-evidence-index-test-'));
+    const artifactPath = path.join(tempDir, 'run-1.evidence.json');
+    const evidence = {
+      id: 'evidence_run-1',
+      missionId: 'mission-1',
+      runId: 'run-1',
+      capturedAt: '2026-04-26T00:02:00.000Z',
+      status: 'fully_enriched',
+      completeness: 'full',
+      input: {
+        mode: 'analyze',
+        query: '$NVDA',
+      },
+      openclawReport: 'report',
+      openclawTickers: ['NVDA'],
+      openclawDurationMs: 1000,
+      taResults: [],
+      taDurationMs: 0,
+      openbbData: [],
+      macroData: null,
+      consensus: [],
+      totalDurationMs: 2000,
+    };
+    fs.writeFileSync(artifactPath, JSON.stringify(evidence), 'utf-8');
+
+    try {
+      await upsertMissionEvidenceRef(evidence as any, artifactPath);
+
+      await expect(getMissionEvidenceArtifactPath('run-1')).resolves.toBe(artifactPath);
+      await expect(getMissionEvidenceFromIndex('run-1')).resolves.toMatchObject({
+        id: 'evidence_run-1',
+        missionId: 'mission-1',
+        runId: 'run-1',
+        openclawTickers: ['NVDA'],
       });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });

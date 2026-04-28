@@ -2,6 +2,10 @@ import { AutonomousAgent } from '../core/agent';
 import * as fs from 'fs';
 import * as path from 'path';
 
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
 /**
  * QuantStrategistAgent — 量化策略师
  * 
@@ -47,7 +51,7 @@ export class QuantStrategistAgent extends AutonomousAgent {
   /**
    * 基于分析师备忘录，输出产业链研报
    */
-  async strategize(analystMemo: string, investorProfile?: string): Promise<string> {
+  async strategize(analystMemo: string, investorProfile?: string, options: AgentRequestOptions = {}): Promise<string> {
     console.log(`\n[QuantStrategist] 🧠 开始产业链深度推导...`);
 
     let enrichedContext = analystMemo;
@@ -91,7 +95,8 @@ export class QuantStrategistAgent extends AutonomousAgent {
 
 ## 📋 总括逻辑
 用 2-3 句话总结整个产业链映射的核心投资逻辑。`,
-      enrichedContext
+      enrichedContext,
+      { ...(options.signal ? { signal: options.signal } : {}) },
     );
 
     console.log(`[QuantStrategist] ✅ 产业链研报完成 (${strategyReport.length} 字)`);

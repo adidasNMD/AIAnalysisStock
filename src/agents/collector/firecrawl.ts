@@ -1,6 +1,16 @@
 import { RawSignal } from '../../models/types';
 import { v4 as uuidv4 } from 'uuid';
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error('Canceled by user');
+  }
+}
+
 export class FirecrawlCollector {
   private apiKey: string;
   private baseUrl = 'https://api.firecrawl.dev/v1';
@@ -12,7 +22,8 @@ export class FirecrawlCollector {
   /**
    * Search and scrape long-form news articles and blog posts
    */
-  async scrapeNews(query: string, limit: number = 5): Promise<RawSignal[]> {
+  async scrapeNews(query: string, limit: number = 5, options: RequestOptions = {}): Promise<RawSignal[]> {
+    throwIfCanceled(options.signal);
     const { eventBus } = require('../../utils/event-bus');
     let signals: RawSignal[] = [];
 
@@ -23,7 +34,8 @@ export class FirecrawlCollector {
         const response = await fetch(`${this.baseUrl}/search`, {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, limit, scrapeOptions: { formats: ['markdown'] } })
+          body: JSON.stringify({ query, limit, scrapeOptions: { formats: ['markdown'] } }),
+          ...(options.signal ? { signal: options.signal } : {}),
         });
         if (!response.ok) throw new Error(`Firecrawl Error: ${response.status}`);
         const responseJson = await response.json();
@@ -31,6 +43,7 @@ export class FirecrawlCollector {
         signals = results.map((a: any) => this._formatSignal(a.markdown || a.content, a.url, a.title, a.author, query));
         if (signals.length > 0) return signals;
       } catch (e: any) {
+        throwIfCanceled(options.signal);
         console.warn(`[WebCollector] ⚠️ Firecrawl failed or out of credits, cascading to fallbacks: ${e.message}`);
       }
     }
@@ -43,13 +56,15 @@ export class FirecrawlCollector {
         const response = await fetch('https://api.tavily.com/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: tavilyKey, query, search_depth: "advanced", max_results: limit, include_raw_content: true })
+          body: JSON.stringify({ api_key: tavilyKey, query, search_depth: "advanced", max_results: limit, include_raw_content: true }),
+          ...(options.signal ? { signal: options.signal } : {}),
         });
         if (!response.ok) throw new Error(`Tavily Error: ${response.status}`);
         const data = await response.json();
         signals = (data.results || []).map((a: any) => this._formatSignal(a.raw_content || a.content, a.url, a.title, a.url, query));
         if (signals.length > 0) return signals;
       } catch (e: any) {
+        throwIfCanceled(options.signal);
         console.warn(`[WebCollector] ⚠️ Tavily failed, cascading to fallback: ${e.message}`);
       }
     }
@@ -59,7 +74,8 @@ export class FirecrawlCollector {
       console.log(`[WebCollector] 🟣 Attempting Free Geek Fallback (Reddit Raw JSON) for: ${query}`);
       const redditUrl = `https://www.reddit.com/search.json?q=${encodeURIComponent(query)}&sort=relevance&limit=${limit}`;
       const response = await fetch(redditUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AIAnalysisStock/1.0' }
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AIAnalysisStock/1.0' },
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       
       if (!response.ok) throw new Error(`Reddit API Error: ${response.status}`);
@@ -78,6 +94,7 @@ export class FirecrawlCollector {
       return signals;
       
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[WebCollector] ❌ All scraping fallbacks utterly failed: ${e.message}`);
       eventBus.emitSystem('error', `[WebCollector] 网页抓取三层回退全部失败: ${e.message}`);
       return [];

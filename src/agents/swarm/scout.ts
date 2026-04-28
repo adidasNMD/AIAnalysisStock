@@ -5,6 +5,20 @@ import { redditTool } from '../../tools/reddit';
 import { fetchGoogleNewsRSS } from '../../tools/google-news';
 import { RawSignal } from '../../models/types';
 
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error('Canceled by user');
+  }
+}
+
+function isCanceledError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'Canceled by user';
+}
+
 /**
  * DataScoutAgent — 数据侦察兵
  * 
@@ -28,7 +42,8 @@ export class DataScoutAgent extends AutonomousAgent {
     });
   }
 
-  async scout(query: string): Promise<{ signals: RawSignal[], intelligenceBrief: string }> {
+  async scout(query: string, options: AgentRequestOptions = {}): Promise<{ signals: RawSignal[], intelligenceBrief: string }> {
+    throwIfCanceled(options.signal);
     console.log(`\n[DataScout] 🕵️‍♂️ Commencing scouting mission for: "${query}"`);
     
     let combinedSignals = "";
@@ -36,7 +51,8 @@ export class DataScoutAgent extends AutonomousAgent {
 
     // 1. Reddit 免费采集
     try {
-       const redditData = await redditTool.execute({ query, limit: 10 });
+       const redditData = await redditTool.execute({ query, limit: 10 }, options);
+       throwIfCanceled(options.signal);
        combinedSignals += `\n[Reddit Data]:\n${redditData}`;
        // 从原始文本中直接构建 RawSignal（不依赖 LLM）
        const redditLines = redditData.split('\n').filter((l: string) => l.trim().length > 20);
@@ -51,12 +67,14 @@ export class DataScoutAgent extends AutonomousAgent {
          });
        });
     } catch(e: any) {
+        if (isCanceledError(e)) throw e;
         console.error(`[DataScout] Reddit fallback: ${e.message}`);
     }
     
     // 2. X/Twitter Desearch
     try {
-       const xData = await desearchTool.execute({ query, limit: 10 });
+       const xData = await desearchTool.execute({ query, limit: 10 }, options);
+       throwIfCanceled(options.signal);
        combinedSignals += `\n[X/Twitter Data]:\n${xData}`;
        const xLines = xData.split('\n').filter((l: string) => l.trim().length > 20);
        xLines.forEach((line: string, idx: number) => {
@@ -70,12 +88,14 @@ export class DataScoutAgent extends AutonomousAgent {
          });
        });
     } catch(e: any) {
+        if (isCanceledError(e)) throw e;
         console.error(`[DataScout] Desearch fallback: ${e.message}`);
     }
     
     // 3. Firecrawl 深度文章
     try {
-       const webData = await firecrawlTool.execute({ query, limit: 2 });
+       const webData = await firecrawlTool.execute({ query, limit: 2 }, options);
+       throwIfCanceled(options.signal);
        combinedSignals += `\n[Web Data]:\n${webData}`;
        rawSignals.push({
          id: `web_${Date.now()}`,
@@ -86,12 +106,14 @@ export class DataScoutAgent extends AutonomousAgent {
          url: ''
        });
     } catch(e: any) {
+        if (isCanceledError(e)) throw e;
         console.error(`[DataScout] Firecrawl fallback: ${e.message}`);
     }
 
     // 4. Google News
     try {
-       const newsItems = await fetchGoogleNewsRSS(query, 'en', 10);
+       const newsItems = await fetchGoogleNewsRSS(query, 'en', 10, options);
+       throwIfCanceled(options.signal);
        if (newsItems.length > 0) {
          const newsText = newsItems.map(n => `[${n.source}] ${n.title}\n${n.snippet}`).join('\n');
          combinedSignals += `\n[Google News Data]:\n${newsText}`;
@@ -107,6 +129,7 @@ export class DataScoutAgent extends AutonomousAgent {
          });
        }
     } catch(e: any) {
+        if (isCanceledError(e)) throw e;
         console.error(`[DataScout] Google News fallback: ${e.message}`);
     }
 
@@ -127,7 +150,8 @@ export class DataScoutAgent extends AutonomousAgent {
 3. 标注哪些信号是真正有交易价值的"一手信息"
 4. 明确说明搜索目标是："${query}"
 5. 在末尾给出总体评估：这组情报是否值得下游 Agent 进行深度分析`,
-      combinedSignals
+      combinedSignals,
+      { ...(options.signal ? { signal: options.signal } : {}) },
     );
 
     console.log(`[DataScout] ✅ 情报清洗完成。${rawSignals.length} 条原始信号，${intelligenceBrief.length} 字分析文本。`);

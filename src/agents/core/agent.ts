@@ -9,6 +9,11 @@ export interface AgentConfig {
   tools?: AgentTool<any>[];
 }
 
+export interface AgentExecutionOptions {
+  tier?: 'primary' | 'secondary';
+  signal?: AbortSignal;
+}
+
 /**
  * 原生自治智能体基类 (Autonomous Agent Base Class)
  * 允许给大模型赋予特定的角色、目标和工具限制。
@@ -20,7 +25,12 @@ export class AutonomousAgent {
    * @deprecated 使用 executeTextTask() 代替。JSON 强格式输出已被证明不可靠。
    * 执行带有强制结构化输出的任务
    */
-  async executeTask<T>(taskPrompt: string, outputSchema: z.ZodType<T>, context: string = ""): Promise<T> {
+  async executeTask<T>(
+    taskPrompt: string,
+    outputSchema: z.ZodType<T>,
+    context: string = "",
+    options: AgentExecutionOptions = {},
+  ): Promise<T> {
     console.log(`\n[🤖 Node: ${this.config.role}] Initiating structured task...`);
     
     const systemPrompt = `You are an elite, autonomous AI agent operating in a strictly structured Swarm.
@@ -35,7 +45,9 @@ ${this.config.tools && this.config.tools.length > 0 ? `\nNote: You have delegate
 
     const userPrompt = `CONTEXT/MEMORY:\n${context}\n\nCURRENT TASK:\n${taskPrompt}`;
 
-    const result = await generateStructuredOutput(outputSchema, systemPrompt, userPrompt);
+    const result = await generateStructuredOutput(outputSchema, systemPrompt, userPrompt, {
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
     console.log(`[✅ Node: ${this.config.role}] Structured task completed.`);
     return result;
   }
@@ -47,7 +59,13 @@ ${this.config.tools && this.config.tools.length > 0 ? `\nNote: You have delegate
    * 
    * @param tier 模型分级: 'primary' = 主力模型, 'secondary' = 小模型（节省 Token）
    */
-  async executeTextTask(taskPrompt: string, context: string = "", tier?: 'primary' | 'secondary'): Promise<string> {
+  async executeTextTask(
+    taskPrompt: string,
+    context: string = "",
+    options?: 'primary' | 'secondary' | AgentExecutionOptions,
+  ): Promise<string> {
+    const tier = typeof options === 'string' ? options : options?.tier;
+    const signal = typeof options === 'object' ? options.signal : undefined;
     console.log(`\n[🤖 Node: ${this.config.role}] Initiating text analysis task...${tier === 'secondary' ? ' (💰 二级模型)' : ''}`);
 
     const systemPrompt = `你是一个顶级的自治 AI 分析智能体，正在一个多智能体蜂群 (Swarm) 中执行关键任务。
@@ -71,10 +89,13 @@ ${this.config.tools && this.config.tools.length > 0 ? `\n【可用工具提示�
       ? `=== 上游 Agent / 系统提供的上下文 ===\n${context}\n\n=== 当前任务 ===\n${taskPrompt}`
       : `=== 当前任务 ===\n${taskPrompt}`;
 
-    const result = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true, ...(tier ? { tier } : {}) });
+    const result = await generateTextCompletion(systemPrompt, userPrompt, {
+      streamToConsole: true,
+      ...(tier ? { tier } : {}),
+      ...(signal ? { signal } : {}),
+    });
     
     console.log(`[✅ Node: ${this.config.role}] Text analysis task completed. (${result.length} chars)`);
     return result;
   }
 }
-

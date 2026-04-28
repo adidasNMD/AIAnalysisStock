@@ -1,6 +1,7 @@
 import { getDb } from '../db';
 import { logger } from './logger';
 import type { AnalysisDepth } from '../models/handoff';
+import { classifyExecutionFailure, getErrorMessage } from './error-classification';
 
 export interface QueueTask {
   id: string;
@@ -33,6 +34,13 @@ export interface RecoverResult {
   recoveredRunningTaskIds: string[];
 }
 
+export interface StaleRecoverResult {
+  totalRecovered: number;
+  recoveredRunningTaskIds: string[];
+  skippedActiveTaskIds: string[];
+  staleThresholdMs: number;
+}
+
 export interface EnqueueTaskOptions {
   missionId?: string;
   inputPayload?: string;
@@ -42,11 +50,13 @@ export interface EnqueueTaskOptions {
 }
 
 const MAX_TASK_AGE_MS = 2 * 60 * 60 * 1000; 
+const STALE_TASK_HEARTBEAT_MS = 2 * 60 * 1000;
 
 export class TaskQueue {
   private concurrency: number;
   private runningCount = 0;
   private processCallback: ((task: QueueTask) => Promise<void>) | null = null;
+  private abortControllers = new Map<string, AbortController>();
 
   constructor() {
     this.concurrency = Number(process.env.TASK_QUEUE_CONCURRENCY) || 3;
@@ -54,6 +64,15 @@ export class TaskQueue {
 
   onProcess(callback: (task: QueueTask) => Promise<void>) {
     this.processCallback = callback;
+  }
+
+  registerAbortController(taskId: string, controller: AbortController): () => void {
+    this.abortControllers.set(taskId, controller);
+    return () => {
+      if (this.abortControllers.get(taskId) === controller) {
+        this.abortControllers.delete(taskId);
+      }
+    };
   }
 
   async enqueue(
@@ -196,6 +215,92 @@ export class TaskQueue {
     };
   }
 
+  async recoverStaleRunning(staleThresholdMs = STALE_TASK_HEARTBEAT_MS): Promise<StaleRecoverResult> {
+    const db = await getDb();
+    const staleBefore = Date.now() - staleThresholdMs;
+    const runningTasks = await db.all<QueueTask[]>(
+      'SELECT * FROM tasks WHERE status = ?',
+      'running',
+    );
+    const staleTasks = runningTasks.filter((task) => {
+      const heartbeatAt = typeof task.heartbeatAt === 'number' ? task.heartbeatAt : 0;
+      return heartbeatAt === 0 || heartbeatAt < staleBefore;
+    });
+    const recoverableTasks = staleTasks.filter((task) => !this.abortControllers.has(task.id));
+    const skippedActiveTaskIds = staleTasks
+      .filter((task) => this.abortControllers.has(task.id))
+      .map((task) => task.id);
+    const recoveredRunningTaskIds = recoverableTasks.map((task) => task.id);
+
+    if (recoveredRunningTaskIds.length === 0) {
+      return {
+        totalRecovered: 0,
+        recoveredRunningTaskIds,
+        skippedActiveTaskIds,
+        staleThresholdMs,
+      };
+    }
+
+    const placeholders = recoveredRunningTaskIds.map(() => '?').join(', ');
+    const result = await db.run(
+      `UPDATE tasks
+        SET status = 'pending',
+            progress = NULL,
+            startedAt = NULL,
+            leaseId = NULL,
+            heartbeatAt = NULL,
+            error = NULL,
+            failureCode = NULL
+        WHERE id IN (${placeholders})`,
+      ...recoveredRunningTaskIds,
+    );
+
+    logger.info(`[TaskQueue] 🔄 恢复卡住任务: ${result.changes || 0} 个`);
+    return {
+      totalRecovered: result.changes || recoveredRunningTaskIds.length,
+      recoveredRunningTaskIds,
+      skippedActiveTaskIds,
+      staleThresholdMs,
+    };
+  }
+
+  async requeueTask(id: string): Promise<QueueTask | null> {
+    const db = await getDb();
+    const task = await db.get<QueueTask>('SELECT * FROM tasks WHERE id = ?', id);
+    if (!task) return null;
+    if (!['failed', 'canceled'].includes(task.status)) return task;
+
+    await db.run(
+      `UPDATE tasks
+        SET status = 'pending',
+            progress = NULL,
+            startedAt = NULL,
+            completedAt = NULL,
+            leaseId = NULL,
+            heartbeatAt = NULL,
+            cancelRequestedAt = NULL,
+            failureCode = NULL,
+            error = NULL
+        WHERE id = ?`,
+      id,
+    );
+
+    logger.info(`[TaskQueue] 🔁 重新入队任务: "${task.query}" (id=${task.id})`);
+    const nextTask: QueueTask = {
+      ...task,
+      status: 'pending',
+    };
+    delete nextTask.progress;
+    delete nextTask.startedAt;
+    delete nextTask.completedAt;
+    delete nextTask.leaseId;
+    delete nextTask.heartbeatAt;
+    delete nextTask.cancelRequestedAt;
+    delete nextTask.failureCode;
+    delete nextTask.error;
+    return nextTask;
+  }
+
   async processNext(): Promise<void> {
     if (this.runningCount >= this.concurrency || !this.processCallback) return;
 
@@ -230,25 +335,27 @@ export class TaskQueue {
         await this.saveTask(task);
         logger.info(`[TaskQueue] ✅ 完成: "${task.query}" (${((task.completedAt - (task.startedAt || task.createdAt)) / 1000).toFixed(1)}s)`);
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       const persistedTask = await this.getTask(task.id);
-      const canceled = persistedTask?.status === 'canceled' || e.message === 'Canceled by user';
+      const errorMessage = getErrorMessage(e);
+      const failureCode = classifyExecutionFailure(e);
+      const canceled = persistedTask?.status === 'canceled' || failureCode === 'canceled';
       task.status = canceled ? 'canceled' : 'failed';
       if (canceled) {
         delete task.error;
       } else {
-        task.error = e.message;
+        task.error = errorMessage;
       }
       if (persistedTask?.cancelRequestedAt !== undefined) {
         task.cancelRequestedAt = persistedTask.cancelRequestedAt;
       }
-      task.failureCode = canceled ? 'canceled' : 'execution_failed';
+      task.failureCode = canceled ? 'canceled' : failureCode;
       task.completedAt = Date.now();
       await this.saveTask(task);
       if (canceled) {
         logger.info(`[TaskQueue] 🛑 已取消: "${task.query}"`);
       } else {
-        logger.error(`[TaskQueue] ❌ 失败: "${task.query}" — ${e.message}`);
+        logger.error(`[TaskQueue] ❌ 失败: "${task.query}" — ${errorMessage}`);
       }
     } finally {
       this.runningCount--;
@@ -272,6 +379,10 @@ export class TaskQueue {
         'canceled',
         id,
       );
+      const controller = this.abortControllers.get(id);
+      if (controller && !controller.signal.aborted) {
+        controller.abort(new Error('Canceled by user'));
+      }
       logger.info(`[TaskQueue] 🛑 强制中止任务: "${task.query}" (id=${task.id})`);
       return { ...task, status: 'canceled', cancelRequestedAt, failureCode: 'canceled' };
     }

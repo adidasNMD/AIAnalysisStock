@@ -39,7 +39,7 @@ const catalystItemSchema = z.object({
   note: z.string().trim().optional(),
   source: z.string().trim().optional(),
   confidence: catalystConfidenceSchema.optional(),
-});
+}).strict();
 const stringListSchema = z.array(z.string().trim().min(1));
 const requiredTextSchema = z.string().trim().min(1);
 const optionalTextSchema = z.string().trim().optional();
@@ -121,6 +121,15 @@ export const createOpportunityPayloadSchema = z.object({
   proxyProfile: opportunityProxyProfileSchema.optional(),
   ipoProfile: opportunityIpoProfileSchema.optional(),
   catalystCalendar: z.array(catalystItemSchema).optional(),
+}).strict().superRefine((body, ctx) => {
+  const title = (body.title || body.query || '').trim();
+  if (!title) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['title'],
+      message: 'title or query is required',
+    });
+  }
 });
 
 export const updateOpportunityPayloadSchema = z.object({
@@ -143,7 +152,10 @@ export const updateOpportunityPayloadSchema = z.object({
   proxyProfile: opportunityProxyProfileSchema.optional(),
   ipoProfile: opportunityIpoProfileSchema.optional(),
   catalystCalendar: z.array(catalystItemSchema).optional(),
-});
+}).strict();
+
+export type CreateOpportunityPayload = z.infer<typeof createOpportunityPayloadSchema>;
+export type UpdateOpportunityPayload = z.infer<typeof updateOpportunityPayloadSchema>;
 
 export const runtimeConfigPatchSchema = z.object({
   t1Enabled: z.boolean().optional(),

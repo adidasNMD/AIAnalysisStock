@@ -243,6 +243,7 @@
 .mission-running-meta { font-size: 0.75rem; color: var(--text-secondary); }
 .tag { color: var(--accent-amber); font-weight: 600; }
 .tag.accent { color: var(--accent-cyan); }
+.tag.danger { color: var(--accent-crimson); }
 
 .today-summary { padding: 20px; margin-bottom: 24px; }
 .today-header {
@@ -754,9 +755,41 @@
 .queue-section { margin-top: 8px; }
 .queue-section h3 { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 8px; }
 .queue-stats { font-size: 0.75rem; color: var(--text-tertiary); font-family: var(--font-mono); margin-bottom: 8px; }
-.queue-card { display: flex; justify-content: space-between; padding: 8px 12px; background: var(--bg-secondary); border-radius: 6px; margin-bottom: 4px; font-size: 0.8rem; }
+.queue-recovery-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 51, 102, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 51, 102, 0.06);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+.queue-card { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 8px 12px; background: var(--bg-secondary); border-radius: 6px; margin-bottom: 4px; font-size: 0.8rem; }
+.queue-card.recoverable {
+  border: 1px solid rgba(245, 166, 35, 0.14);
+}
 .queue-query { color: var(--text-primary); flex: 1; }
 .queue-depth { color: var(--text-tertiary); font-family: var(--font-mono); }
+.queue-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.queue-failure-code {
+  color: var(--accent-amber);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+}
+.queue-failure-code.danger {
+  color: var(--accent-crimson);
+}
+.queue-failure-code.info {
+  color: var(--text-tertiary);
+}
 
 /* ── Opportunity Workbench ── */
 
@@ -2722,6 +2755,58 @@ button.board-health-chip {
 
 /* Consensus */
 .consensus-section { padding: 20px; }
+.mission-recovery-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+}
+.mission-recovery-banner-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.mission-recovery-banner-main h4 {
+  margin: 0 0 6px;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+}
+.mission-recovery-banner-main p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.mission-recovery-meta,
+.mission-recovery-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mission-recovery-meta {
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+}
+.mission-recovery-banner-actions {
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+@media (max-width: 720px) {
+  .mission-recovery-banner {
+    flex-direction: column;
+  }
+
+  .mission-recovery-banner-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
 .run-diff-header {
   display: flex;
   align-items: flex-start;

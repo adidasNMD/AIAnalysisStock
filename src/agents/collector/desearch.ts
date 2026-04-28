@@ -1,6 +1,16 @@
 import { RawSignal } from '../../models/types';
 import { v4 as uuidv4 } from 'uuid';
 
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error('Canceled by user');
+  }
+}
+
 export class DesearchCollector {
   private apiKey: string;
   private baseUrl = 'https://api.desearch.ai'; 
@@ -12,7 +22,8 @@ export class DesearchCollector {
   /**
    * Fetch recent tweets for a specific keyword, narrative, or cashtag
    */
-  async fetchRecentTweets(query: string, limit: number = 20): Promise<RawSignal[]> {
+  async fetchRecentTweets(query: string, limit: number = 20, options: RequestOptions = {}): Promise<RawSignal[]> {
+    throwIfCanceled(options.signal);
     if (!this.apiKey || this.apiKey.includes('your_')) {
       console.warn(`[DesearchCollector] ⚠️ API Key is missing or invalid. Returning MOCK data for query: "${query}"`);
       return this.getMockData(query);
@@ -25,7 +36,8 @@ export class DesearchCollector {
         headers: {
           'Authorization': this.apiKey,
           'Content-Type': 'application/json'
-        }
+        },
+        ...(options.signal ? { signal: options.signal } : {}),
       });
 
       if (!response.ok) {
@@ -54,6 +66,7 @@ export class DesearchCollector {
         }
       }));
     } catch (e) {
+      throwIfCanceled(options.signal);
       console.error('[DesearchCollector] Fetch Error:', e);
       return [];
     }
