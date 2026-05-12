@@ -1,6 +1,6 @@
 # Opportunity Runtime Maturity Technical Plan
 
-Last updated: 2026-04-28  
+Last updated: 2026-05-01
 Branch baseline: `codex/opportunity-runtime-maturity`  
 Scope: Mission execution core, Opportunity OS, durable state, eventing, API boundary, Workbench frontend state.
 
@@ -92,6 +92,8 @@ Mission 主体仍写在 `out/missions/*.json`，SQLite 保存 `missions_index`�
 - 恢复时无法只依赖 DB 重建完整运行视图。
 - JSON artifact schema 无迁移机制。
 
+当前 JS chunk 边界也已经补上：`dashboard/vite.config.ts` 通过 Rolldown `codeSplitting.groups` 固定 `react-vendor` 和 `markdown-vendor`，让 React/Router 与 Mission Viewer markdown 解析链有稳定缓存边界，并避免 markdown 解析链进入首页 initial resources。App shell 和 ErrorBoundary 的首屏图标已改为本地轻量 SVG，`lucide-react` 保持为路由懒加载 chunk。
+
 目标：
 
 - SQLite 保存 Mission 的 canonical metadata 和 latest materialized summary。
@@ -174,13 +176,14 @@ Workbench 当前同时依赖：
 
 ### 3.8 CSS and layout still carry control-room legacy
 
-`dashboard/src/App.css` 很大，固定底栏、历史控制台样式和 Workbench 样式混在一起。
+`dashboard/src/App.css` 曾经把固定底栏、历史控制台样式、Workbench 样式、Mission Viewer 样式、Watchlist 样式、Settings 样式、TrendRadar 样式和共享 workflow/feed/stream/timeline 样式混在一起。Workbench route 样式和响应式规则已经拆到 `dashboard/src/pages/opportunity-workbench/opportunity-workbench.css`，Mission Viewer route 样式已经拆到 `dashboard/src/pages/mission-viewer.css`，Command Center route 样式已经拆到 `dashboard/src/pages/command-center.css`，Watchlist route 样式已经拆到 `dashboard/src/pages/watchlist.css`，Settings route 样式已经拆到 `dashboard/src/pages/settings.css`，TrendRadar route 样式已经拆到 `dashboard/src/pages/trend-radar.css`，共享 workflow/feed/stream/timeline 样式已经拆到 `dashboard/src/styles/workflow-shared.css`，app shell/layout 样式已经拆到 `dashboard/src/styles/app-shell.css`，`App.css` 已退役。
 
 目标：
 
-- Workbench 样式独立成模块文件。
+- Workbench、Mission Viewer、Command Center、Watchlist、Settings、TrendRadar、app shell 和共享 workflow UI 样式已独立成 route/shared CSS 文件，Workbench 响应式规则也已随 Workbench route CSS 管理。
+- React/Router 和 markdown 解析链已独立成稳定 vendor chunk；`lucide-react` 已退出 initial resources。
 - 固定底栏和侧栏布局用 CSS variables 管理。
-- 720 / 960 / 1440 三档验收，避免按钮、长标题、底栏重叠。
+- `npm run dashboard:viewport-check` 固化 720 / 960 / 1440 三档验收，避免按钮、长标题、底栏重叠。
 
 ## 4. Target Architecture
 
@@ -296,23 +299,27 @@ running -> interrupted -> pending
 
 ### 5.2 Mission canonical tables
 
-建议逐步引入：
+当前已经引入 `missions` + `mission_artifacts`，并保留 `missions_index` 作为迁移期 fallback：
 
 ```sql
 missions (
   id TEXT PRIMARY KEY,
-  status TEXT NOT NULL,
   mode TEXT NOT NULL,
   query TEXT NOT NULL,
-  source TEXT,
+  tickers TEXT NOT NULL DEFAULT '[]',
   depth TEXT,
+  source TEXT,
   opportunityId TEXT,
-  latestRunId TEXT,
+  status TEXT NOT NULL,
   createdAt TEXT NOT NULL,
   updatedAt TEXT NOT NULL,
   inputPayload TEXT NOT NULL,
-  summaryPayload TEXT,
-  artifactPath TEXT
+  inputHash TEXT NOT NULL,
+  latestRunId TEXT,
+  latestEventId TEXT,
+  artifactPath TEXT,
+  artifactSha256 TEXT,
+  artifactSizeBytes INTEGER
 );
 
 mission_runs (
@@ -338,15 +345,17 @@ mission_artifacts (
   missionId TEXT NOT NULL,
   runId TEXT,
   kind TEXT NOT NULL,
-  path TEXT NOT NULL,
+  artifactPath TEXT NOT NULL,
+  sha256 TEXT,
+  sizeBytes INTEGER,
   contentType TEXT,
   createdAt TEXT NOT NULL,
-  sizeBytes INTEGER,
-  sha256 TEXT
+  updatedAt TEXT NOT NULL,
+  meta TEXT
 );
 ```
 
-短期不需要一次性删除 `missions_index`。可以先让新 `missions` 和旧 `missions_index` 双写，然后 API 切读新表。
+短期不需要一次性删除 `missions_index`。当前新 Mission 已经双写 `missions` 和旧 `missions_index`，API 读路径优先读 `missions`，再回退旧 index 和文件 artifact；历史行可以通过 `npm run db:missions:backfill` 或 `POST /api/diagnostics/missions/backfill` 补齐，覆盖率可通过 `GET /api/diagnostics/missions` 检查，artifact 修复建议可通过 `GET /api/diagnostics/mission-artifacts/repair-plan` 查看，安全自动修复可通过 `POST /api/diagnostics/mission-artifacts/repair` 执行。
 
 ### 5.3 Durable stream events
 
@@ -421,6 +430,7 @@ export interface StreamEnvelope<TPayload> {
 
 ```ts
 buildTaskDedupeKey(input: MissionInput): string
+buildMissionRetryDedupeKey(missionId: string, input: Pick<MissionInput, 'depth' | 'opportunityId'>): string
 ```
 
 默认规则：
@@ -432,6 +442,9 @@ mission:v1:{mode}:{normalizedQuery}:{sortedTickers}:{opportunityId || none}:{sou
 API 支持：
 
 - `idempotencyKey`：同一次用户操作重复提交返回同一 mission/run。
+- Mission retry/recovery active dedupe：同一 `missionId + depth + opportunityId` 的 pending/running retry 会被识别并复用，不再重复入队。
+- Retry response 会返回 `recoveryAudit`，Mission event meta 也会记录 `operation/recoveryAction/reusedExistingRetry/dedupeKey/idempotencyKey`，用于后续审计和 UI 解释。
+- Recovery action 会带成本提示，区分 Quick 低成本、Review/Standard 中成本、Deep 高成本。
 - `forceNewRun`：明确允许绕过 dedupe，用于手动重新运行。
 
 ### 6.3 Lease and recovery
@@ -482,17 +495,22 @@ Worker 领取任务：
 
 ```text
 src/server/routes/
+  health.ts
   missions.ts
   opportunities.ts
   queue.ts
+  mission-diagnostics.ts
   config.ts
   diagnostics.ts
   artifacts.ts
   streams.ts
 
 src/server/services/
+  health-service.ts
   mission-service.ts
   opportunity-service.ts
+  opportunity-operations-service.ts
+  opportunity-stream-service.ts
   queue-service.ts
   event-service.ts
   artifact-service.ts
@@ -602,7 +620,7 @@ System:
 | --- | --- | --- |
 | Server cache | query layer | opportunities, inbox, board health, queue, events |
 | URL state | router | search, filters, selected lane |
-| Local persistent UI | localStorage | draft, saved views |
+| Local persistent UI | localStorage | draft, saved views with pinned/default metadata, last workbench view |
 | Ephemeral UI | component/store | open drawer, loading action key, focused lane |
 
 禁止模式：
@@ -619,14 +637,23 @@ System:
 dashboard/src/queries/
   query-client.ts
   opportunity-queries.ts
+  opportunity-live-store.ts
+  opportunity-live-updates.ts
   mission-queries.ts
   queue-queries.ts
+  diagnostics-queries.ts
+  heat-graph-queries.ts
 ```
 
 职责：
 
 - 统一 fetch、retry、stale time、error。
-- SSE event 到达后 invalidate 对应 key。
+- 统一 list page envelope，legacy array caller 只从 wrapper 取 `items`。
+- Opportunity SSE event 到达后通过 `useOpportunityLiveUpdates`、invalidation map 和 deduped refresh plan 刷新对应 key；mission 生命周期事件会同步触发 queue refresh，单个刷新失败不会产生未处理 rejection。
+- Workbench live inbox/opportunity/board state 由 `useOpportunityLiveStore` 统一合并轮询快照、SSE 详情刷新和删除操作。
+- Queue polling、stale task 判定和 recoverable task 判定由 `queue-queries.ts` 统一提供。
+- CommandCenter diagnostics polling 由 `diagnostics-queries.ts` 统一提供。
+- Heat Transfer Graph polling 由 `heat-graph-queries.ts` 统一提供。
 - polling 降级由 query layer 管理，不在页面手工写 6 个 `usePolling`。
 
 如果允许引入依赖，优先考虑 TanStack Query。若不想新增依赖，先实现内部 mini query layer。
@@ -637,19 +664,36 @@ dashboard/src/queries/
 
 ```text
 dashboard/src/pages/opportunity-workbench/
-  WorkbenchPage.tsx
-  useWorkbenchController.ts
+  OpportunityWorkbenchView.tsx
+  WorkbenchSections.tsx
+  BoardOpportunityList.tsx
+  OpportunitySearchMatchBlock.tsx
+  workbench-controller.ts
+  actions.ts
+  creation-actions.ts
+  detail-actions.ts
+  mission-actions.ts
+  automation-actions.ts
   useWorkbenchViewState.ts
-  useOpportunityLiveUpdates.ts
+  interaction-state.ts
+  workbench-storage.ts
+  query/live update hooks
   selectors.ts
   components/*
 ```
 
 目标：
 
-- Page 只组装布局。
-- Controller 负责 actions。
+- `OpportunityWorkbench.tsx` 只保留 route/page 入口。
+- `workbench-controller.ts` 负责数据、动作、view state、derived state 和快捷键编排。
+- `OpportunityWorkbenchView.tsx` 只负责页面大区块顺序。
+- `WorkbenchSections.tsx` 负责 header、control、action/review、creation/feed、board、detail 这些 layout section。
+- `BoardOpportunityList.tsx` 负责 board 空态和机会卡迭代边界，并已为大列表启用 per-column 虚拟滚动、滚动位置记忆、键盘滚动和动态 row estimate；`dashboard:viewport-check` 会硬断言键盘滚动、filter scope reset 和滚动位置恢复。
+- `OpportunitySearchMatchBlock.tsx` 负责把 search query 的字段级命中原因显示在卡片上。
+- `actions.ts` 只保留兼容门面，creation/detail/mission/automation hooks 分别负责各自动作。
+- Storage adapter 负责 draft、saved views、default/pinned view metadata 和 last workbench view 的安全 localStorage JSON 读写。
 - Query hooks 负责数据。
+- Interaction state 负责 live clock、lane focus timeout/ref 和 Action Inbox 快捷键。
 - Selectors 负责 derived view model。
 - Components 只渲染。
 
@@ -658,7 +702,7 @@ dashboard/src/pages/opportunity-workbench/
 优先做这些：
 
 - 全局搜索保留，但结果要显示命中原因。
-- Saved views 增加 pinned/default。
+- Saved views 已支持 pinned/default，后续继续打磨命中原因和视图管理体验。
 - 机会详情抽屉加入 field provenance。
 - Inbox 排序显示 score breakdown。
 - Mission recovery 面板显示失败原因、建议动作和预计成本。
@@ -672,6 +716,24 @@ dashboard/src/pages/opportunity-workbench/
 - 720px：侧栏变顶部，底栏不遮挡内容，卡片按钮换行。
 - 960px：两列布局可读，详情抽屉不挤压主列表。
 - 1440px：Inbox、Board、EventFeed 信息密度稳定。
+
+自动化入口：
+
+```bash
+npm run dashboard:viewport-check
+npm run dashboard:build-size-check
+npm run dashboard:quality-check
+```
+
+脚本默认自动启动 Vite、warm up route chunks、mock 核心 API、检查 Workbench / Command Center / Mission Timeline / TrendRadar / TrendRadar Raw / Mission Viewer / Watchlist / Settings，并覆盖 Workbench 空态/详情抽屉态、Workbench 失败恢复成功/失败动作态、Workbench 默认 120 张机会卡压力态、Command Center 诊断异常态、Mission Timeline 空态、Mission Timeline 失败恢复态、Mission Viewer 运行中取消态、Mission Viewer 失败恢复态、TrendRadar 空态和 72 条长标题压力态、TrendRadar Raw 空态和 260 条长表格压力态、Watchlist 空态和 84 标的大监控池压力态、Settings 错误态；截图、`report.json`、`latest.json` 和 `summary.md` 写入 `out/viewport-qa`。Command Center 诊断异常态会在 720 / 960 / 1440 下硬断言 DB migrations 降级状态、Mission canonical backfill 入口、Mission artifacts repair/refresh 入口、Opportunity field evidence backfill 入口、多操作按钮无重叠，并点击修复、刷新、回填操作验证无错误提示。Mission 失败恢复态会硬断言失败时间线卡片、失败 run metadata、最近恢复审计、恢复筛选、缺失 baseline evidence 提示、长 trace 渲染、检查 trace、重试按钮和跳转 CommandCenter 诊断。TrendRadar Raw 已拆出过滤/统计/分页状态 helper，支持标题/来源/标签搜索、80 条稳定分页、长标题双行截断、紧凑状态/来源/标签单元格和可聚焦横向表格。TrendRadar Raw 压力态会在 720 / 960 / 1440 下硬断言初始分页、搜索单条命中、状态筛选、下一页翻页和窄屏横向滚动。TrendRadar Hub 已拆出聚合 helper，统一生成 summary、top items 和 platform groups，避免渲染中重复 filter；Watchlist 已拆出搜索/分组/排序/统计 helper，支持状态统计、代码/名称/趋势/来源搜索、长文本卡片布局、价格变化和每组预览窗口，大分组默认展示前 9 个并可展开，84 标的压力态 720px 页面高度已收敛到 8308px。`watchlist-stress` 会在 720 / 960 / 1440 下硬断言初始折叠窗口、搜索过滤、展开更多和收起恢复；当前 Workbench + Command Center diagnostics + Mission running controls + Mission recovery + Mission Timeline recovery filters + Workbench source provenance + field evidence filter/artifact link/record/invalidate/restore + score evidence/contribution drilldown + catalyst action drawer checks + pre-trade catalyst link checks + manual pre-trade confirmation + audit trail checks + TrendRadar Raw + Watchlist 总 Interaction Checks 为 150/150 通过。`--stress-opportunities <n>` 可以把 Workbench 压力态切到 500/1000 张并输出独立报告；当前 Board column 已使用 per-column 虚拟滚动，默认 120 张压力态只挂载 9 张机会卡，workbench-stress 最新最大 DOM 3979。虚拟列表会按 board/filter 记忆滚动位置，支持键盘滚动，并在状态条显示挂载数、范围、定位和进度；它也会测量当前可见行的真实高度，动态调整 board/filter 级 row estimate，并同步 `content-visibility` intrinsic size。虚拟列表获得焦点后支持 `ArrowUp/ArrowDown` 定位卡片、`Enter` 打开当前卡片详情、`PageUp/PageDown` 滚动列表。详情抽屉会在打开后聚焦关闭按钮，支持 `Escape` 关闭，并恢复焦点到原触发按钮或虚拟列表。默认 `workbench-stress` 还会执行 `Interaction Checks`，在 720 / 960 / 1440 下硬断言 drawer 初始焦点、drawer 焦点恢复、虚拟卡片 drawer 焦点恢复、active row 键盘定位、Enter 打开详情后恢复列表焦点、键盘滚动、filter scope reset 和滚动位置恢复，压力态检查为 21/21 通过；`workbench-recovery-action` 额外硬断言 Quick 重跑、恢复动作成本提示、重复点击只提交一次 retry 请求、顶部反馈、卡片内反馈和查看任务入口；`workbench-recovery-failure` 额外硬断言 503 失败反馈、先检查服务建议、卡片内失败建议和不展示查看任务入口，Workbench 相关检查合计 81/81 通过，覆盖 source provenance、field evidence filter/artifact link/record/invalidate/restore、score evidence/contribution 和 catalyst action 抽屉断言、pre-trade catalyst link 断言、manual pre-trade confirmation、审计同步与详情抽屉 audit trail 断言。`--stress-expand-rounds <n>` 会增加 `workbench-stress-expand` 场景并记录每轮虚拟滚动后的 `Interaction Metrics`；500 张、滚动 3 轮时最多挂载 9 张机会卡，DOM 到 3821 节点，0 soft warning。报告也记录 smoke 级性能观测：navigation/action/screenshot/inspect 耗时、DOM 节点数、可见节点数、页面高度、渲染卡片数、截图体积，以及 slowest/largest DOM/tallest pages 汇总。Workbench stress DOM 超过 10k、总耗时超过 5s、截图超过 6MB、页面高度超过 60k px 或压力态渲染机会卡超过 48 张时会产生 soft warning；同一路由相对上次快照出现明显趋势退化时也会产生 warning，默认规则是总耗时当前至少 5s 且同时增加 30% 和 1000ms、DOM 同时增加 15% 和 500 节点、截图同时增加 30% 和 0.5MB、页面高度同时增加 25% 和 2000px。导航阶段会对瞬时 `page.goto` 失败做一次重试，截图阶段也会重试；attempts 会分别写入 `Navigation Retries` 和 `Screenshot Retries`。默认只提示，使用 `--fail-on-warning` 才会让 warning 变成失败。该数据用于观察趋势，不作为精确 benchmark。
+
+Opportunity source provenance 已经扩展出统一 `fieldEvidence` summary：后端在 Opportunity summary 中同时索引基础字段、score snapshot、relay/proxy profile、IPO/catalyst source refs、最新 Mission、最新 event 和人工补充的 `field_evidence_recorded` 事件；Workbench 详情抽屉会在 provenance header 显示字段覆盖数。字段 label、kind、source、confidence 的基础规则已收口到 `src/workflows/opportunity-field-registry.ts`，后端 summary、手动 evidence 记录、作废/恢复审计和前端记录表单都复用同一套归一化结果，避免继续用 `scores.*` 这类字符串规则推断语义。人工字段证据现在会双写 `opportunity_field_evidence` canonical 表，并以 `field_evidence_recorded` 事件 id 作为 evidence id；作废/恢复会更新 canonical status，summary 优先读表，旧事件流继续作为历史 fallback。历史 `field_evidence_*` 事件可以通过 CLI 或 diagnostics API backfill 到 canonical 表，覆盖率诊断会报告 missing canonical、orphan canonical、status mismatch 和 missing field meta。字段证据现在可以携带 Mission artifact 反查链接：score/profile 在有 latest run evidence 时深链到 Mission Viewer 的 `?run=` 视图，Mission/event refs 回到对应 Mission artifact context。详情抽屉也可以为任意已索引字段补充 evidence/source/confidence/note，并写入 Opportunity 事件流，刷新后反投进 `fieldEvidence.items`；人工证据可通过 `field_evidence_invalidated` 作废，summary 会排除已作废项并保留作废审计事件；作废证据可通过 `field_evidence_restored` 恢复，审计视图支持按 recorded / invalidated / restored、field、source、confidence 筛选。评分解释器现在优先使用统一 field evidence，缺失时回退旧的 sourceProvenance/profile refs，保证新旧 summary 都能解释为什么某个排序因子靠前。
+
+催化日历提醒已经从简单日期提示升级为行动提示：missed、overdue、today、soon、missing date、observed 和 watch 会分别派生复核错过、今天验证、提前准备、补日期、复盘观察或继续观察等下一步。单机会提醒现在也会先按紧急度排序，再提供给 Workbench drawer 和 pre-trade checklist；交易前检查清单会把 missed / overdue / missing date 变成 block，把 observed / watch 变成 warn，把 today / soon 变成 pass。非 pass 清单项可以在前端本地标记已处理并记录 evidence/source note，并会通过 pre-trade confirmation API 写入 Opportunity 事件流；Opportunity event 查询支持 type filter，详情抽屉会拉取并展示 pre-trade audit trail，人工确认只代表处理进度，不覆盖系统自动 readiness。Workbench drawer 的 catalyst action、pre-trade catalyst link 和 manual confirmation、审计同步与 audit trail 检查会在三档 viewport 下断言缺日期和已观察催化的行动文案。
+
+`dashboard:build-size-check` 默认先执行 production build，再读取 `dashboard/dist` 并生成 `out/dashboard-build-size/report.json`、`latest.json` 和 `summary.md`。它记录所有产物的原始体积与 gzip 体积、`index.html` initial resources、largest JS/CSS chunks、React vendor、markdown vendor 和 Opportunity Workbench chunk，并对绝对体积、趋势退化、lazy-only chunk 意外进入 initial resources 做 soft warning。当前 Vite chunk 策略使用 Rolldown `codeSplitting.groups` 并关闭依赖递归吸附，避免 `markdown-vendor` 把 React/JSX runtime 吸进去后出现在首页 preload 链路；首屏入口约 75.9KB gzip，入口 `index` chunk 约 5.3KB gzip。该脚本补齐 viewport QA 没覆盖的打包边界：如果 route chunk、vendor chunk 或 initial JS 慢慢膨胀，可以在用户体感变慢前先看到。
+
+`dashboard:quality-check` 是聚合入口：默认串联 build size QA 和 viewport QA，再输出 `out/dashboard-quality/report.json` 与 `summary.md`。它把 hard failure、soft warning、initial resources、slowest viewport check、largest DOM 和 warning/failure preview 放在同一份报告中；`--from-existing` 可以只汇总最近一次子报告，适合长 QA 后快速复读结果。
 
 ## 10. Implementation Phases
 
@@ -717,6 +779,7 @@ Acceptance:
 
 - Same query with different opportunityId can create separate tasks.
 - Same user idempotencyKey returns same mission/run.
+- Same active retry/recovery request returns the existing mission/run instead of enqueuing a duplicate.
 - Running task with stale heartbeat requeues cleanly on daemon restart.
 
 ### Phase 2: Durable stream event log
@@ -759,11 +822,9 @@ Files:
 
 Tasks:
 
-- Add `missions` and `mission_artifacts`.
-- Backfill from `missions_index` and existing artifacts.
-- Write mission canonical row before queueing.
 - Update mission row on every status transition.
-- Change list API to read DB first.
+- Add dry-run repair reports for canonical Mission rows.
+- Keep list/detail API on canonical DB first, with fallback until backfill is complete.
 
 Acceptance:
 
@@ -793,6 +854,8 @@ Tasks:
 Acceptance:
 
 - Invalid profile fields return 400 with precise path.
+- Mission and Opportunity list APIs can opt into `{ items, pageInfo }` without breaking default array responses.
+- Dashboard API/query layer can consume Mission/Opportunity page envelopes while preserving legacy array helpers and list hooks.
 - Opportunity list latency does not grow linearly with heavy timeline includes.
 - Route tests cover mission/opportunity/config writes.
 
@@ -811,15 +874,28 @@ Files:
 Tasks:
 
 - Add query/cache layer.
-- Move Workbench actions into controller hook.
-- Move live update handling into `useOpportunityLiveUpdates`.
-- Keep URL state and localStorage state explicit.
+- Keep `PageEnvelope<T>` wrappers as the list contract for Mission/Opportunity queries.
+- Keep queue polling behind `useQueueQuery`.
+- Keep CommandCenter diagnostics behind `useCommandCenterDiagnostics`.
+- Keep heat graph polling behind `useHeatTransferGraphsQuery`.
+- Keep Workbench actions split into creation/detail/mission/automation controller hooks behind the existing `actions.ts` facade.
+- Continue moving live update handling into `useOpportunityLiveUpdates`.
+- Keep live snapshot/upsert/remove merging in `useOpportunityLiveStore`.
+- Keep live clock, lane focus, and keyboard shortcut state in `interaction-state.ts`.
+- Keep URL state explicit and route draft/saved-view/default/last-view persistence through `workbench-storage.ts`.
 - Add tests for selectors and live merge behavior.
 
 Acceptance:
 
 - SSE event updates only affected opportunity/inbox item.
 - Polling refresh cannot overwrite newer streamed data with older payload.
+- Live inbox rows can be removed when the detail endpoint reports they no longer belong in Action Inbox.
+- Query invalidation map covers high-signal Opportunity events.
+- Refresh planning dedupes repeated stream events and repeated opportunity ids before touching cache.
+- Action Inbox shortcut mapping stays stable while focus timeout/ref behavior lives outside the page component.
+- Heat Graph to Relay Opportunity seed payload mapping is covered by helper tests.
+- Draft/saved-view/last-view storage falls back safely for malformed JSON, missing browser storage, and failed writes.
+- SSE helper tests cover replay cursor construction, lastEventId priority, and replay frame dedupe.
 - Workbench remains usable with SSE disconnected.
 
 ### Phase 6: Product interaction polish
@@ -828,17 +904,17 @@ Acceptance:
 
 Tasks:
 
-- Add score explanation drilldown.
+- Score explanation drilldown now exposes factor evidence plus positive-driver / risk-drag / watch-factor contribution direction and relative weight; continue calibrating weights against real ranking data.
 - Add field provenance in detail drawer.
 - Add bulk filters and bulk actions.
 - Add failure recovery entry in Inbox and detail.
-- Add responsive CSS split and layout QA.
+- Continue responsive CSS split and layout QA; Workbench, Mission Viewer, Command Center, Watchlist, Settings, TrendRadar, app shell, shared workflow/feed/stream/timeline, Workbench responsive CSS, React/Router vendor chunk, markdown vendor chunk, shell icon lightening, and dashboard quality aggregation are done.
 
 Acceptance:
 
 - 用户能看懂为什么一个机会排在前面。
 - 用户能从失败任务直接选择 retry/review/archive。
-- 720 / 960 / 1440 截图无重叠。
+- `npm run dashboard:viewport-check` 在 720 / 960 / 1440 下无横向溢出、文本溢出和 console error。
 
 ## 11. Test Strategy
 
@@ -856,9 +932,10 @@ Frontend:
 
 - Workbench selector tests.
 - Query invalidation tests.
-- SSE reconnect tests.
+- Hook-level SSE reconnect tests cover replay cursor reuse and pending timer cleanup.
 - URL state serialization tests.
-- Draft/saved view persistence tests.
+- Draft/saved view/default view/last-view persistence tests.
+- Board list tests cover large-list render windows, virtual ranges, and stable render increments.
 - Responsive manual screenshot QA.
 
 Required commands before merge:
@@ -916,7 +993,7 @@ Recommended next implementation sequence:
 5. Update Opportunity SSE to replay from `stream_events`.
 6. Add deep Zod schemas for Opportunity profiles.
 7. Add Workbench query layer wrapper for opportunities/inbox/board/events.
-8. Move Workbench live merge logic out of page component.
+8. Move Workbench live merge logic out of page component into `useOpportunityLiveStore`.
 9. Add responsive CSS fixes for fixed bottom strip and Workbench card actions.
 10. Add backfill/read path plan for Mission canonical DB.
 

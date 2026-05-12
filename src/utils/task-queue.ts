@@ -180,6 +180,17 @@ export class TaskQueue {
     return task || null;
   }
 
+  async getActiveByDedupeKey(dedupeKey: string): Promise<QueueTask | null> {
+    const db = await getDb();
+    const task = await db.get<QueueTask>(
+      'SELECT * FROM tasks WHERE dedupeKey = ? AND status IN (?, ?) ORDER BY createdAt DESC LIMIT 1',
+      dedupeKey,
+      'pending',
+      'running',
+    );
+    return task || null;
+  }
+
   async recover(): Promise<RecoverResult> {
     const db = await getDb();
     let totalRecovered = 0;

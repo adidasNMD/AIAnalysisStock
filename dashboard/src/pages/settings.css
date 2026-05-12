@@ -1,0 +1,47 @@
+/* ===========================================
+   Settings Route Styles
+   =========================================== */
+
+/* ── Settings ── */
+
+.settings-hint { font-size: 0.8rem; color: var(--text-tertiary); margin-bottom: 20px; }
+.save-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: linear-gradient(135deg, var(--accent-green), #009966);
+  color: white;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.save-btn:disabled { opacity: 0.5; }
+
+.settings-section { padding: 20px; margin-bottom: 16px; }
+.settings-section h3 { font-size: 1rem; margin-bottom: 14px; }
+.settings-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.settings-row label { min-width: 100px; font-size: 0.8rem; color: var(--text-secondary); }
+.settings-row input, .settings-row select {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+}
+.settings-row.compact input { max-width: 120px; }
+
+.model-profile { margin-bottom: 16px; padding: 14px; background: rgba(0,0,0,0.2); border-radius: 8px; }
+.model-name { font-size: 0.85rem; font-weight: 600; margin-bottom: 10px; }
+
+.service-roles { margin-bottom: 14px; }
+.service-label { font-size: 0.85rem; font-weight: 600; color: var(--accent-cyan); margin-bottom: 8px; }
+.roles-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.role-item { display: flex; align-items: center; gap: 8px; }
+.role-name { font-size: 0.75rem; color: var(--text-secondary); min-width: 120px; font-family: var(--font-mono); }
+.role-item select { flex: 1; padding: 4px 8px; background: var(--bg-primary); border: 1px solid var(--glass-border); border-radius: 4px; color: var(--text-primary); font-size: 0.75rem; }

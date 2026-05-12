@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(),
   attachRunId: vi.fn(),
   getByIdempotencyKey: vi.fn(),
+  getActiveByDedupeKey: vi.fn(),
   createMissionRecord: vi.fn(),
   deleteMission: vi.fn(),
   updateMissionRecord: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock('../utils/task-queue', () => ({
     enqueue: mocks.enqueue,
     attachRunId: mocks.attachRunId,
     getByIdempotencyKey: mocks.getByIdempotencyKey,
+    getActiveByDedupeKey: mocks.getActiveByDedupeKey,
   },
 }));
 
@@ -56,11 +58,26 @@ describe('mission submission', () => {
     });
     mocks.attachRunId.mockResolvedValue(undefined);
     mocks.getByIdempotencyKey.mockResolvedValue(null);
+    mocks.getActiveByDedupeKey.mockResolvedValue(null);
     mocks.createMissionRun.mockResolvedValue({ id: 'run-1', attempt: 1 });
     mocks.createMissionRecord.mockImplementation((input, _traceId, status = 'queued') => ({
       id: 'mission-1',
       input,
       status,
+      createdAt: '2026-04-26T00:00:00.000Z',
+      updatedAt: '2026-04-26T00:00:00.000Z',
+    }));
+    mocks.updateMissionRecord.mockImplementation((_id, updater) => updater({
+      id: 'mission-1',
+      input: {
+        mode: 'review',
+        query: 'AI infrastructure review',
+        tickers: ['NVDA'],
+        depth: 'deep',
+        source: 'opportunity_action',
+        opportunityId: 'opp-1',
+      },
+      status: 'failed',
       createdAt: '2026-04-26T00:00:00.000Z',
       updatedAt: '2026-04-26T00:00:00.000Z',
     }));
@@ -168,5 +185,104 @@ describe('mission submission', () => {
     expect(mission?.id).toBe('mission-existing');
     expect(mocks.createMissionRecord).not.toHaveBeenCalled();
     expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('uses a retry-specific active dedupe key and preserves idempotency metadata', async () => {
+    const { retryMissionRun } = await import('../workflows/mission-submission');
+    mocks.getMission.mockReturnValue({
+      id: 'mission-1',
+      input: {
+        mode: 'review',
+        query: 'AI infrastructure review',
+        tickers: ['NVDA'],
+        depth: 'deep',
+        source: 'opportunity_action',
+        opportunityId: 'opp-1',
+      },
+      status: 'failed',
+      createdAt: '2026-04-26T00:00:00.000Z',
+      updatedAt: '2026-04-26T00:00:00.000Z',
+    });
+
+    const mission = await retryMissionRun('mission-1', {
+      depth: 'quick',
+      source: 'manual_retry',
+      idempotencyKey: 'retry-request-1',
+    });
+
+    expect(mission?.id).toBe('mission-1');
+    expect(mocks.getActiveByDedupeKey).toHaveBeenCalledWith(expect.stringMatching(/^mission-retry:v1:/));
+    expect(mocks.enqueue).toHaveBeenCalledWith(
+      'AI infrastructure review',
+      'quick',
+      'manual_retry',
+      90,
+      expect.objectContaining({
+        missionId: 'mission-1',
+        dedupeKey: expect.stringMatching(/^mission-retry:v1:/),
+        idempotencyKey: 'retry-request-1',
+        inputHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+    const options = mocks.enqueue.mock.calls[0][4] as { inputPayload: string };
+    expect(options).toEqual(expect.objectContaining({
+      dedupeKey: expect.stringMatching(/^mission-retry:v1:/),
+      idempotencyKey: 'retry-request-1',
+    }));
+    expect(JSON.parse(options.inputPayload)).toEqual(expect.objectContaining({
+      depth: 'quick',
+      opportunityId: 'opp-1',
+      source: 'manual_retry',
+    }));
+    expect(mocks.appendMissionEvent).toHaveBeenCalledWith('mission-1', '2026-04-26T00:00:00.000Z', expect.objectContaining({
+      type: 'queued',
+      meta: expect.objectContaining({
+        operation: 'mission_retry',
+        recoveryAction: 'queued_new_retry',
+        reusedExistingRetry: false,
+        idempotencyKey: 'retry-request-1',
+      }),
+    }));
+  });
+
+  it('returns the existing mission when the same retry is already pending or running', async () => {
+    const { retryMissionRun } = await import('../workflows/mission-submission');
+    const mission = {
+      id: 'mission-1',
+      input: {
+        mode: 'review',
+        query: 'AI infrastructure review',
+        tickers: ['NVDA'],
+        depth: 'deep',
+        source: 'opportunity_action',
+        opportunityId: 'opp-1',
+      },
+      status: 'failed',
+      createdAt: '2026-04-26T00:00:00.000Z',
+      updatedAt: '2026-04-26T00:00:00.000Z',
+    };
+    mocks.getMission.mockReturnValue(mission);
+    mocks.getActiveByDedupeKey.mockResolvedValue({
+      id: 'task-existing',
+      missionId: 'mission-1',
+      status: 'running',
+    });
+
+    const retried = await retryMissionRun('mission-1', { depth: 'quick' });
+
+    expect(retried?.id).toBe('mission-1');
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+    expect(mocks.createMissionRun).not.toHaveBeenCalled();
+    expect(mocks.updateMissionRecord).toHaveBeenCalledWith('mission-1', expect.any(Function));
+    expect(mocks.appendMissionEvent).toHaveBeenCalledWith('mission-1', '2026-04-26T00:00:00.000Z', expect.objectContaining({
+      type: 'queued',
+      message: 'Retry request reused an active retry already in queue or running.',
+      meta: expect.objectContaining({
+        operation: 'mission_retry',
+        recoveryAction: 'reused_active_retry',
+        reusedExistingRetry: true,
+        taskId: 'task-existing',
+      }),
+    }));
   });
 });

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  DRAFT_STORAGE_KEY,
   createDraftState,
   readStoredDraft,
+  writeStoredDraft,
   type DraftState,
 } from './model';
 
@@ -20,8 +20,7 @@ export function useOpportunityDraftState(defaultType: DraftState['type'] = 'rela
   const [draft, setDraft] = useState<DraftState>(() => readStoredDraft() || createDraftState(defaultType));
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    writeStoredDraft(draft);
   }, [draft]);
 
   const applyDraftTemplate = useCallback((type: DraftState['type']) => {

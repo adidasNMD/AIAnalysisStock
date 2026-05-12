@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Brain, BarChart3, Shield, TrendingUp, TrendingDown, Clock, Zap, Target, Activity, CheckCircle, Search, Filter, RotateCw } from 'lucide-react';
+import { ArrowLeft, Brain, BarChart3, Shield, TrendingUp, TrendingDown, Clock, Zap, Target, Activity, CheckCircle, Search, Filter, RotateCw, XCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import {
+  cancelMission,
   createMission,
   fetchMissionDetail,
   fetchMissionEvents,
@@ -20,7 +21,10 @@ import {
   type MissionRun,
   type TraceContent,
 } from '../api';
+import { DEFAULT_STALE_TASK_THRESHOLD_MS } from '../queries/queue-queries';
 import { getFailureCodeInfo } from '../utils/recovery';
+import '../styles/workflow-shared.css';
+import './mission-viewer.css';
 
 // 终态集合 — 这些状态不会再变化，到达后停止轮询
 const TERMINAL_STATES = new Set(['fully_enriched', 'main_only', 'failed', 'canceled']);
@@ -196,6 +200,7 @@ export function MissionViewer() {
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
+  const [cancelingTaskId, setCancelingTaskId] = useState<string | null>(null);
   const [recovery, setRecovery] = useState<MissionRecoverySuggestion | null>(null);
   const [recoveryActionId, setRecoveryActionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -205,6 +210,10 @@ export function MissionViewer() {
   const traceCacheRef = useRef<Record<string, TraceContent | null>>({});
   const latestRun = runs[0] || null;
   const canRetry = !retrying && (!latestRun || !['queued', 'running'].includes(latestRun.status));
+  const latestRunTaskId = latestRun?.taskId || null;
+  const canCancelLatestRun = Boolean(
+    latestRunTaskId && latestRun && ['queued', 'running'].includes(latestRun.status) && cancelingTaskId !== latestRunTaskId,
+  );
   const requestedRunId = searchParams.get('run');
   const requestedCompareRunId = searchParams.get('compare');
 
@@ -476,6 +485,24 @@ export function MissionViewer() {
     setRetrying(false);
   };
 
+  const handleCancelLatestRun = async () => {
+    if (!id || !latestRunTaskId || !canCancelLatestRun) return;
+    setCancelingTaskId(latestRunTaskId);
+    setActionError(null);
+    try {
+      const canceled = await cancelMission(latestRunTaskId);
+      if (!canceled) {
+        throw new Error('Mission cancel request was not accepted');
+      }
+      resetRunSelection();
+      await loadMission(id);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Mission cancel failed');
+    } finally {
+      setCancelingTaskId(null);
+    }
+  };
+
   const handleRecoveryAction = async (action: MissionRecoveryAction) => {
     if (!id || !mission) return;
 
@@ -536,6 +563,17 @@ export function MissionViewer() {
       : 'pending';
   const visibleRecoveryActions = recovery?.suggestedActions || [];
   const recoveryFailureInfo = getFailureCodeInfo(recovery?.reason.failureCode);
+  const latestRunActive = latestRun && ['queued', 'running'].includes(latestRun.status);
+  const latestHeartbeatAgeMs = latestRun?.heartbeatAt
+    ? Date.now() - new Date(latestRun.heartbeatAt).getTime()
+    : null;
+  const latestHeartbeatAgeSeconds = latestHeartbeatAgeMs === null
+    ? null
+    : Math.max(0, Math.round(latestHeartbeatAgeMs / 1000));
+  const latestRunLooksStale = Boolean(
+    latestRun?.status === 'running'
+    && (latestHeartbeatAgeMs === null || latestHeartbeatAgeMs > DEFAULT_STALE_TASK_THRESHOLD_MS),
+  );
 
   // C1: optional chaining 安全取值
   const currentOpenBB = activePayload.openbbData?.find(d => d.ticker === selectedTicker);
@@ -557,15 +595,99 @@ export function MissionViewer() {
           </div>
         </div>
         <div className="trigger-controls">
-          <button type="button" onClick={handleRetry} disabled={!canRetry}>
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={!canRetry}
+            data-mission-viewer-action="retry"
+          >
             {retrying ? '重试排队中...' : '重新运行'}
           </button>
+          {latestRunActive && latestRunTaskId && (
+            <button
+              type="button"
+              className="danger-btn"
+              onClick={() => {
+                void handleCancelLatestRun();
+              }}
+              disabled={!canCancelLatestRun}
+              data-mission-viewer-action="cancel-active-run"
+              data-mission-task-id={latestRunTaskId}
+            >
+              <XCircle size={14} />
+              {cancelingTaskId === latestRunTaskId ? '取消中...' : '取消当前 Run'}
+            </button>
+          )}
         </div>
       </div>
-      {actionError && <div className="mode-hint" style={{ color: 'var(--accent-crimson)', marginBottom: '12px' }}>{actionError}</div>}
+      {actionError && (
+        <div
+          className="mode-hint"
+          style={{ color: 'var(--accent-crimson)', marginBottom: '12px' }}
+          data-mission-action-error
+        >
+          {actionError}
+        </div>
+      )}
+
+      {latestRunActive && (
+        <section
+          className={`mission-execution-banner glass-panel ${latestRunLooksStale ? 'stale' : ''}`}
+          data-mission-execution-banner
+          data-mission-run-status={latestRun.status}
+          data-mission-run-stale={latestRunLooksStale ? 'true' : 'false'}
+        >
+          <div className="mission-execution-main">
+            <span className={`consensus-badge ${latestRunLooksStale ? 'disagree' : 'partial'}`}>
+              {latestRunLooksStale ? 'STALE' : latestRun.status.toUpperCase()}
+            </span>
+            <div>
+              <h4>Run #{latestRun.attempt} · {latestRun.stage}</h4>
+              <p>
+                {latestRunLooksStale
+                  ? '心跳已经超时，建议先取消或到 Command Center 恢复卡住任务。'
+                  : '当前 Mission 仍在执行，取消会把关联任务和 run 标记为 canceled。'}
+              </p>
+              <div className="mission-recovery-meta">
+                {latestRun.workerLeaseId && <span>lease: {latestRun.workerLeaseId}</span>}
+                {latestRunTaskId && <span>task: {latestRunTaskId}</span>}
+                {latestHeartbeatAgeSeconds !== null
+                  ? <span>heartbeat: {latestHeartbeatAgeSeconds}s ago</span>
+                  : <span>heartbeat: missing</span>}
+              </div>
+            </div>
+          </div>
+          <div className="mission-recovery-banner-actions">
+            <button
+              type="button"
+              className="secondary-btn tiny"
+              onClick={() => navigate('/command-center')}
+              data-mission-viewer-action="open-command-center"
+            >
+              <Activity size={12} />
+              Command Center
+            </button>
+            {latestRunTaskId && (
+              <button
+                type="button"
+                className="secondary-btn tiny danger"
+                onClick={() => {
+                  void handleCancelLatestRun();
+                }}
+                disabled={!canCancelLatestRun}
+                data-mission-viewer-action="cancel-active-run-inline"
+                data-mission-task-id={latestRunTaskId}
+              >
+                <XCircle size={12} />
+                {cancelingTaskId === latestRunTaskId ? '取消中...' : '取消 Run'}
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       {recovery && (recovery.recoverable || visibleRecoveryActions.length > 0) && (
-        <section className="mission-recovery-banner glass-panel">
+        <section className="mission-recovery-banner glass-panel" data-mission-recovery-banner>
           <div className="mission-recovery-banner-main">
             <span className={`consensus-badge ${recoveryBadgeTone}`}>{recovery.summary.severity.toUpperCase()}</span>
             <div>
@@ -588,6 +710,8 @@ export function MissionViewer() {
                 className="secondary-btn tiny"
                 title={action.detail}
                 disabled={Boolean(recoveryActionId)}
+                data-mission-recovery-action={action.id}
+                data-mission-recovery-kind={action.kind}
                 onClick={() => {
                   void handleRecoveryAction(action);
                 }}
@@ -663,6 +787,8 @@ export function MissionViewer() {
                       key={run.id}
                       type="button"
                       className="consensus-inline"
+                      data-mission-run={run.id}
+                      data-run-status={run.status}
                       style={{
                         background: 'transparent',
                         border: 'none',
@@ -713,6 +839,7 @@ export function MissionViewer() {
                 <select
                   className="run-diff-select"
                   value={compareRunId || ''}
+                  data-run-compare-select
                   onChange={(event) => {
                     const nextCompareRunId = event.target.value || null;
                     setCompareRunId(nextCompareRunId);
@@ -731,7 +858,11 @@ export function MissionViewer() {
               </div>
 
               {compareError && (
-                <div className="mode-hint" style={{ color: 'var(--accent-crimson)', marginBottom: '12px' }}>
+                <div
+                  className="mode-hint"
+                  style={{ color: 'var(--accent-crimson)', marginBottom: '12px' }}
+                  data-run-compare-error
+                >
                   {compareError}
                 </div>
               )}
@@ -767,7 +898,13 @@ export function MissionViewer() {
             {showTrace ? (
               <div className="trace-timeline">
                 {activeTrace!.steps.map((step, i) => (
-                  <div key={i} className="trace-step glass-card">
+                  <div
+                    key={i}
+                    className="trace-step glass-card"
+                    data-trace-step
+                    data-trace-phase={step.phase}
+                    data-trace-agent={step.agentName}
+                  >
                     <div className="step-point"></div>
                     <div className="step-info">
                       <div className="step-agent">
@@ -780,7 +917,7 @@ export function MissionViewer() {
                         <span className="agent-time">{step.durationMs}ms</span>
                       </div>
                       
-                      <div className="step-output markdown-body custom-scroll">
+                      <div className="step-output markdown-body custom-scroll" data-trace-output>
                         {typeof step.output === 'string' ? (
                           <ReactMarkdown>{step.output}</ReactMarkdown>
                         ) : (

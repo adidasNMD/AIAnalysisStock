@@ -53,3 +53,13 @@ export function buildMissionTaskDedupeKey(input: MissionInput): string {
 
   return `mission:v1:${sha256(stableJson(identity)).slice(0, 32)}`;
 }
+
+export function buildMissionRetryDedupeKey(missionId: string, input: Pick<MissionInput, 'depth' | 'opportunityId'>): string {
+  const identity = {
+    missionId: missionId.trim(),
+    opportunityId: input.opportunityId?.trim() || null,
+    depth: input.depth || 'deep',
+  };
+
+  return `mission-retry:v1:${sha256(stableJson(identity)).slice(0, 32)}`;
+}

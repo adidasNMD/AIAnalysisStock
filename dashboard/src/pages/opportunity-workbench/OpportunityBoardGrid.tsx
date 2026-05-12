@@ -7,7 +7,9 @@ import type {
 import type { OpportunityStreamEvent } from '../../hooks/useAgentStream';
 import { BOARD_TYPES, type BoardFilterState, type BoardLiveSignal } from './model';
 import { BoardColumn } from './BoardColumn';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
+import type { WorkbenchSearchMatch } from './view-state';
 
 type OpportunityBoardGridProps = {
   groups: Record<OpportunityBoardType, OpportunitySummary[]>;
@@ -16,7 +18,9 @@ type OpportunityBoardGridProps = {
   activeBoardFilters: BoardFilterState;
   streamedEvents: OpportunityStreamEvent[];
   liveNow: number;
+  searchMatches: Map<string, WorkbenchSearchMatch>;
   automationAction: 'radar' | 'graph' | null;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
   recoveringMissionActionKey?: string | null;
   onToggleBoardFilter: (type: OpportunityBoardType, metricKey: string, count: number) => void;
   onClearBoardFilter: (type: OpportunityBoardType) => void;
@@ -35,7 +39,9 @@ export function OpportunityBoardGrid({
   activeBoardFilters,
   streamedEvents,
   liveNow,
+  searchMatches,
   automationAction,
+  missionRecoveryActionFeedback,
   recoveringMissionActionKey,
   onToggleBoardFilter,
   onClearBoardFilter,
@@ -58,7 +64,9 @@ export function OpportunityBoardGrid({
           activeMetricKey={activeBoardFilters[type]}
           streamedEvents={streamedEvents}
           liveNow={liveNow}
+          searchMatches={searchMatches}
           automationAction={automationAction}
+          missionRecoveryActionFeedback={missionRecoveryActionFeedback}
           recoveringMissionActionKey={recoveringMissionActionKey}
           onToggleBoardFilter={onToggleBoardFilter}
           onClearBoardFilter={onClearBoardFilter}

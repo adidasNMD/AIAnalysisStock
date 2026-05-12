@@ -7,18 +7,15 @@ import {
   runtimeConfigPatchSchema,
   sendValidationError,
 } from '../validation';
+import { sendInternalError } from '../route-helpers';
 
 export const configRouter = Router();
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 configRouter.get('/config/models', (_req: Request, res: Response) => {
   try {
     res.json(getFullConfig());
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -32,7 +29,7 @@ configRouter.put('/config/models', (req: Request, res: Response) => {
     const updated = reloadConfig();
     res.json({ success: true, config: updated });
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 

@@ -1,4 +1,4 @@
-import { Bookmark, BookmarkPlus, Filter, RotateCcw, Search, Trash2, X } from 'lucide-react';
+import { Bookmark, BookmarkPlus, Filter, Pin, RotateCcw, Search, Star, Trash2, X } from 'lucide-react';
 import type { InboxLane } from './model';
 import type { WorkbenchSavedView } from './view-state';
 
@@ -15,6 +15,8 @@ type WorkbenchViewBarProps = {
   onSaveView: () => void;
   onApplyView: (view: WorkbenchSavedView) => void;
   onDeleteView: (viewId: string) => void;
+  onTogglePinView: (viewId: string) => void;
+  onToggleDefaultView: (viewId: string) => void;
   onResetView: () => void;
 };
 
@@ -37,6 +39,8 @@ export function WorkbenchViewBar({
   onSaveView,
   onApplyView,
   onDeleteView,
+  onTogglePinView,
+  onToggleDefaultView,
   onResetView,
 }: WorkbenchViewBarProps) {
   return (
@@ -97,7 +101,12 @@ export function WorkbenchViewBar({
           {savedViews.map((view) => (
             <div
               key={view.id}
-              className={`saved-view-pill ${activeSavedViewId === view.id ? 'active' : ''}`}
+              className={[
+                'saved-view-pill',
+                activeSavedViewId === view.id ? 'active' : '',
+                view.isPinned ? 'pinned' : '',
+                view.isDefault ? 'default' : '',
+              ].filter(Boolean).join(' ')}
             >
               <button
                 type="button"
@@ -107,6 +116,24 @@ export function WorkbenchViewBar({
               >
                 <Bookmark size={12} />
                 <span>{view.label}</span>
+              </button>
+              <button
+                type="button"
+                className={`saved-view-meta ${view.isPinned ? 'active' : ''}`}
+                onClick={() => onTogglePinView(view.id)}
+                aria-label={`${view.isPinned ? '取消置顶' : '置顶'}视图 ${view.label}`}
+                title={view.isPinned ? '取消置顶' : '置顶'}
+              >
+                <Pin size={12} />
+              </button>
+              <button
+                type="button"
+                className={`saved-view-meta default ${view.isDefault ? 'active' : ''}`}
+                onClick={() => onToggleDefaultView(view.id)}
+                aria-label={`${view.isDefault ? '取消默认' : '设为默认'}视图 ${view.label}`}
+                title={view.isDefault ? '取消默认' : '设为默认'}
+              >
+                <Star size={12} />
               </button>
               <button
                 type="button"

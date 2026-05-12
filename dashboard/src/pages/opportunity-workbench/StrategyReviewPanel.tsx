@@ -55,7 +55,11 @@ export function StrategyReviewPanel({
         ) : digest.entries.map((entry) => {
           const missionId = entry.missionId;
           return (
-            <article key={entry.id} className={`strategy-review-entry ${entry.tone}`}>
+            <article
+              key={entry.id}
+              className={`strategy-review-entry ${entry.tone}`}
+              data-opportunity-id={entry.opportunity.id}
+            >
               <div className="strategy-review-entry-main">
                 <div className="strategy-review-entry-top">
                   <span className={`strategy-review-icon ${entry.tone}`}>{toneIcon(entry)}</span>
@@ -73,7 +77,12 @@ export function StrategyReviewPanel({
                 </div>
               </div>
               <div className="strategy-review-actions">
-                <button type="button" className="secondary-btn tiny" onClick={() => onOpenOpportunity(entry.opportunity)}>
+                <button
+                  type="button"
+                  className="secondary-btn tiny"
+                  data-opportunity-action="details"
+                  onClick={() => onOpenOpportunity(entry.opportunity)}
+                >
                   详情 <ArrowRight size={12} />
                 </button>
                 {missionId && (

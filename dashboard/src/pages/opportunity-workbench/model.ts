@@ -7,6 +7,13 @@ import type {
   OpportunitySummary,
 } from '../../api';
 import type { OpportunityStreamEvent } from '../../hooks/useAgentStream';
+import {
+  DRAFT_STORAGE_KEY,
+  readWorkbenchStorageJson,
+  writeWorkbenchStorageJson,
+} from './workbench-storage';
+
+export { DRAFT_STORAGE_KEY } from './workbench-storage';
 
 export type DraftState = CreateOpportunityInput & {
   relatedTickersText: string;
@@ -91,7 +98,6 @@ const TEMPLATE_PRESETS: Record<CreateOpportunityInput['type'], Partial<DraftStat
   },
 };
 
-export const DRAFT_STORAGE_KEY = 'opportunity-workbench-draft-v1';
 export const BOARD_TYPES = ['ipo_spinout', 'relay_chain', 'proxy_narrative'] as const;
 export const BOARD_FILTER_QUERY_KEYS: Record<OpportunityBoardType, string> = {
   ipo_spinout: 'ipoMetric',
@@ -130,21 +136,21 @@ export function createDraftState(
   };
 }
 
-export function readStoredDraft() {
-  if (typeof window === 'undefined') return null;
+function normalizeStoredDraft(value: unknown): DraftState | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const parsed = value as Partial<DraftState>;
+  const type: DraftState['type'] = typeof parsed.type === 'string' && parsed.type in TEMPLATE_PRESETS
+    ? parsed.type as DraftState['type']
+    : 'relay_chain';
+  return createDraftState(type, { ...parsed, type });
+}
 
-  try {
-    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<DraftState> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const type = parsed.type && parsed.type in TEMPLATE_PRESETS
-      ? parsed.type
-      : 'relay_chain';
-    return createDraftState(type, parsed);
-  } catch {
-    return null;
-  }
+export function readStoredDraft() {
+  return readWorkbenchStorageJson(DRAFT_STORAGE_KEY, null as DraftState | null, normalizeStoredDraft);
+}
+
+export function writeStoredDraft(draft: DraftState) {
+  return writeWorkbenchStorageJson(DRAFT_STORAGE_KEY, draft);
 }
 
 export function sameBoardFilters(a: BoardFilterState, b: BoardFilterState) {

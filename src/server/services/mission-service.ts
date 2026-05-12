@@ -4,17 +4,27 @@ import {
   getMission,
   getMissionEvidence,
   getMissionEvidenceFromIndex,
+  getMissionFromCanonicalIndex,
   getMissionFromIndex,
   listMissionEvents,
   listMissionEventsFromIndex,
+  listMissionArtifactRefs,
   listMissionRuns,
   listMissions,
+  listMissionsFromCanonicalIndex,
   listMissionsFromIndex,
   retryMissionRun,
+  type MissionEventRecord,
   type MissionInput,
   type MissionRunRecord,
   type MissionStatus,
 } from '../../workflows';
+import {
+  buildOffsetPage,
+  offsetPageFetchLimit,
+  type PageEnvelope,
+  type PaginationRequest,
+} from '../route-helpers';
 
 type MissionRecoverySeverity = 'info' | 'warning' | 'critical';
 type MissionRecoveryActionKind = 'retry' | 'retry_depth' | 'review' | 'inspect' | 'diagnostic';
@@ -25,6 +35,29 @@ type MissionRecoveryActionId =
   | 'review_recovery'
   | 'inspect_trace'
   | 'check_services';
+type MissionRecoveryCostTier = 'low' | 'medium' | 'high';
+
+export interface MissionRecoveryCostHint {
+  tier: MissionRecoveryCostTier;
+  label: string;
+  estimate: string;
+  detail: string;
+}
+
+export interface MissionRecoveryEventSummary {
+  id: string;
+  timestamp: string;
+  action: string;
+  label: string;
+  reusedExistingRetry: boolean;
+  message?: string;
+  depth?: MissionInput['depth'];
+  costHint?: MissionRecoveryCostHint;
+  taskId?: string;
+  runId?: string;
+  idempotencyKey?: string;
+  dedupeKey?: string;
+}
 
 export interface MissionRecoveryAction {
   id: MissionRecoveryActionId;
@@ -33,6 +66,7 @@ export interface MissionRecoveryAction {
   kind: MissionRecoveryActionKind;
   depth?: NonNullable<MissionInput['depth']>;
   priority: number;
+  costHint?: MissionRecoveryCostHint;
 }
 
 export interface MissionRecoverySuggestion {
@@ -56,6 +90,48 @@ export interface MissionRecoverySuggestion {
   };
 }
 
+interface RetryMissionApiInput {
+  depth?: MissionInput['depth'];
+  source?: string;
+  idempotencyKey?: string;
+}
+
+function recoveryCostHintForDepth(depth: MissionInput['depth'] | undefined, fallbackLabel = '沿用原深度'): MissionRecoveryCostHint {
+  if (depth === 'quick') {
+    return {
+      tier: 'low',
+      label: '低成本',
+      estimate: '约 1-3 分钟',
+      detail: '先验证数据源和核心链路是否恢复，适合失败后第一步。',
+    };
+  }
+
+  if (depth === 'deep') {
+    return {
+      tier: 'high',
+      label: '高成本',
+      estimate: '约 8-15 分钟',
+      detail: '重新补齐完整证据链，适合机会仍重要且 Quick 已确认链路正常时。',
+    };
+  }
+
+  if (depth === 'standard') {
+    return {
+      tier: 'medium',
+      label: '中成本',
+      estimate: '约 3-6 分钟',
+      detail: '在速度和证据覆盖之间折中，适合复核失败原因。',
+    };
+  }
+
+  return {
+    tier: 'medium',
+    label: fallbackLabel,
+    estimate: '取决于原任务深度',
+    detail: '沿用原 Mission input 和深度，适合想保留原始执行语义时。',
+  };
+}
+
 function createRecoveryAction(input: MissionRecoveryAction): MissionRecoveryAction {
   return input;
 }
@@ -67,6 +143,7 @@ function retrySameAction(status: 'failed' | 'canceled'): MissionRecoveryAction {
     detail: '沿用原 mission input 和深度重新入队，保留机会卡联动关系。',
     kind: 'retry',
     priority: 100,
+    costHint: recoveryCostHintForDepth(undefined),
   });
 }
 
@@ -82,6 +159,7 @@ function retryDepthAction(
     kind: 'retry_depth',
     depth,
     priority,
+    costHint: recoveryCostHintForDepth(depth),
   });
 }
 
@@ -99,6 +177,7 @@ function reviewRecoveryAction(status: 'failed' | 'canceled' | 'degraded'): Missi
     kind: 'review',
     depth: status === 'failed' ? 'standard' : 'quick',
     priority: status === 'degraded' ? 80 : 70,
+    costHint: recoveryCostHintForDepth(status === 'failed' ? 'standard' : 'quick'),
   });
 }
 
@@ -173,14 +252,98 @@ function degradedDetail(latestRun: MissionRunRecord | null): string {
   return 'Mission 已生成主报告，但部分增强链路没有完整覆盖，建议复核或补跑深度任务。';
 }
 
+function stringMetaValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function booleanMetaValue(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function missionDepthMetaValue(value: unknown): MissionInput['depth'] | undefined {
+  return value === 'quick' || value === 'standard' || value === 'deep' ? value : undefined;
+}
+
+function recoveryCostTierMetaValue(value: unknown): MissionRecoveryCostTier | undefined {
+  return value === 'low' || value === 'medium' || value === 'high' ? value : undefined;
+}
+
+function recoveryCostHintMetaValue(value: unknown): MissionRecoveryCostHint | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  const tier = recoveryCostTierMetaValue(candidate.tier);
+  const label = stringMetaValue(candidate.label);
+  const estimate = stringMetaValue(candidate.estimate);
+  const detail = stringMetaValue(candidate.detail);
+  if (!tier || !label || !estimate || !detail) return undefined;
+  return { tier, label, estimate, detail };
+}
+
+function recoveryEventLabel(action: string, reusedExistingRetry: boolean): string {
+  if (reusedExistingRetry || action.startsWith('reused_')) {
+    return '复用恢复';
+  }
+  if (action === 'queued_new_retry') {
+    return '新建恢复';
+  }
+  return '恢复审计';
+}
+
+function toMissionRecoveryEventSummary(event: MissionEventRecord): MissionRecoveryEventSummary | null {
+  const meta = event.meta || {};
+  if (stringMetaValue(meta.operation) !== 'mission_retry') return null;
+
+  const action = stringMetaValue(meta.recoveryAction) || stringMetaValue(meta.action);
+  if (!action) return null;
+
+  const reusedExistingRetry = booleanMetaValue(meta.reusedExistingRetry) ?? action.startsWith('reused_');
+  const depth = missionDepthMetaValue(meta.depth);
+  const costHint = recoveryCostHintMetaValue(meta.costHint);
+  const taskId = stringMetaValue(meta.taskId);
+  const runId = stringMetaValue(meta.runId);
+  const idempotencyKey = stringMetaValue(meta.idempotencyKey);
+  const dedupeKey = stringMetaValue(meta.dedupeKey);
+  return {
+    id: event.id,
+    timestamp: event.timestamp,
+    action,
+    label: recoveryEventLabel(action, reusedExistingRetry),
+    reusedExistingRetry,
+    ...(event.message ? { message: event.message } : {}),
+    ...(depth ? { depth } : {}),
+    ...(costHint ? { costHint } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+    ...(dedupeKey ? { dedupeKey } : {}),
+  };
+}
+
+function latestMissionRecoveryEvent(events: MissionEventRecord[]): MissionRecoveryEventSummary | undefined {
+  return events
+    .map(toMissionRecoveryEventSummary)
+    .filter((event): event is MissionRecoveryEventSummary => Boolean(event))
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
+}
+
+async function listMissionEventsWithLegacyFallback(id: string) {
+  const indexedEvents = await listMissionEventsFromIndex(id);
+  return indexedEvents.length > 0 ? indexedEvents : listMissionEvents(id);
+}
+
+export type MissionSummary = Awaited<ReturnType<typeof listMissionSummaries>>[number];
+
 export async function listMissionSummaries(limit = 50) {
-  const indexedMissions = await listMissionsFromIndex(limit);
+  const canonicalMissions = await listMissionsFromCanonicalIndex(limit);
+  const indexedMissions = canonicalMissions.length > 0 ? canonicalMissions : await listMissionsFromIndex(limit);
   const missions = indexedMissions.length > 0 ? indexedMissions : listMissions(limit);
 
   return Promise.all(missions.map(async (mission) => {
     const runs = await listMissionRuns(mission.id);
     const latestRun = runs[0] || null;
     const latestDiff = buildLatestMissionDiff(mission, runs);
+    const events = await listMissionEventsWithLegacyFallback(mission.id);
+    const latestRecoveryEvent = latestMissionRecoveryEvent(events);
 
     return {
       id: mission.id,
@@ -196,17 +359,34 @@ export async function listMissionSummaries(limit = 50) {
       totalDurationMs: mission.totalDurationMs,
       ...(latestRun ? { latestRun } : {}),
       ...(latestDiff ? { latestDiff } : {}),
+      ...(latestRecoveryEvent ? { latestRecoveryEvent } : {}),
     };
   }));
 }
 
+export async function listMissionSummariesPage(
+  pagination: Pick<PaginationRequest, 'limit' | 'offset'>,
+): Promise<PageEnvelope<MissionSummary>> {
+  const rows = await listMissionSummaries(offsetPageFetchLimit(pagination));
+  return buildOffsetPage(rows, pagination);
+}
+
 export async function getMissionDetail(id: string) {
-  return await getMissionFromIndex(id) || getMission(id);
+  return await getMissionFromCanonicalIndex(id) || await getMissionFromIndex(id) || getMission(id);
 }
 
 export async function listMissionEventsForApi(id: string) {
-  const indexedEvents = await listMissionEventsFromIndex(id);
-  return indexedEvents.length > 0 ? indexedEvents : listMissionEvents(id);
+  return listMissionEventsWithLegacyFallback(id);
+}
+
+export async function listMissionArtifactsForApi(id: string) {
+  const mission = await getMissionDetail(id);
+  if (!mission) return { status: 'mission_not_found' as const };
+
+  return {
+    status: 'found' as const,
+    artifacts: await listMissionArtifactRefs(mission.id),
+  };
 }
 
 export async function listMissionRunsForApi(id: string) {
@@ -332,18 +512,22 @@ export async function getMissionRecoveryForApi(missionId: string) {
   return { status: 'found' as const, recovery: suggestion };
 }
 
-export async function retryMissionForApi(missionId: string, input: Partial<MissionInput>) {
+export async function retryMissionForApi(missionId: string, input: RetryMissionApiInput) {
   const existingMission = getMission(missionId);
   if (!existingMission) return { status: 'mission_not_found' as const };
+  const latestRunBefore = await getLatestMissionRun(existingMission.id);
+  const depth = input.depth || existingMission.input.depth || 'deep';
 
   const mission = await retryMissionRun(missionId, {
     source: input.source || 'manual_retry',
     priority: 90,
-    ...(input.depth ? { depth: input.depth } : {}),
+    depth,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
   });
   if (!mission) return { status: 'conflict' as const };
 
   const latestRun = await getLatestMissionRun(mission.id);
+  const reusedExistingRetry = Boolean(latestRunBefore?.id && latestRun?.id === latestRunBefore.id);
   return {
     status: 'queued' as const,
     response: {
@@ -351,6 +535,14 @@ export async function retryMissionForApi(missionId: string, input: Partial<Missi
       message: 'Mission retry queued',
       missionId: mission.id,
       runId: latestRun?.id,
+      recoveryAudit: {
+        operation: 'mission_retry',
+        action: reusedExistingRetry ? 'reused_existing_retry' : 'queued_new_retry',
+        reusedExistingRetry,
+        depth,
+        costHint: recoveryCostHintForDepth(depth),
+        ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      },
     },
   };
 }

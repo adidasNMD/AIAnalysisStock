@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import { z } from 'zod';
+import { sendValidationApiError } from './route-helpers';
 
 export const missionPayloadSchema = z.object({
   mode: z.enum(['explore', 'analyze', 'review']).optional(),
@@ -12,6 +13,12 @@ export const missionPayloadSchema = z.object({
   idempotencyKey: z.string().trim().min(1).optional(),
 });
 
+export const missionRetryPayloadSchema = z.object({
+  depth: z.enum(['quick', 'standard', 'deep']).optional(),
+  source: z.string().trim().min(1).optional(),
+  idempotencyKey: z.string().trim().min(1).optional(),
+}).strict();
+
 const opportunityTypeSchema = z.enum(['ipo_spinout', 'relay_chain', 'proxy_narrative', 'ad_hoc']);
 const opportunityStageSchema = z.enum(['radar', 'framing', 'tracking', 'ready', 'active', 'cooldown', 'archived']);
 const opportunityStatusSchema = z.enum(['watching', 'ready', 'active', 'degraded', 'archived']);
@@ -23,6 +30,8 @@ const heatTransferEdgeKindSchema = z.enum([
   'leader_to_laggard',
 ]);
 const catalystConfidenceSchema = z.enum(['confirmed', 'inferred', 'placeholder']);
+const sourceProvenanceConfidenceSchema = z.enum(['confirmed', 'inferred', 'placeholder', 'unknown']);
+const fieldEvidenceKindSchema = z.enum(['record', 'profile', 'score', 'source', 'mission', 'event']);
 const scoreFieldSchema = z.number().finite().min(0).max(100);
 const opportunityScoresSchema = z.object({
   purityScore: scoreFieldSchema.optional(),
@@ -40,6 +49,24 @@ const catalystItemSchema = z.object({
   source: z.string().trim().optional(),
   confidence: catalystConfidenceSchema.optional(),
 }).strict();
+const preTradeActionKindSchema = z.enum([
+  'review_missed',
+  'verify_today',
+  'prepare',
+  'fill_date',
+  'review_observed',
+  'watch',
+]);
+const preTradeCatalystUrgencySchema = z.enum([
+  'missed',
+  'overdue',
+  'today',
+  'soon',
+  'missing_date',
+  'observed',
+  'watch',
+]);
+const preTradeReadinessSchema = z.enum(['ready', 'watch', 'blocked']);
 const stringListSchema = z.array(z.string().trim().min(1));
 const requiredTextSchema = z.string().trim().min(1);
 const optionalTextSchema = z.string().trim().optional();
@@ -157,6 +184,199 @@ export const updateOpportunityPayloadSchema = z.object({
 export type CreateOpportunityPayload = z.infer<typeof createOpportunityPayloadSchema>;
 export type UpdateOpportunityPayload = z.infer<typeof updateOpportunityPayloadSchema>;
 
+export const preTradeConfirmationPayloadSchema = z.object({
+  itemId: requiredTextSchema,
+  label: requiredTextSchema,
+  status: z.enum(['pass', 'warn', 'block']),
+  completed: z.boolean(),
+  evidence: optionalTextSchema,
+  actionKind: preTradeActionKindSchema.optional(),
+  catalystUrgency: preTradeCatalystUrgencySchema.optional(),
+  readiness: preTradeReadinessSchema.optional(),
+  score: z.number().finite().min(0).max(100).optional(),
+}).strict();
+
+export type PreTradeConfirmationPayload = z.infer<typeof preTradeConfirmationPayloadSchema>;
+
+export const catalystReminderPreferencePayloadSchema = z.object({
+  reminderId: requiredTextSchema,
+  catalystLabel: requiredTextSchema,
+  catalystDueAt: optionalTextSchema,
+  catalystStatus: z.enum(['upcoming', 'active', 'observed', 'missed']).optional(),
+  urgency: preTradeCatalystUrgencySchema,
+  actionKind: preTradeActionKindSchema,
+  preference: z.enum(['acknowledge', 'snooze', 'reopen', 'subscribe', 'unsubscribe']),
+  snoozedUntil: optionalTextSchema,
+  subscriptionLeadDays: z.number().int().min(0).max(30).optional(),
+  note: optionalTextSchema,
+}).strict().superRefine((body, ctx) => {
+  if (body.preference === 'snooze') {
+    if (!body.snoozedUntil) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['snoozedUntil'],
+        message: 'snoozedUntil is required when preference is snooze',
+      });
+      return;
+    }
+    const parsed = Date.parse(body.snoozedUntil);
+    if (!Number.isFinite(parsed)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['snoozedUntil'],
+        message: 'snoozedUntil must be a parseable date',
+      });
+    }
+  }
+  if (body.preference === 'subscribe' && body.subscriptionLeadDays === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['subscriptionLeadDays'],
+      message: 'subscriptionLeadDays is required when preference is subscribe',
+    });
+  }
+});
+
+export type CatalystReminderPreferencePayload = z.infer<typeof catalystReminderPreferencePayloadSchema>;
+
+export const priceHistoryRefreshPayloadSchema = z.object({
+  symbols: stringListSchema.max(50).optional(),
+  limit: z.number().int().min(5).max(1000).optional(),
+  force: z.boolean().optional(),
+  staleAfterHours: z.number().finite().min(1).max(24 * 30).optional(),
+}).strict();
+
+export type PriceHistoryRefreshPayload = z.infer<typeof priceHistoryRefreshPayloadSchema>;
+
+const fieldEvidencePayloadShape = {
+  field: requiredTextSchema,
+  label: optionalTextSchema,
+  kind: fieldEvidenceKindSchema.optional(),
+  source: optionalTextSchema,
+  confidence: sourceProvenanceConfidenceSchema.optional(),
+  value: optionalTextSchema,
+  note: optionalTextSchema,
+  observedAt: optionalTextSchema,
+};
+
+function requireFieldEvidenceValueOrNote(
+  body: { value?: string | undefined; note?: string | undefined },
+  ctx: z.RefinementCtx,
+) {
+  if (!body.value && !body.note) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['note'],
+      message: 'value or note is required',
+    });
+  }
+}
+
+export const fieldEvidencePayloadSchema = z.object(fieldEvidencePayloadShape).strict().superRefine((body, ctx) => {
+  requireFieldEvidenceValueOrNote(body, ctx);
+});
+
+export type FieldEvidencePayload = z.infer<typeof fieldEvidencePayloadSchema>;
+
+const fieldEvidenceBatchItemPayloadSchema = z.object({
+  ...fieldEvidencePayloadShape,
+  clientId: optionalTextSchema,
+}).strict().superRefine((body, ctx) => {
+  requireFieldEvidenceValueOrNote(body, ctx);
+});
+
+export const fieldEvidenceBatchPayloadSchema = z.object({
+  batchId: optionalTextSchema,
+  items: z.array(fieldEvidenceBatchItemPayloadSchema).min(1).max(25),
+}).strict();
+
+export type FieldEvidenceBatchPayload = z.infer<typeof fieldEvidenceBatchPayloadSchema>;
+
+export const fieldEvidenceInvalidationPayloadSchema = z.object({
+  reason: requiredTextSchema,
+  field: optionalTextSchema,
+  source: optionalTextSchema,
+}).strict();
+
+export type FieldEvidenceInvalidationPayload = z.infer<typeof fieldEvidenceInvalidationPayloadSchema>;
+
+export const fieldEvidenceRestorationPayloadSchema = z.object({
+  reason: requiredTextSchema,
+  field: optionalTextSchema,
+  source: optionalTextSchema,
+}).strict();
+
+export type FieldEvidenceRestorationPayload = z.infer<typeof fieldEvidenceRestorationPayloadSchema>;
+
+const fieldEvidenceBulkStatusItemSchema = z.object({
+  opportunityId: requiredTextSchema,
+  evidenceId: requiredTextSchema,
+  field: optionalTextSchema,
+  source: optionalTextSchema,
+}).strict();
+
+export const fieldEvidenceBulkStatusPayloadSchema = z.object({
+  action: z.enum(['invalidate', 'restore']),
+  reason: requiredTextSchema,
+  items: z.array(fieldEvidenceBulkStatusItemSchema).min(1).max(50),
+}).strict();
+
+export type FieldEvidenceBulkStatusPayload = z.infer<typeof fieldEvidenceBulkStatusPayloadSchema>;
+
+export const fieldRegistryOverridePayloadSchema = z.object({
+  field: requiredTextSchema,
+  label: optionalTextSchema,
+  kind: fieldEvidenceKindSchema.optional(),
+  source: optionalTextSchema,
+  confidence: sourceProvenanceConfidenceSchema.optional(),
+  note: optionalTextSchema,
+  updatedBy: optionalTextSchema,
+}).strict().superRefine((body, ctx) => {
+  requireFieldRegistryOverrideValue(body, ctx);
+});
+
+export type FieldRegistryOverridePayload = z.infer<typeof fieldRegistryOverridePayloadSchema>;
+
+function requireFieldRegistryOverrideValue(
+  body: {
+    label?: string | undefined;
+    kind?: string | undefined;
+    source?: string | undefined;
+    confidence?: string | undefined;
+    note?: string | undefined;
+  },
+  ctx: z.RefinementCtx,
+) {
+  if (!body.label && !body.kind && !body.source && !body.confidence && !body.note) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['field'],
+      message: 'at least one registry override field is required',
+    });
+  }
+}
+
+const fieldRegistryImportItemSchema = z.object({
+  field: requiredTextSchema,
+  label: optionalTextSchema,
+  kind: fieldEvidenceKindSchema.optional(),
+  source: optionalTextSchema,
+  confidence: sourceProvenanceConfidenceSchema.optional(),
+  note: optionalTextSchema,
+  updatedAt: optionalTextSchema,
+  updatedBy: optionalTextSchema,
+}).strict().superRefine((body, ctx) => {
+  requireFieldRegistryOverrideValue(body, ctx);
+});
+
+export const fieldRegistryImportPayloadSchema = z.object({
+  dryRun: z.boolean().optional().default(true),
+  updatedBy: optionalTextSchema,
+  items: z.array(fieldRegistryImportItemSchema).min(1).max(100),
+}).strict();
+
+export type FieldRegistryImportPayload = z.infer<typeof fieldRegistryImportPayloadSchema>;
+
 export const runtimeConfigPatchSchema = z.object({
   t1Enabled: z.boolean().optional(),
   leaderTickers: stringListSchema.optional(),
@@ -186,11 +406,12 @@ export const modelsConfigPayloadSchema = z.object({
 });
 
 export function sendValidationError(res: Response, error: z.ZodError, message = 'Invalid request payload') {
-  return res.status(400).json({
-    error: message,
-    details: error.issues.map(issue => ({
+  return sendValidationApiError(
+    res,
+    message,
+    error.issues.map(issue => ({
       path: issue.path.join('.'),
       message: issue.message,
     })),
-  });
+  );
 }

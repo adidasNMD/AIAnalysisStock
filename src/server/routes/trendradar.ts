@@ -1,15 +1,12 @@
 import { Router, Request, Response } from 'express';
 import sqlite3 from 'sqlite3';
+import { sendInternalError, sendNotFound } from '../route-helpers';
 import * as fs from 'fs';
 import * as path from 'path';
 
 export const trendRadarRouter = Router();
 
 type TrendRadarRow = Record<string, unknown>;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function trendRadarOutputPath(...segments: string[]): string {
   return path.join(process.cwd(), 'vendors', 'trendradar', 'output', ...segments);
@@ -61,7 +58,7 @@ trendRadarRouter.get('/dates', (_req: Request, res: Response) => {
       .reverse();
     return res.json(dates);
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });
 
@@ -87,7 +84,7 @@ trendRadarRouter.get('/reports', (_req: Request, res: Response) => {
 
     return res.json(reports);
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });
 
@@ -99,13 +96,13 @@ trendRadarRouter.get('/reports/:date/:filename', (req: Request, res: Response) =
       path.basename(req.params.filename as string),
     );
     if (!fs.existsSync(reportPath)) {
-      return res.status(404).json({ error: 'Report not found' });
+      return sendNotFound(res, 'Report not found');
     }
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.send(fs.readFileSync(reportPath, 'utf-8'));
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });
 
@@ -158,7 +155,7 @@ trendRadarRouter.get('/latest', async (req: Request, res: Response) => {
     const items = await runAll(db, query);
     return res.json({ date: dateStr, items });
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   } finally {
     db.close();
   }
@@ -237,6 +234,6 @@ trendRadarRouter.get('/raw', async (_req: Request, res: Response) => {
     const dateRangeStr = `${files[files.length - 1]?.replace('.db', '')} ~ ${files[0]?.replace('.db', '')}`;
     return res.json({ date: `最近七天 (${dateRangeStr})`, items: allItems });
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });

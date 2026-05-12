@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import sqlite3 from 'sqlite3';
 import { open, type Database } from 'sqlite';
-import { initDb } from '../db';
+import { initDb, migrationChecksum, readSchemaMigrationStatuses } from '../db';
+import { SCHEMA_MIGRATIONS } from '../db/migrations';
 
 const openDbs: Database[] = [];
 
@@ -33,8 +34,15 @@ describe('database migrations', () => {
     await initDb(db);
     await initDb(db);
 
-    const migrations = await db.all<Array<{ id: string }>>(
-      'SELECT id FROM schema_migrations ORDER BY id ASC',
+    const migrations = await db.all<Array<{
+      id: string;
+      description: string;
+      checksum: string;
+      durationMs: number;
+      status: string;
+      error: string | null;
+    }>>(
+      'SELECT id, description, checksum, durationMs, status, error FROM schema_migrations ORDER BY id ASC',
     );
 
     expect(migrations.map(migration => migration.id)).toEqual([
@@ -45,7 +53,77 @@ describe('database migrations', () => {
       '005_task_runtime_columns',
       '006_opportunity_profile_columns',
       '007_narrative_lifecycle_columns',
+      '008_mission_artifact_refs',
+      '009_mission_canonical_table',
+      '010_opportunity_field_evidence',
+      '011_opportunity_field_registry_overrides',
+      '012_opportunity_field_registry_audit',
     ]);
+    expect(migrations).toHaveLength(SCHEMA_MIGRATIONS.length);
+    migrations.forEach((migration, index) => {
+      expect(migration.description).toBe(SCHEMA_MIGRATIONS[index].description);
+      expect(migration.checksum).toBe(migrationChecksum(SCHEMA_MIGRATIONS[index]));
+      expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
+      expect(migration.durationMs).toBeGreaterThanOrEqual(0);
+      expect(migration.status).toBe('applied');
+      expect(migration.error).toBeNull();
+    });
+  });
+
+  it('upgrades the legacy migration registry and backfills metadata', async () => {
+    const db = await openMemoryDb();
+
+    await db.exec(`
+      CREATE TABLE schema_migrations (
+        id TEXT PRIMARY KEY,
+        appliedAt TEXT NOT NULL
+      );
+    `);
+    await db.run(
+      'INSERT INTO schema_migrations (id, appliedAt) VALUES (?, ?)',
+      '001_core_schema_registry',
+      '2026-01-01T00:00:00.000Z',
+    );
+
+    await initDb(db);
+
+    await expect(columnNames(db, 'schema_migrations')).resolves.toEqual(expect.arrayContaining([
+      'id',
+      'appliedAt',
+      'description',
+      'checksum',
+      'durationMs',
+      'status',
+      'error',
+    ]));
+
+    const registry = await db.all<Array<{
+      id: string;
+      description: string;
+      checksum: string;
+      status: string;
+    }>>('SELECT id, description, checksum, status FROM schema_migrations ORDER BY id ASC');
+    const firstMigration = registry.find(row => row.id === '001_core_schema_registry');
+
+    expect(registry).toHaveLength(SCHEMA_MIGRATIONS.length);
+    expect(firstMigration).toEqual(expect.objectContaining({
+      description: SCHEMA_MIGRATIONS[0].description,
+      checksum: migrationChecksum(SCHEMA_MIGRATIONS[0]),
+      status: 'applied',
+    }));
+  });
+
+  it('returns migration diagnostics with checksum health', async () => {
+    const db = await openMemoryDb();
+
+    await initDb(db);
+
+    const statuses = await readSchemaMigrationStatuses(db);
+
+    expect(statuses).toHaveLength(SCHEMA_MIGRATIONS.length);
+    expect(statuses.every(status => status.status === 'applied')).toBe(true);
+    expect(statuses.every(status => status.known)).toBe(true);
+    expect(statuses.every(status => status.checksumMatches)).toBe(true);
   });
 
   it('upgrades legacy tables without relying on ignored ALTER errors', async () => {
@@ -150,6 +228,57 @@ describe('database migrations', () => {
       'impactScore',
       'coreTicker',
       'lastUpdatedAt',
+    ]));
+    await expect(columnNames(db, 'mission_artifacts')).resolves.toEqual(expect.arrayContaining([
+      'id',
+      'missionId',
+      'runId',
+      'kind',
+      'artifactPath',
+      'sha256',
+      'sizeBytes',
+      'contentType',
+      'createdAt',
+      'updatedAt',
+      'meta',
+    ]));
+    await expect(columnNames(db, 'missions')).resolves.toEqual(expect.arrayContaining([
+      'id',
+      'mode',
+      'query',
+      'tickers',
+      'depth',
+      'source',
+      'opportunityId',
+      'status',
+      'createdAt',
+      'updatedAt',
+      'inputPayload',
+      'inputHash',
+      'latestRunId',
+      'latestEventId',
+      'artifactPath',
+      'artifactSha256',
+      'artifactSizeBytes',
+    ]));
+    await expect(columnNames(db, 'opportunity_field_evidence')).resolves.toEqual(expect.arrayContaining([
+      'id',
+      'opportunityId',
+      'field',
+      'label',
+      'kind',
+      'source',
+      'confidence',
+      'status',
+      'value',
+      'note',
+      'observedAt',
+      'recordedAt',
+      'updatedAt',
+      'createdEventId',
+      'invalidatedEventId',
+      'restoredEventId',
+      'meta',
     ]));
   });
 });

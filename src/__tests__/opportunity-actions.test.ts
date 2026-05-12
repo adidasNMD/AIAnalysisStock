@@ -136,4 +136,102 @@ describe('buildOpportunityActionTimeline', () => {
     expect(timeline[1]?.driver).toBe('heat');
     expect(timeline[1]?.reasonSummary).toContain('Leader');
   });
+
+  it('maps pre-trade confirmation events into manual review timeline entries', () => {
+    const opportunityEvents: OpportunityEventRecord[] = [
+      {
+        id: 'oe_pretrade_1',
+        opportunityId: 'opp_actions_1',
+        type: 'pretrade_confirmed',
+        message: 'Pre-trade check confirmed: Catalyst window for AI Infra Relay',
+        timestamp: '2026-04-16T12:00:00.000Z',
+        meta: {
+          status: 'block',
+          actionKind: 'fill_date',
+          catalystUrgency: 'missing_date',
+          evidence: 'Company IR calendar pending',
+        },
+      },
+    ];
+
+    const [entry] = buildOpportunityActionTimeline(opportunityEvents, [], 5);
+
+    expect(entry).toMatchObject({
+      kind: 'opportunity',
+      category: 'execution',
+      source: 'manual',
+      decision: 'review',
+      driver: 'manual',
+      label: 'Pre-trade confirmed',
+      tone: 'positive',
+    });
+    expect(entry?.reasonSummary).toContain('Status block');
+    expect(entry?.reasonSummary).toContain('Company IR calendar pending');
+  });
+
+  it('maps catalyst reminder preference events into calendar timeline entries', () => {
+    const opportunityEvents: OpportunityEventRecord[] = [
+      {
+        id: 'oe_reminder_1',
+        opportunityId: 'opp_actions_1',
+        type: 'catalyst_reminder_updated',
+        message: 'Catalyst reminder snoozed: Earnings for AI Infra Relay',
+        timestamp: '2026-04-16T12:00:00.000Z',
+        meta: {
+          preference: 'snooze',
+          catalystLabel: 'Earnings',
+          urgency: 'soon',
+          actionKind: 'prepare',
+          snoozedUntil: '2026-04-17T12:00:00.000Z',
+        },
+      },
+    ];
+
+    const [entry] = buildOpportunityActionTimeline(opportunityEvents, [], 5);
+
+    expect(entry).toMatchObject({
+      kind: 'opportunity',
+      category: 'calendar',
+      source: 'manual',
+      decision: 'review',
+      driver: 'calendar',
+      label: 'Catalyst reminder snoozed',
+      tone: 'warning',
+    });
+    expect(entry?.reasonSummary).toContain('Catalyst Earnings');
+    expect(entry?.reasonSummary).toContain('Until 2026-04-17T12:00:00.000Z');
+  });
+
+  it('maps catalyst reminder subscription events with lead days into calendar timeline entries', () => {
+    const opportunityEvents: OpportunityEventRecord[] = [
+      {
+        id: 'oe_reminder_subscribe_1',
+        opportunityId: 'opp_actions_1',
+        type: 'catalyst_reminder_updated',
+        message: 'Catalyst reminder subscribed: Earnings for AI Infra Relay',
+        timestamp: '2026-04-16T12:00:00.000Z',
+        meta: {
+          preference: 'subscribe',
+          catalystLabel: 'Earnings',
+          urgency: 'soon',
+          actionKind: 'prepare',
+          subscriptionLeadDays: 3,
+        },
+      },
+    ];
+
+    const [entry] = buildOpportunityActionTimeline(opportunityEvents, [], 5);
+
+    expect(entry).toMatchObject({
+      kind: 'opportunity',
+      category: 'calendar',
+      source: 'manual',
+      decision: 'review',
+      driver: 'calendar',
+      label: 'Catalyst reminder subscribed',
+      tone: 'positive',
+    });
+    expect(entry?.reasonSummary).toContain('Catalyst Earnings');
+    expect(entry?.reasonSummary).toContain('Lead 3d');
+  });
 });

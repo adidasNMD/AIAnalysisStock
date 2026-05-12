@@ -1,15 +1,37 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import { logger } from '../utils/logger';
+import { SCHEMA_MIGRATIONS, type SchemaMigration } from './migrations';
 
 let dbInstance: Database | null = null;
 
 const DB_PATH = path.join(process.cwd(), 'data', 'openclaw.db');
 
-interface SchemaMigration {
+type MigrationStatus = 'applied' | 'failed';
+
+interface SchemaMigrationRow {
   id: string;
-  apply: (db: Database) => Promise<void>;
+  description: string | null;
+  checksum: string | null;
+  appliedAt: string;
+  durationMs: number | null;
+  status: MigrationStatus | null;
+  error: string | null;
+}
+
+export interface SchemaMigrationStatus {
+  id: string;
+  description: string;
+  checksum: string;
+  appliedAt: string | null;
+  durationMs: number;
+  status: MigrationStatus | 'missing' | string;
+  error: string | null;
+  known: boolean;
+  checksumMatches: boolean | null;
+  expectedChecksum?: string;
 }
 
 export async function getDb(): Promise<Database> {
@@ -29,45 +51,120 @@ async function ensureMigrationTable(db: Database): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
-      appliedAt TEXT NOT NULL
+      appliedAt TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      checksum TEXT NOT NULL DEFAULT '',
+      durationMs INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'applied',
+      error TEXT
     );
   `);
+  await addMigrationColumnIfMissing(db, 'description', "TEXT NOT NULL DEFAULT ''");
+  await addMigrationColumnIfMissing(db, 'checksum', "TEXT NOT NULL DEFAULT ''");
+  await addMigrationColumnIfMissing(db, 'durationMs', 'INTEGER NOT NULL DEFAULT 0');
+  await addMigrationColumnIfMissing(db, 'status', "TEXT NOT NULL DEFAULT 'applied'");
+  await addMigrationColumnIfMissing(db, 'error', 'TEXT');
 }
 
-async function hasColumn(db: Database, tableName: string, columnName: string): Promise<boolean> {
-  const columns = await db.all<Array<{ name: string }>>(`PRAGMA table_info(${tableName})`);
+async function hasMigrationColumn(db: Database, columnName: string): Promise<boolean> {
+  const columns = await db.all<Array<{ name: string }>>('PRAGMA table_info(schema_migrations)');
   return columns.some(column => column.name === columnName);
 }
 
-async function addColumnIfMissing(
+async function addMigrationColumnIfMissing(
   db: Database,
-  tableName: string,
   columnName: string,
   definition: string,
 ): Promise<void> {
-  if (await hasColumn(db, tableName, columnName)) return;
-  await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
+  if (await hasMigrationColumn(db, columnName)) return;
+  await db.exec(`ALTER TABLE schema_migrations ADD COLUMN ${columnName} ${definition};`);
+}
+
+export function migrationChecksum(migration: SchemaMigration): string {
+  return createHash('sha256')
+    .update(`${migration.id}\n${migration.checksumSource}`)
+    .digest('hex');
 }
 
 async function applyMigration(db: Database, migration: SchemaMigration): Promise<void> {
-  const existing = await db.get<{ id: string }>(
-    'SELECT id FROM schema_migrations WHERE id = ?',
+  const checksum = migrationChecksum(migration);
+  const existing = await db.get<SchemaMigrationRow>(
+    'SELECT * FROM schema_migrations WHERE id = ?',
     migration.id,
   );
-  if (existing) return;
+  if (existing?.status === 'applied') {
+    if (existing.checksum && existing.checksum !== checksum) {
+      throw new Error(`Migration checksum mismatch for ${migration.id}`);
+    }
+    await db.run(
+      `UPDATE schema_migrations
+       SET description = ?, checksum = ?, status = 'applied', error = NULL
+       WHERE id = ?`,
+      migration.description,
+      checksum,
+      migration.id,
+    );
+    return;
+  }
+
+  const startedAt = Date.now();
 
   try {
     await db.exec('BEGIN');
     await migration.apply(db);
+    const durationMs = Date.now() - startedAt;
     await db.run(
-      'INSERT INTO schema_migrations (id, appliedAt) VALUES (?, ?)',
+      `INSERT INTO schema_migrations (
+        id,
+        appliedAt,
+        description,
+        checksum,
+        durationMs,
+        status,
+        error
+      ) VALUES (?, ?, ?, ?, ?, 'applied', NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        appliedAt = excluded.appliedAt,
+        description = excluded.description,
+        checksum = excluded.checksum,
+        durationMs = excluded.durationMs,
+        status = 'applied',
+        error = NULL`,
       migration.id,
       new Date().toISOString(),
+      migration.description,
+      checksum,
+      durationMs,
     );
     await db.exec('COMMIT');
   } catch (error) {
     await db.exec('ROLLBACK').catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
+    const durationMs = Date.now() - startedAt;
+    await db.run(
+      `INSERT INTO schema_migrations (
+        id,
+        appliedAt,
+        description,
+        checksum,
+        durationMs,
+        status,
+        error
+      ) VALUES (?, ?, ?, ?, ?, 'failed', ?)
+      ON CONFLICT(id) DO UPDATE SET
+        appliedAt = excluded.appliedAt,
+        description = excluded.description,
+        checksum = excluded.checksum,
+        durationMs = excluded.durationMs,
+        status = 'failed',
+        error = excluded.error`,
+      migration.id,
+      new Date().toISOString(),
+      migration.description,
+      checksum,
+      durationMs,
+      message,
+    );
     logger.error(`[DB] Migration ${migration.id} failed: ${message}`);
     throw error;
   }
@@ -80,144 +177,56 @@ async function applyMigrations(db: Database, migrations: SchemaMigration[]): Pro
   }
 }
 
-const SCHEMA_MIGRATIONS: SchemaMigration[] = [
-  {
-    id: '001_core_schema_registry',
-    apply: ensureMigrationTable,
-  },
-  {
-    id: '002_mission_canonical_index',
-    apply: async (db) => {
-      await db.exec(`
-        CREATE TABLE IF NOT EXISTS missions_index (
-          id TEXT PRIMARY KEY,
-          status TEXT NOT NULL,
-          mode TEXT NOT NULL,
-          query TEXT NOT NULL,
-          source TEXT,
-          depth TEXT,
-          opportunityId TEXT,
-          createdAt TEXT NOT NULL,
-          updatedAt TEXT NOT NULL,
-          inputPayload TEXT NOT NULL,
-          artifactPath TEXT NOT NULL
-        );
+export async function readSchemaMigrationStatuses(db: Database): Promise<SchemaMigrationStatus[]> {
+  await ensureMigrationTable(db);
+  const rows = await db.all<SchemaMigrationRow[]>(
+    `SELECT id, description, checksum, appliedAt, durationMs, status, error
+     FROM schema_migrations
+     ORDER BY id ASC`,
+  );
+  const expectedById = new Map(SCHEMA_MIGRATIONS.map((migration) => [migration.id, migration]));
+  const seen = new Set<string>();
+  const statuses = rows.map((row): SchemaMigrationStatus => {
+    seen.add(row.id);
+    const expected = expectedById.get(row.id);
+    const expectedChecksum = expected ? migrationChecksum(expected) : undefined;
+    return {
+      id: row.id,
+      description: row.description || expected?.description || '',
+      checksum: row.checksum || '',
+      appliedAt: row.appliedAt,
+      durationMs: row.durationMs ?? 0,
+      status: row.status || 'applied',
+      error: row.error,
+      known: Boolean(expected),
+      checksumMatches: expectedChecksum ? row.checksum === expectedChecksum : null,
+      ...(expectedChecksum ? { expectedChecksum } : {}),
+    };
+  });
 
-        CREATE INDEX IF NOT EXISTS idx_missions_index_updated
-          ON missions_index (updatedAt DESC);
-        CREATE INDEX IF NOT EXISTS idx_missions_index_status_updated
-          ON missions_index (status, updatedAt DESC);
-        CREATE INDEX IF NOT EXISTS idx_missions_index_opportunity
-          ON missions_index (opportunityId, updatedAt DESC);
+  for (const migration of SCHEMA_MIGRATIONS) {
+    if (seen.has(migration.id)) continue;
+    const expectedChecksum = migrationChecksum(migration);
+    statuses.push({
+      id: migration.id,
+      description: migration.description,
+      checksum: '',
+      appliedAt: null,
+      durationMs: 0,
+      status: 'missing',
+      error: null,
+      known: true,
+      checksumMatches: false,
+      expectedChecksum,
+    });
+  }
 
-        CREATE TABLE IF NOT EXISTS mission_events (
-          id TEXT PRIMARY KEY,
-          missionId TEXT NOT NULL,
-          timestamp TEXT NOT NULL,
-          type TEXT NOT NULL,
-          status TEXT,
-          phase TEXT,
-          message TEXT NOT NULL,
-          meta TEXT,
-          artifactPath TEXT NOT NULL
-        );
+  return statuses.sort((a, b) => a.id.localeCompare(b.id));
+}
 
-        CREATE INDEX IF NOT EXISTS idx_mission_events_lookup
-          ON mission_events (missionId, timestamp ASC);
-
-        CREATE TABLE IF NOT EXISTS mission_evidence_refs (
-          id TEXT PRIMARY KEY,
-          missionId TEXT NOT NULL,
-          runId TEXT NOT NULL,
-          capturedAt TEXT NOT NULL,
-          status TEXT NOT NULL,
-          completeness TEXT NOT NULL,
-          artifactPath TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_run
-          ON mission_evidence_refs (runId);
-        CREATE INDEX IF NOT EXISTS idx_mission_evidence_refs_mission
-          ON mission_evidence_refs (missionId, capturedAt DESC);
-      `);
-    },
-  },
-  {
-    id: '003_mission_run_lifecycle_columns',
-    apply: async (db) => {
-      await addColumnIfMissing(db, 'mission_runs', 'cancelRequestedAt', 'TEXT');
-      await addColumnIfMissing(db, 'mission_runs', 'failureCode', 'TEXT');
-    },
-  },
-  {
-    id: '004_durable_stream_events',
-    apply: async (db) => {
-      await db.exec(`
-        CREATE TABLE IF NOT EXISTS stream_events (
-          id TEXT PRIMARY KEY,
-          stream TEXT NOT NULL,
-          type TEXT NOT NULL,
-          version INTEGER NOT NULL,
-          entityId TEXT,
-          occurredAt TEXT NOT NULL,
-          payload TEXT NOT NULL,
-          source TEXT NOT NULL,
-          runId TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_stream_events_stream_time
-          ON stream_events (stream, occurredAt ASC, id ASC);
-        CREATE INDEX IF NOT EXISTS idx_stream_events_entity_time
-          ON stream_events (entityId, occurredAt ASC, id ASC);
-      `);
-    },
-  },
-  {
-    id: '005_task_runtime_columns',
-    apply: async (db) => {
-      await addColumnIfMissing(db, 'tasks', 'missionId', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'runId', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'statePayload', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'inputPayload', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'dedupeKey', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'idempotencyKey', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'inputHash', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'leaseId', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'heartbeatAt', 'INTEGER');
-      await addColumnIfMissing(db, 'tasks', 'cancelRequestedAt', 'INTEGER');
-      await addColumnIfMissing(db, 'tasks', 'failureCode', 'TEXT');
-      await addColumnIfMissing(db, 'tasks', 'degradedFlags', 'TEXT');
-      await db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_tasks_dedupe_status
-        ON tasks (dedupeKey, status);
-      `);
-      await db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_tasks_idempotency_status
-        ON tasks (idempotencyKey, status);
-      `);
-    },
-  },
-  {
-    id: '006_opportunity_profile_columns',
-    apply: async (db) => {
-      await addColumnIfMissing(db, 'opportunities', 'heatProfile', 'TEXT');
-      await addColumnIfMissing(db, 'opportunities', 'proxyProfile', 'TEXT');
-      await addColumnIfMissing(db, 'opportunities', 'ipoProfile', 'TEXT');
-      await addColumnIfMissing(db, 'opportunities', 'catalystCalendar', "TEXT NOT NULL DEFAULT '[]'");
-    },
-  },
-  {
-    id: '007_narrative_lifecycle_columns',
-    apply: async (db) => {
-      await addColumnIfMissing(db, 'narratives', 'title', 'TEXT');
-      await addColumnIfMissing(db, 'narratives', 'stage', "TEXT DEFAULT 'earlyFermentation'");
-      await addColumnIfMissing(db, 'narratives', 'status', "TEXT DEFAULT 'active'");
-      await addColumnIfMissing(db, 'narratives', 'impactScore', 'REAL DEFAULT 0');
-      await addColumnIfMissing(db, 'narratives', 'coreTicker', 'TEXT');
-      await addColumnIfMissing(db, 'narratives', 'lastUpdatedAt', 'INTEGER');
-    },
-  },
-];
+export async function getSchemaMigrationStatuses(): Promise<SchemaMigrationStatus[]> {
+  return readSchemaMigrationStatuses(await getDb());
+}
 
 export async function initDb(db: Database) {
   await db.exec(`PRAGMA journal_mode = WAL;`);

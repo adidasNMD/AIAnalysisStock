@@ -1,21 +1,37 @@
 import { ExternalLink, PlayCircle, Save, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import type { OpportunitySummary, OpportunitySuggestedMission, UpdateOpportunityInput } from '../../api';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import type {
+  CatalystReminderPreferenceAudit,
+  InvalidateOpportunityFieldEvidenceInput,
+  OpportunityEvent,
+  OpportunityFieldEvidenceBatchAudit,
+  OpportunityFieldEvidenceAudit,
+  OpportunitySummary,
+  OpportunitySuggestedMission,
+  PreTradeConfirmationAudit,
+  RecordOpportunityFieldEvidenceBatchInput,
+  RecordOpportunityFieldEvidenceInput,
+  RestoreOpportunityFieldEvidenceInput,
+  UpdateOpportunityInput,
+} from '../../api';
+import { fetchOpportunityEventsForOpportunity } from '../../api';
 import {
   buildOpportunityUpdateInput,
   createOpportunityEditDraft,
   validateOpportunityEditDraft,
   type OpportunityEditDraft,
 } from './edit-state';
-import { CatalystReminderStrip } from './CatalystReminderStrip';
 import { statusTone, typeMeta } from './model';
+import { CatalystReminderAuditTrailBlock } from './CatalystReminderAuditTrailBlock';
 import { CatalystList } from './CatalystList';
 import { IpoEvidenceBlock } from './IpoEvidenceBlock';
-import { MissionRecoveryPanel } from './MissionRecoveryPanel';
 import { MissionStatusBlock } from './MissionStatusBlock';
 import { OpportunityTimelineBlock } from './OpportunityTimelineBlock';
+import { PreTradeAuditTrailBlock } from './PreTradeAuditTrailBlock';
 import { PreTradeChecklistBlock } from './PreTradeChecklistBlock';
 import { ScoreExplanationBlock } from './ScoreExplanationBlock';
+import { SourceProvenanceBlock } from './SourceProvenanceBlock';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
 
 const STAGES: OpportunitySummary['stage'][] = [
@@ -36,17 +52,48 @@ const STATUSES: OpportunitySummary['status'][] = [
   'archived',
 ];
 
+const FieldEvidencePanel = lazy(() => (
+  import('./FieldEvidencePanel').then((module) => ({ default: module.FieldEvidencePanel }))
+));
+
+const MissionRecoveryPanel = lazy(() => (
+  import('./MissionRecoveryPanel').then((module) => ({ default: module.MissionRecoveryPanel }))
+));
+
+const CatalystReminderStrip = lazy(() => (
+  import('./CatalystReminderStrip').then((module) => ({ default: module.CatalystReminderStrip }))
+));
+
 type OpportunityDetailDrawerProps = {
   opportunity: OpportunitySummary | null;
   saving: boolean;
   error: string | null;
   now: number;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
   recoveringMissionActionKey?: string | null;
   onClose: () => void;
   onSave: (opportunity: OpportunitySummary, input: UpdateOpportunityInput) => Promise<void>;
   onRecoverMission: (opportunity: OpportunitySummary, action: MissionRecoveryAction) => void;
   onLaunchOpportunityAnalysis: (opportunity: OpportunitySummary, suggested?: OpportunitySuggestedMission) => void;
   onOpenMission: (missionId: string) => void;
+  onRecordFieldEvidence: (
+    opportunity: OpportunitySummary,
+    input: RecordOpportunityFieldEvidenceInput,
+  ) => Promise<OpportunityFieldEvidenceAudit | null>;
+  onRecordFieldEvidenceBatch: (
+    opportunity: OpportunitySummary,
+    input: RecordOpportunityFieldEvidenceBatchInput,
+  ) => Promise<OpportunityFieldEvidenceBatchAudit | null>;
+  onInvalidateFieldEvidence: (
+    opportunity: OpportunitySummary,
+    evidenceId: string,
+    input: InvalidateOpportunityFieldEvidenceInput,
+  ) => Promise<OpportunityFieldEvidenceAudit | null>;
+  onRestoreFieldEvidence: (
+    opportunity: OpportunitySummary,
+    evidenceId: string,
+    input: RestoreOpportunityFieldEvidenceInput,
+  ) => Promise<OpportunityFieldEvidenceAudit | null>;
 };
 
 function TextField({
@@ -92,27 +139,108 @@ export function OpportunityDetailDrawer({
   saving,
   error,
   now,
+  missionRecoveryActionFeedback,
   recoveringMissionActionKey,
   onClose,
   onSave,
   onRecoverMission,
   onLaunchOpportunityAnalysis,
   onOpenMission,
+  onRecordFieldEvidence,
+  onRecordFieldEvidenceBatch,
+  onInvalidateFieldEvidence,
+  onRestoreFieldEvidence,
 }: OpportunityDetailDrawerProps) {
   const [draft, setDraft] = useState<OpportunityEditDraft | null>(() => (
     opportunity ? createOpportunityEditDraft(opportunity) : null
   ));
   const [localError, setLocalError] = useState<string | null>(null);
+  const [preTradeAuditEvents, setPreTradeAuditEvents] = useState<OpportunityEvent[]>([]);
+  const [remotePreTradeAuditEvents, setRemotePreTradeAuditEvents] = useState<OpportunityEvent[]>([]);
+  const [catalystAuditEvents, setCatalystAuditEvents] = useState<OpportunityEvent[]>([]);
+  const [remoteCatalystAuditEvents, setRemoteCatalystAuditEvents] = useState<OpportunityEvent[]>([]);
+  const [fieldEvidenceAuditEvents, setFieldEvidenceAuditEvents] = useState<OpportunityEvent[]>([]);
+  const [remoteFieldEvidenceAuditEvents, setRemoteFieldEvidenceAuditEvents] = useState<OpportunityEvent[]>([]);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const opportunityId = opportunity?.id;
+  const drawerReady = Boolean(opportunityId && draft);
 
   useEffect(() => {
     setDraft(opportunity ? createOpportunityEditDraft(opportunity) : null);
     setLocalError(null);
   }, [opportunity]);
 
+  useEffect(() => {
+    setPreTradeAuditEvents([]);
+    setRemotePreTradeAuditEvents([]);
+    setCatalystAuditEvents([]);
+    setRemoteCatalystAuditEvents([]);
+    setFieldEvidenceAuditEvents([]);
+    setRemoteFieldEvidenceAuditEvents([]);
+  }, [opportunityId]);
+
+  useEffect(() => {
+    if (!opportunityId) return undefined;
+    let active = true;
+
+    fetchOpportunityEventsForOpportunity(opportunityId, {
+      limit: 25,
+      types: ['pretrade_confirmed', 'pretrade_unconfirmed'],
+    }).then((events) => {
+      if (active) setRemotePreTradeAuditEvents(events);
+    }).catch(() => {
+      if (active) setRemotePreTradeAuditEvents([]);
+    });
+
+    fetchOpportunityEventsForOpportunity(opportunityId, {
+      limit: 60,
+      types: ['field_evidence_recorded', 'field_evidence_invalidated', 'field_evidence_restored'],
+    }).then((events) => {
+      if (active) setRemoteFieldEvidenceAuditEvents(events);
+    }).catch(() => {
+      if (active) setRemoteFieldEvidenceAuditEvents([]);
+    });
+
+    fetchOpportunityEventsForOpportunity(opportunityId, {
+      limit: 25,
+      types: ['catalyst_reminder_updated'],
+    }).then((events) => {
+      if (active) setRemoteCatalystAuditEvents(events);
+    }).catch(() => {
+      if (active) setRemoteCatalystAuditEvents([]);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [opportunityId]);
+
+  useEffect(() => {
+    if (!drawerReady) return undefined;
+
+    const frame = window.requestAnimationFrame(() => {
+      closeButtonRef.current?.focus({ preventScroll: true });
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [drawerReady, onClose, opportunityId]);
+
   if (!opportunity || !draft) return null;
 
   const meta = typeMeta(opportunity.type);
   const Icon = meta.icon;
+  const showMissionRecoveryPanel = opportunity.latestMission?.status === 'failed'
+    || opportunity.latestMission?.status === 'canceled'
+    || missionRecoveryActionFeedback?.opportunityId === opportunity.id;
 
   const updateDraft = (patch: Partial<OpportunityEditDraft>) => {
     setDraft((current) => current ? { ...current, ...patch } : current);
@@ -127,6 +255,67 @@ export function OpportunityDetailDrawer({
     }
 
     await onSave(opportunity, buildOpportunityUpdateInput(opportunity, draft));
+  };
+
+  const handlePreTradeAuditRecorded = (audit: PreTradeConfirmationAudit) => {
+    setPreTradeAuditEvents((current) => [
+      audit.event,
+      ...current.filter((event) => event.id !== audit.event.id),
+    ].slice(0, 5));
+  };
+
+  const handleCatalystReminderAuditRecorded = (audit: CatalystReminderPreferenceAudit) => {
+    setCatalystAuditEvents((current) => [
+      audit.event,
+      ...current.filter((event) => event.id !== audit.event.id),
+    ].slice(0, 8));
+  };
+
+  const handleFieldEvidenceAuditRecorded = (audit: OpportunityFieldEvidenceAudit | null) => {
+    if (!audit?.event) return;
+    setFieldEvidenceAuditEvents((current) => [
+      audit.event,
+      ...current.filter((event) => event.id !== audit.event.id),
+    ].slice(0, 12));
+  };
+
+  const handleRecordFieldEvidence = async (input: RecordOpportunityFieldEvidenceInput) => {
+    const audit = await onRecordFieldEvidence(opportunity, input);
+    handleFieldEvidenceAuditRecorded(audit);
+    return audit;
+  };
+
+  const handleRecordFieldEvidenceBatch = async (input: RecordOpportunityFieldEvidenceBatchInput) => {
+    const audit = await onRecordFieldEvidenceBatch(opportunity, input);
+    if (audit?.items) {
+      setFieldEvidenceAuditEvents((current) => [
+        ...audit.items
+          .map((item) => item.event)
+          .filter((event): event is OpportunityEvent => Boolean(event)),
+        ...current,
+      ].filter((event, index, events) => (
+        events.findIndex((candidate) => candidate.id === event.id) === index
+      )).slice(0, 12));
+    }
+    return audit;
+  };
+
+  const handleInvalidateFieldEvidence = async (
+    evidenceId: string,
+    input: InvalidateOpportunityFieldEvidenceInput,
+  ) => {
+    const audit = await onInvalidateFieldEvidence(opportunity, evidenceId, input);
+    handleFieldEvidenceAuditRecorded(audit);
+    return audit;
+  };
+
+  const handleRestoreFieldEvidence = async (
+    evidenceId: string,
+    input: RestoreOpportunityFieldEvidenceInput,
+  ) => {
+    const audit = await onRestoreFieldEvidence(opportunity, evidenceId, input);
+    handleFieldEvidenceAuditRecorded(audit);
+    return audit;
   };
 
   return (
@@ -149,7 +338,13 @@ export function OpportunityDetailDrawer({
             <h2>{opportunity.title}</h2>
             <p>{opportunity.whyNowSummary || opportunity.thesis || opportunity.query}</p>
           </div>
-          <button type="button" className="drawer-close" onClick={onClose} aria-label="关闭详情">
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="drawer-close"
+            onClick={onClose}
+            aria-label="关闭详情"
+          >
             <X size={18} />
           </button>
         </div>
@@ -241,14 +436,28 @@ export function OpportunityDetailDrawer({
 
           <section className="drawer-context-section">
             <div className="drawer-section-title">Context</div>
-            <CatalystReminderStrip
+            <Suspense fallback={null}>
+              <CatalystReminderStrip
+                opportunity={opportunity}
+                now={now}
+                compact
+                onOpenOpportunity={() => undefined}
+                onLaunchOpportunityAnalysis={(target) => onLaunchOpportunityAnalysis(target)}
+                onPreferenceRecorded={handleCatalystReminderAuditRecorded}
+              />
+            </Suspense>
+            <CatalystReminderAuditTrailBlock
               opportunity={opportunity}
-              now={now}
-              compact
-              onOpenOpportunity={() => undefined}
-              onLaunchOpportunityAnalysis={(target) => onLaunchOpportunityAnalysis(target)}
+              localEvents={[...catalystAuditEvents, ...remoteCatalystAuditEvents]}
             />
-            <PreTradeChecklistBlock opportunity={opportunity} />
+            <PreTradeChecklistBlock
+              opportunity={opportunity}
+              onAuditRecorded={handlePreTradeAuditRecorded}
+            />
+            <PreTradeAuditTrailBlock
+              opportunity={opportunity}
+              localEvents={[...preTradeAuditEvents, ...remotePreTradeAuditEvents]}
+            />
             <div className="drawer-score-grid">
               <div><span>Purity</span><strong>{opportunity.scores.purityScore}</strong></div>
               <div><span>Scarcity</span><strong>{opportunity.scores.scarcityScore}</strong></div>
@@ -257,13 +466,31 @@ export function OpportunityDetailDrawer({
             </div>
             <ScoreExplanationBlock opportunity={opportunity} />
             <CatalystList items={opportunity.catalystCalendar} />
+            <SourceProvenanceBlock opportunity={opportunity} />
+            <Suspense fallback={<div className="field-evidence-panel" data-field-evidence-loading>Loading field evidence...</div>}>
+              <FieldEvidencePanel
+                opportunity={opportunity}
+                auditEvents={[...fieldEvidenceAuditEvents, ...remoteFieldEvidenceAuditEvents]}
+                recording={saving}
+                onRecordEvidence={handleRecordFieldEvidence}
+                onRecordEvidenceBatch={handleRecordFieldEvidenceBatch}
+                onInvalidateEvidence={handleInvalidateFieldEvidence}
+                onRestoreEvidence={handleRestoreFieldEvidence}
+              />
+            </Suspense>
             {opportunity.type === 'ipo_spinout' && <IpoEvidenceBlock profile={opportunity.ipoProfile} />}
             <MissionStatusBlock mission={opportunity.latestMission} diff={opportunity.latestDiff} />
-            <MissionRecoveryPanel
-              opportunity={opportunity}
-              busyActionKey={recoveringMissionActionKey}
-              onRecoverMission={onRecoverMission}
-            />
+            {showMissionRecoveryPanel && (
+              <Suspense fallback={null}>
+                <MissionRecoveryPanel
+                  opportunity={opportunity}
+                  actionFeedback={missionRecoveryActionFeedback}
+                  busyActionKey={recoveringMissionActionKey}
+                  onRecoverMission={onRecoverMission}
+                  onOpenMission={onOpenMission}
+                />
+              </Suspense>
+            )}
             <OpportunityTimelineBlock entries={opportunity.recentActionTimeline} />
           </section>
         </div>

@@ -2,19 +2,22 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { OpportunityBoardHealthMap, OpportunityBoardType } from '../../api';
 import {
-  BOARD_FILTER_QUERY_KEYS,
-  BOARD_TYPES,
   sameBoardFilters,
   type BoardFilterState,
   type InboxLane,
 } from './model';
 import {
+  buildWorkbenchViewSearchParams,
   buildSavedViewLabel,
   cleanBoardFilters,
   countBoardFilters,
+  hasWorkbenchViewSearchParams,
   normalizeWorkbenchSearchQuery,
+  orderWorkbenchSavedViews,
   parseBoardFiltersFromSearchParams,
+  readStoredWorkbenchLastView,
   readStoredWorkbenchViews,
+  writeStoredWorkbenchLastView,
   writeStoredWorkbenchViews,
   type WorkbenchSavedView,
 } from './view-state';
@@ -29,11 +32,39 @@ export function useWorkbenchViewState({
   onFocusLane,
 }: WorkbenchViewStateOptions) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeBoardFilters, setActiveBoardFilters] = useState<BoardFilterState>({});
-  const [searchQuery, setSearchQuery] = useState(() => normalizeWorkbenchSearchQuery(searchParams.get('q')));
-  const [viewLane, setViewLane] = useState<InboxLane | null>(null);
-  const [savedViews, setSavedViews] = useState<WorkbenchSavedView[]>(() => readStoredWorkbenchViews());
-  const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(null);
+  const [initialSavedViews] = useState(() => readStoredWorkbenchViews());
+  const [initialViewRestore] = useState(() => {
+    if (hasWorkbenchViewSearchParams(searchParams)) return null;
+
+    const defaultView = initialSavedViews.find((view) => view.isDefault);
+    if (defaultView) {
+      return { kind: 'saved-view' as const, view: defaultView };
+    }
+
+    const lastView = readStoredWorkbenchLastView();
+    return lastView ? { kind: 'last-view' as const, view: lastView } : null;
+  });
+  const [initialViewRestored, setInitialViewRestored] = useState(false);
+  const [activeBoardFilters, setActiveBoardFilters] = useState<BoardFilterState>(
+    () => initialViewRestore?.view.boardFilters || {},
+  );
+  const [searchQuery, setSearchQuery] = useState(() => (
+    hasWorkbenchViewSearchParams(searchParams)
+      ? normalizeWorkbenchSearchQuery(searchParams.get('q'))
+      : initialViewRestore?.view.searchQuery || ''
+  ));
+  const [viewLane, setViewLane] = useState<InboxLane | null>(() => initialViewRestore?.view.focusLane || null);
+  const [savedViews, setSavedViews] = useState<WorkbenchSavedView[]>(() => initialSavedViews);
+  const [activeSavedViewId, setActiveSavedViewId] = useState<string | null>(
+    () => (initialViewRestore?.kind === 'saved-view' ? initialViewRestore.view.id : null),
+  );
+
+  const persistSavedViews = useCallback((nextViews: WorkbenchSavedView[]) => {
+    const orderedViews = orderWorkbenchSavedViews(nextViews);
+    setSavedViews(orderedViews);
+    writeStoredWorkbenchViews(orderedViews);
+    return orderedViews;
+  }, []);
 
   const syncWorkbenchViewState = useCallback((
     nextSearchQuery: string,
@@ -44,23 +75,10 @@ export function useWorkbenchViewState({
     const normalizedFilters = cleanBoardFilters(nextFilters);
     setSearchQuery(normalizedQuery);
     setActiveBoardFilters(normalizedFilters);
-
-    const nextParams = new URLSearchParams(searchParams);
-    if (normalizedQuery) {
-      nextParams.set('q', normalizedQuery);
-    } else {
-      nextParams.delete('q');
-    }
-    BOARD_TYPES.forEach((type) => {
-      const value = normalizedFilters[type];
-      const queryKey = BOARD_FILTER_QUERY_KEYS[type];
-      if (value) {
-        nextParams.set(queryKey, value);
-      } else {
-        nextParams.delete(queryKey);
-      }
-    });
-    setSearchParams(nextParams, { replace });
+    setSearchParams(
+      buildWorkbenchViewSearchParams(searchParams, normalizedQuery, normalizedFilters),
+      { replace },
+    );
   }, [searchParams, setSearchParams]);
 
   const syncBoardFilters = useCallback((nextFilters: BoardFilterState, replace = false) => {
@@ -88,18 +106,21 @@ export function useWorkbenchViewState({
       boardFilters: activeBoardFilters,
       focusLane: viewLane,
     };
+    const existingView = activeSavedViewId
+      ? savedViews.find((item) => item.id === activeSavedViewId)
+      : null;
     const view: WorkbenchSavedView = {
       id: activeSavedViewId || `view_${Date.now().toString(36)}`,
       label: buildSavedViewLabel(snapshot),
       ...snapshot,
-      createdAt: savedViews.find((item) => item.id === activeSavedViewId)?.createdAt || now,
+      isPinned: existingView?.isPinned || false,
+      isDefault: existingView?.isDefault || false,
+      createdAt: existingView?.createdAt || now,
       updatedAt: now,
     };
-    const nextViews = [view, ...savedViews.filter((item) => item.id !== view.id)].slice(0, 8);
-    setSavedViews(nextViews);
-    writeStoredWorkbenchViews(nextViews);
+    persistSavedViews([view, ...savedViews.filter((item) => item.id !== view.id)]);
     setActiveSavedViewId(view.id);
-  }, [activeBoardFilters, activeSavedViewId, savedViews, searchQuery, viewLane]);
+  }, [activeBoardFilters, activeSavedViewId, persistSavedViews, savedViews, searchQuery, viewLane]);
 
   const applyWorkbenchView = useCallback((view: WorkbenchSavedView) => {
     setActiveSavedViewId(view.id);
@@ -111,13 +132,33 @@ export function useWorkbenchViewState({
   }, [onFocusLane, syncWorkbenchViewState]);
 
   const deleteWorkbenchView = useCallback((viewId: string) => {
-    const nextViews = savedViews.filter((view) => view.id !== viewId);
-    setSavedViews(nextViews);
-    writeStoredWorkbenchViews(nextViews);
+    persistSavedViews(savedViews.filter((view) => view.id !== viewId));
     if (activeSavedViewId === viewId) {
       setActiveSavedViewId(null);
     }
-  }, [activeSavedViewId, savedViews]);
+  }, [activeSavedViewId, persistSavedViews, savedViews]);
+
+  const toggleSavedViewPin = useCallback((viewId: string) => {
+    const now = new Date().toISOString();
+    persistSavedViews(savedViews.map((view) => (
+      view.id === viewId
+        ? { ...view, isPinned: !view.isPinned, updatedAt: now }
+        : view
+    )));
+  }, [persistSavedViews, savedViews]);
+
+  const toggleDefaultSavedView = useCallback((viewId: string) => {
+    const targetView = savedViews.find((view) => view.id === viewId);
+    if (!targetView) return;
+
+    const now = new Date().toISOString();
+    const shouldSetDefault = !targetView.isDefault;
+    persistSavedViews(savedViews.map((view) => ({
+      ...view,
+      isDefault: view.id === viewId ? shouldSetDefault : false,
+      updatedAt: view.id === viewId ? now : view.updatedAt,
+    })));
+  }, [persistSavedViews, savedViews]);
 
   const resetWorkbenchView = useCallback(() => {
     setViewLane(null);
@@ -139,6 +180,26 @@ export function useWorkbenchViewState({
   }, [activeBoardFilters, syncBoardFilters]);
 
   useEffect(() => {
+    if (initialViewRestore && !initialViewRestored && !hasWorkbenchViewSearchParams(searchParams)) {
+      setSearchParams(
+        buildWorkbenchViewSearchParams(
+          searchParams,
+          initialViewRestore.view.searchQuery,
+          initialViewRestore.view.boardFilters,
+        ),
+        { replace: true },
+      );
+
+      if (initialViewRestore.view.focusLane) {
+        window.requestAnimationFrame(() => onFocusLane(initialViewRestore.view.focusLane));
+      }
+      setInitialViewRestored(true);
+    }
+  }, [initialViewRestore, initialViewRestored, onFocusLane, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (initialViewRestore && !initialViewRestored && !hasWorkbenchViewSearchParams(searchParams)) return;
+
     const result = parseBoardFiltersFromSearchParams(searchParams, liveBoardHealth);
     setActiveBoardFilters((current) => (
       sameBoardFilters(current, result.filters) ? current : result.filters
@@ -147,12 +208,21 @@ export function useWorkbenchViewState({
     if (result.normalized) {
       setSearchParams(result.normalizedParams, { replace: true });
     }
-  }, [liveBoardHealth, searchParams, setSearchParams]);
+  }, [initialViewRestore, initialViewRestored, liveBoardHealth, searchParams, setSearchParams]);
 
   useEffect(() => {
+    if (initialViewRestore && !initialViewRestored && !hasWorkbenchViewSearchParams(searchParams)) return;
     const nextQuery = normalizeWorkbenchSearchQuery(searchParams.get('q'));
     setSearchQuery((current) => (current === nextQuery ? current : nextQuery));
-  }, [searchParams]);
+  }, [initialViewRestore, initialViewRestored, searchParams]);
+
+  useEffect(() => {
+    writeStoredWorkbenchLastView({
+      searchQuery,
+      boardFilters: activeBoardFilters,
+      focusLane: viewLane,
+    });
+  }, [activeBoardFilters, searchQuery, viewLane]);
 
   const activeFilterCount = useMemo(() => countBoardFilters(activeBoardFilters), [activeBoardFilters]);
 
@@ -169,6 +239,8 @@ export function useWorkbenchViewState({
     saveCurrentWorkbenchView,
     applyWorkbenchView,
     deleteWorkbenchView,
+    toggleSavedViewPin,
+    toggleDefaultSavedView,
     resetWorkbenchView,
     toggleBoardFilter,
     clearBoardFilter,

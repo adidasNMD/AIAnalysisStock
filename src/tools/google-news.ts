@@ -24,6 +24,26 @@ function throwIfCanceled(signal?: AbortSignal) {
   }
 }
 
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfCanceled(signal);
+  let onAbort: (() => void) | undefined;
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(resolve, ms);
+    onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(new Error('Canceled by user'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
+  }).finally(() => {
+    if (onAbort) {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  });
+}
+
 export const DEFAULT_NEWS_KEYWORDS = [
   // === 机器智能与脑机 (Machine Intelligence & BCI) ===
   'Embodied AI humanoid robot',
@@ -77,7 +97,18 @@ export async function fetchGoogleNewsRSS(
       : `hl=${lang}&gl=US&ceid=US:en`;
       
     const url = `${GOOGLE_NEWS_RSS_BASE}?q=${encodeURIComponent(query)}&${langParams}`;
-    const feed = await parser.parseURL(url);
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'OpenClaw-Sentinel/1.0' },
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    throwIfCanceled(options.signal);
+    if (!response.ok) {
+      throw new Error(`Google News RSS returned ${response.status}`);
+    }
+
+    const feedXml = await response.text();
+    throwIfCanceled(options.signal);
+    const feed = await parser.parseString(feedXml);
     throwIfCanceled(options.signal);
 
     for (const entry of (feed.items || []).slice(0, limit)) {
@@ -131,14 +162,7 @@ export async function scanMultipleKeywords(
         }
       }
       // 小延迟避免触发 Google 速率限制
-      await new Promise<void>((resolve, reject) => {
-        const timeoutId = setTimeout(resolve, 300);
-        const onAbort = () => {
-          clearTimeout(timeoutId);
-          reject(new Error('Canceled by user'));
-        };
-        options.signal?.addEventListener('abort', onAbort, { once: true });
-      });
+      await abortableDelay(300, options.signal);
     } catch (e: any) {
       throwIfCanceled(options.signal);
       console.error(`[GoogleNews] Failed for "${keyword}": ${e.message}`);

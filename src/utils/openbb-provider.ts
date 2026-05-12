@@ -10,6 +10,7 @@
 
 import * as dotenv from 'dotenv';
 import { MARKET_CAP_MIN, MARKET_CAP_MAX, isMarketCapWithinGate } from './market-cap-gate';
+import type { PriceHistoryPoint } from './price-history-cache';
 dotenv.config();
 
 const OPENBB_BASE_URL = process.env.OPENBB_API_URL || 'http://localhost:8000';
@@ -74,15 +75,31 @@ export interface OpenBBTickerData {
 
 // ===== HTTP 请求工具 =====
 
-function isExternallyAborted(signal?: AbortSignal): boolean {
-  return Boolean(signal?.aborted);
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getCancelReason(signal);
+  }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && /timed out|timeout|超时/i.test(error.message);
 }
 
 function createRequestController(timeoutMs: number, externalSignal?: AbortSignal) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const onAbort = () => controller.abort(externalSignal?.reason);
+  const timeoutId = setTimeout(
+    () => controller.abort(new Error(`OpenBB request timed out after ${Math.round(timeoutMs / 1000)}s`)),
+    timeoutMs,
+  );
+  const onAbort = () => controller.abort(getCancelReason(externalSignal));
   externalSignal?.addEventListener('abort', onAbort, { once: true });
+  if (externalSignal?.aborted) {
+    onAbort();
+  }
 
   return {
     signal: controller.signal,
@@ -98,9 +115,7 @@ async function openbbFetch(
   params: Record<string, string> = {},
   options: RequestOptions = {},
 ): Promise<any> {
-  if (isExternallyAborted(options.signal)) {
-    throw new Error('Canceled by user');
-  }
+  throwIfCanceled(options.signal);
   const url = new URL(`/api/v1${endpoint}`, OPENBB_BASE_URL);
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
@@ -119,6 +134,7 @@ async function openbbFetch(
       return null;
     }
 
+    throwIfCanceled(options.signal);
     try {
       return await response.json();
     } catch (e: any) {
@@ -126,10 +142,8 @@ async function openbbFetch(
       return null;
     }
   } catch (e: any) {
-    if (isExternallyAborted(options.signal)) {
-      throw new Error('Canceled by user');
-    }
-    if (e.name === 'AbortError') {
+    throwIfCanceled(options.signal);
+    if (e.name === 'AbortError' || isTimeoutError(e)) {
       console.warn(`[OpenBB] ⏱️ ${endpoint} 超时`);
     } else {
       console.warn(`[OpenBB] ❌ ${endpoint} 失败: ${e.message}`);
@@ -307,6 +321,7 @@ function calculateRSI(prices: number[], period: number): number | null {
  * 查询一只票的全部三层数据 + 综合评级
  */
 export async function fetchTickerFullData(ticker: string, options: RequestOptions = {}): Promise<OpenBBTickerData> {
+  throwIfCanceled(options.signal);
   console.log(`[OpenBB] 📊 开始全维度查询: ${ticker}`);
 
   const [core, auxiliary, background] = await Promise.all([
@@ -314,6 +329,7 @@ export async function fetchTickerFullData(ticker: string, options: RequestOption
     fetchAuxiliaryMetrics(ticker, options),
     fetchBackgroundMetrics(ticker, options),
   ]);
+  throwIfCanceled(options.signal);
 
   // 综合评级逻辑
   const { verdict, verdictReason } = computeVerdict(ticker, core, auxiliary);
@@ -339,11 +355,15 @@ export async function fetchMultipleTickersData(
   console.log(`[OpenBB] 📊 批量查询 ${tickers.length} 只标的: ${tickers.join(', ')}`);
   // 串行查询避免 API 限流
   const results: OpenBBTickerData[] = [];
+  throwIfCanceled(options.signal);
   for (const ticker of tickers) {
     try {
+      throwIfCanceled(options.signal);
       const data = await fetchTickerFullData(ticker, options);
+      throwIfCanceled(options.signal);
       results.push(data);
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[OpenBB] ❌ ${ticker} 查询失败: ${e.message}`);
       results.push({
         ticker,
@@ -360,12 +380,69 @@ export async function fetchMultipleTickersData(
 }
 
 /**
+ * 获取历史价格序列。主要给 Review Playback / price-history cache 使用。
+ */
+export async function fetchHistoricalPriceSeries(
+  ticker: string,
+  options: RequestOptions & { limit?: number; provider?: string } = {},
+): Promise<PriceHistoryPoint[]> {
+  throwIfCanceled(options.signal);
+  const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 180), 1000));
+  const provider = options.provider || PRICE_PROVIDER;
+  const payload = await openbbFetch('/equity/price/historical', {
+    symbol: ticker,
+    provider,
+    limit: String(limit),
+  }, options);
+  throwIfCanceled(options.signal);
+
+  const rows: unknown[] = Array.isArray(payload?.results)
+    ? payload.results
+    : Array.isArray(payload)
+      ? payload
+      : [];
+
+  return rows
+    .map((row: unknown): PriceHistoryPoint | null => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+      const raw = row as Record<string, unknown>;
+      const at = typeof raw.date === 'string'
+        ? raw.date
+        : typeof raw.timestamp === 'string'
+          ? raw.timestamp
+          : typeof raw.at === 'string'
+            ? raw.at
+            : undefined;
+      const close = typeof raw.close === 'number'
+        ? raw.close
+        : typeof raw.close === 'string'
+          ? Number.parseFloat(raw.close)
+          : Number.NaN;
+      if (!at || !Number.isFinite(Date.parse(at)) || !Number.isFinite(close) || close <= 0) {
+        return null;
+      }
+      const open = typeof raw.open === 'number' ? raw.open : undefined;
+      const high = typeof raw.high === 'number' ? raw.high : undefined;
+      const low = typeof raw.low === 'number' ? raw.low : undefined;
+      const volume = typeof raw.volume === 'number' ? raw.volume : undefined;
+      return {
+        at,
+        close,
+        ...(open !== undefined ? { open } : {}),
+        ...(high !== undefined ? { high } : {}),
+        ...(low !== undefined ? { low } : {}),
+        ...(volume !== undefined ? { volume } : {}),
+        source: `openbb:${provider}`,
+      };
+    })
+    .filter((point): point is PriceHistoryPoint => Boolean(point));
+}
+
+/**
  * 查询宏观经济环境（底部数据带）
  */
 export async function fetchMacroEnvironment(options: RequestOptions = {}): Promise<MacroEnvironment> {
-  if (isExternallyAborted(options.signal)) {
-    throw new Error('Canceled by user');
-  }
+  throwIfCanceled(options.signal);
   console.log('[OpenBB] 🌍 查询宏观经济环境');
   // FRED 数据可能需要 FRED API key
   return {
@@ -381,19 +458,16 @@ export async function fetchMacroEnvironment(options: RequestOptions = {}): Promi
  * 健康检查：OpenBB 服务是否在线
  */
 export async function checkOpenBBHealth(options: RequestOptions = {}): Promise<boolean> {
-  if (isExternallyAborted(options.signal)) {
-    throw new Error('Canceled by user');
-  }
+  throwIfCanceled(options.signal);
   const request = createRequestController(5000, options.signal);
   try {
     const response = await fetch(`${OPENBB_BASE_URL}/docs`, {
       signal: request.signal,
     });
+    throwIfCanceled(options.signal);
     return response.ok;
   } catch {
-    if (isExternallyAborted(options.signal)) {
-      throw new Error('Canceled by user');
-    }
+    throwIfCanceled(options.signal);
     return false;
   } finally {
     request.cleanup();

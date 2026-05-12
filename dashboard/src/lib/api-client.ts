@@ -111,6 +111,9 @@ export function createApiClient(baseUrl: string) {
     put: <T>(path: string, body?: unknown, options: ApiRequestOptions<T> = {}) => (
       request<T, T>('PUT', path, { ...options, body })
     ),
+    delete: <T>(path: string, options: ApiRequestOptions<T> = {}) => (
+      request<T, T>('DELETE', path, options)
+    ),
     deleteOk: async (path: string, options?: ApiRequestOptions<boolean>) => {
       try {
         const response = await fetch(withParams(joinUrl(baseUrl, path), options?.params), {

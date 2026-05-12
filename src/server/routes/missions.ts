@@ -9,25 +9,35 @@ import {
   getMissionDetail,
   getMissionEvidenceForApi,
   getMissionRecoveryForApi,
+  listMissionArtifactsForApi,
   listMissionEventsForApi,
   listMissionRunsForApi,
   listMissionSummaries,
+  listMissionSummariesPage,
   retryMissionForApi,
 } from '../services/mission-service';
-import { missionPayloadSchema, sendValidationError } from '../validation';
+import {
+  parsePaginationQuery,
+  sendConflict,
+  sendInternalError,
+  sendNotFound,
+} from '../route-helpers';
+import { missionPayloadSchema, missionRetryPayloadSchema, sendValidationError } from '../validation';
 
 export const missionsRouter = Router();
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 missionsRouter.get('/', async (req: Request, res: Response) => {
   try {
-    const limit = parseInt(req.query.limit as string, 10) || 50;
-    res.json(await listMissionSummaries(limit));
+    const pagination = parsePaginationQuery(req.query as Record<string, unknown>, {
+      defaultLimit: 50,
+      maxLimit: 100,
+    });
+    if (pagination.envelope) {
+      return res.json(await listMissionSummariesPage(pagination));
+    }
+    res.json(await listMissionSummaries(pagination.limit));
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -58,12 +68,25 @@ missionsRouter.get('/:id/recovery', async (req: Request, res: Response) => {
   try {
     const result = await getMissionRecoveryForApi(req.params.id as string);
     if (result.status === 'mission_not_found') {
-      return res.status(404).json({ error: 'Mission not found' });
+      return sendNotFound(res, 'Mission not found');
     }
 
     res.json(result.recovery);
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
+  }
+});
+
+missionsRouter.get('/:id/artifacts', async (req: Request, res: Response) => {
+  try {
+    const result = await listMissionArtifactsForApi(req.params.id as string);
+    if (result.status === 'mission_not_found') {
+      return sendNotFound(res, 'Mission not found');
+    }
+
+    res.json(result.artifacts);
+  } catch (error: unknown) {
+    sendInternalError(res, error);
   }
 });
 
@@ -71,11 +94,11 @@ missionsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const mission = await getMissionDetail(req.params.id as string);
     if (!mission) {
-      return res.status(404).json({ error: 'Mission not found' });
+      return sendNotFound(res, 'Mission not found');
     }
     res.json(mission);
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -83,7 +106,7 @@ missionsRouter.get('/:id/events', async (req: Request, res: Response) => {
   try {
     res.json(await listMissionEventsForApi(req.params.id as string));
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -91,7 +114,7 @@ missionsRouter.get('/:id/runs', async (req: Request, res: Response) => {
   try {
     res.json(await listMissionRunsForApi(req.params.id as string));
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -99,32 +122,43 @@ missionsRouter.get('/:id/runs/:runId/evidence', async (req: Request, res: Respon
   try {
     const result = await getMissionEvidenceForApi(req.params.id as string, req.params.runId as string);
     if (result.status === 'mission_not_found') {
-      return res.status(404).json({ error: 'Mission not found' });
+      return sendNotFound(res, 'Mission not found');
     }
     if (result.status === 'evidence_not_found') {
-      return res.status(404).json({ error: 'Mission evidence not found' });
+      return sendNotFound(res, 'Mission evidence not found');
     }
 
     res.json(result.evidence);
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
 missionsRouter.post('/:id/retry', async (req: Request, res: Response) => {
   try {
     const missionId = req.params.id as string;
-    const result = await retryMissionForApi(missionId, req.body as Partial<MissionInput>);
+    const parsed = missionRetryPayloadSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return sendValidationError(res, parsed.error, 'Invalid mission retry payload');
+    }
+    const headerIdempotencyKey = req.header('Idempotency-Key')?.trim();
+    const idempotencyKey = headerIdempotencyKey || parsed.data.idempotencyKey;
+    const retryInput: Parameters<typeof retryMissionForApi>[1] = {
+      ...(parsed.data.depth ? { depth: parsed.data.depth } : {}),
+      ...(parsed.data.source ? { source: parsed.data.source } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    };
+    const result = await retryMissionForApi(missionId, retryInput);
     if (result.status === 'mission_not_found') {
-      return res.status(404).json({ error: 'Mission not found' });
+      return sendNotFound(res, 'Mission not found');
     }
     if (result.status === 'conflict') {
-      return res.status(409).json({ error: 'Task already in queue or running' });
+      return sendConflict(res, 'Task already in queue or running');
     }
 
     res.status(202).json(result.response);
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -161,7 +195,7 @@ missionsRouter.post('/', async (req: Request, res: Response) => {
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     if (!mission) {
-      return res.status(409).json({ error: 'Task already in queue or running' });
+      return sendConflict(res, 'Task already in queue or running');
     }
 
     const latestRun = await getLatestMissionRun(mission.id);
@@ -172,6 +206,6 @@ missionsRouter.post('/', async (req: Request, res: Response) => {
       runId: latestRun?.id,
     });
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });

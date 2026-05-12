@@ -1,0 +1,222 @@
+/* ===========================================
+   Command Center Route Styles
+   =========================================== */
+
+/* ── Command Center ── */
+
+.services-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.service-card {
+  padding: 14px;
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  transition: border-color 0.3s;
+}
+.service-card.ok { border-color: rgba(0, 210, 133, 0.3); }
+.service-card.degraded { border-color: rgba(255, 171, 0, 0.4); }
+.service-card.warning { border-color: rgba(255, 171, 0, 0.4); }
+.service-card.error { border-color: rgba(255, 51, 102, 0.4); }
+.service-card.offline { border-color: rgba(255, 51, 102, 0.2); }
+.service-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.service-card.ok .service-dot { background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+.service-card.degraded .service-dot, .service-card.warning .service-dot { background: var(--accent-amber); box-shadow: 0 0 8px var(--accent-amber); }
+.service-card.error .service-dot { background: var(--accent-crimson); box-shadow: 0 0 8px var(--accent-crimson); animation: pulse 1.5s infinite; }
+.service-card.offline .service-dot { background: var(--accent-crimson); opacity: 0.5; }
+.service-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.service-port {
+  justify-self: end;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.probe-error-hint {
+  grid-column: 1 / -1;
+  font-size: 0.6rem;
+  color: var(--accent-crimson);
+  text-align: left;
+  opacity: 0.8;
+}
+.service-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
+}
+.service-card-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 171, 0, 0.26);
+  border-radius: 999px;
+  background: rgba(255, 171, 0, 0.06);
+  color: var(--accent-amber);
+  font-size: 0.6rem;
+  font-family: var(--font-mono);
+  line-height: 1;
+  cursor: pointer;
+}
+.service-card-action:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.trigger-section {
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.mode-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+.mode-tabs button.active {
+  background: rgba(0, 229, 255, 0.1);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+.mode-tabs button:hover:not(.active) { background: var(--bg-hover); }
+
+.trigger-form {
+  display: flex;
+  gap: 8px;
+}
+.trigger-form input {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.trigger-form input:focus { border-color: var(--accent-cyan); }
+
+.active-mission { padding: 20px; margin-bottom: 24px; }
+.mission-running-header { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--accent-cyan); font-weight: 600; margin-bottom: 8px; }
+.mission-running-title { font-size: 1.1rem; font-weight: 500; margin-bottom: 4px; }
+.mission-running-meta { font-size: 0.75rem; color: var(--text-secondary); }
+.tag { color: var(--accent-amber); font-weight: 600; }
+.tag.accent { color: var(--accent-cyan); }
+.tag.danger { color: var(--accent-crimson); }
+
+.pipeline-steps { display: flex; align-items: center; gap: 4px; margin-top: 16px; justify-content: center; }
+.step-group { display: flex; align-items: center; gap: 4px; }
+.step-circle {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--glass-border);
+  font-size: 0.7rem; color: var(--text-tertiary);
+  transition: all 0.3s;
+}
+.step-circle.done { border-color: var(--accent-green); background: var(--accent-green); color: var(--bg-primary); font-weight: bold; }
+.step-circle.active { border-color: var(--accent-cyan); color: var(--accent-cyan); animation: pulse 1.5s infinite; }
+.step-label { font-size: 0.6rem; color: var(--text-tertiary); text-transform: uppercase; }
+.step-label.active { color: var(--text-primary); }
+.step-line { width: 20px; height: 2px; background: var(--glass-border); }
+.step-line.done { background: var(--accent-green); }
+
+.queue-section { margin-top: 8px; }
+.queue-section h3 { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 8px; }
+
+.queue-recovery-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 51, 102, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 51, 102, 0.06);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+.queue-card { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 8px 12px; background: var(--bg-secondary); border-radius: 6px; margin-bottom: 4px; font-size: 0.8rem; }
+.queue-card.recoverable {
+  border: 1px solid rgba(245, 166, 35, 0.14);
+}
+.queue-query { color: var(--text-primary); flex: 1; }
+.queue-depth { color: var(--text-tertiary); font-family: var(--font-mono); }
+.queue-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.queue-failure-code {
+  color: var(--accent-amber);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+}
+.queue-failure-code.danger {
+  color: var(--accent-crimson);
+}
+.queue-failure-code.info {
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 960px) {
+  .services-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .trigger-form {
+    flex-direction: column;
+  }
+
+  .services-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .service-card {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .service-port {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

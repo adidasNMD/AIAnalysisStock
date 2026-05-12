@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   createOpportunityPayloadSchema,
+  fieldEvidenceBatchPayloadSchema,
+  fieldEvidenceBulkStatusPayloadSchema,
+  fieldEvidenceInvalidationPayloadSchema,
+  fieldEvidencePayloadSchema,
+  fieldEvidenceRestorationPayloadSchema,
+  fieldRegistryImportPayloadSchema,
+  preTradeConfirmationPayloadSchema,
   updateOpportunityPayloadSchema,
 } from '../server/validation';
 
@@ -168,5 +175,219 @@ describe('opportunity payload validation', () => {
 
     expect(result.success).toBe(false);
     expect(issuePaths(result)).toContain('title');
+  });
+
+  it('validates pre-trade confirmation audit payloads', () => {
+    const valid = preTradeConfirmationPayloadSchema.safeParse({
+      itemId: 'catalyst_window',
+      label: 'Catalyst window',
+      status: 'block',
+      completed: true,
+      evidence: 'Company calendar pending',
+      actionKind: 'fill_date',
+      catalystUrgency: 'missing_date',
+      readiness: 'blocked',
+      score: 66,
+    });
+    const invalid = preTradeConfirmationPayloadSchema.safeParse({
+      itemId: '',
+      label: 'Risk/reward',
+      status: 'bad',
+      completed: 'yes',
+      score: 120,
+      unsafe: true,
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'itemId',
+      'status',
+      'completed',
+      'score',
+      '',
+    ]));
+  });
+
+  it('validates manual field evidence audit payloads', () => {
+    const valid = fieldEvidencePayloadSchema.safeParse({
+      field: 'scores.relayScore',
+      label: 'Relay score',
+      kind: 'score',
+      source: 'manual_review',
+      confidence: 'confirmed',
+      note: 'Verified against latest mission evidence.',
+    });
+    const invalid = fieldEvidencePayloadSchema.safeParse({
+      field: '',
+      kind: 'unsafe',
+      confidence: 'certain',
+      extra: true,
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'field',
+      'kind',
+      'confidence',
+      '',
+    ]));
+  });
+
+  it('validates manual field evidence batch payloads', () => {
+    const valid = fieldEvidenceBatchPayloadSchema.safeParse({
+      batchId: 'batch-1',
+      items: [
+        {
+          clientId: 'draft-1',
+          field: 'scores.relayScore',
+          label: 'Relay score',
+          kind: 'score',
+          source: 'manual_review',
+          confidence: 'confirmed',
+          note: 'Verified against latest evidence.',
+        },
+      ],
+    });
+    const invalid = fieldEvidenceBatchPayloadSchema.safeParse({
+      batchId: 'batch-2',
+      items: [
+        {
+          clientId: 'draft-unsafe',
+          field: '',
+          confidence: 'certain',
+          extra: true,
+        },
+      ],
+    });
+    const missingEvidence = fieldEvidenceBatchPayloadSchema.safeParse({
+      items: [
+        {
+          clientId: 'draft-empty',
+          field: 'scores.relayScore',
+          confidence: 'confirmed',
+        },
+      ],
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'items.0.field',
+      'items.0.confidence',
+      'items.0',
+    ]));
+    expect(missingEvidence.success).toBe(false);
+    expect(missingEvidence.success ? [] : missingEvidence.error.issues.map((issue) => issue.path.join('.'))).toContain(
+      'items.0.note',
+    );
+  });
+
+  it('validates manual field evidence invalidation payloads', () => {
+    const valid = fieldEvidenceInvalidationPayloadSchema.safeParse({
+      reason: 'Manual review superseded this evidence.',
+      field: 'scores.relayScore',
+      source: 'manual_review',
+    });
+    const invalid = fieldEvidenceInvalidationPayloadSchema.safeParse({
+      reason: '',
+      arbitraryNestedPayload: true,
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'reason',
+      '',
+    ]));
+  });
+
+  it('validates manual field evidence restoration payloads', () => {
+    const valid = fieldEvidenceRestorationPayloadSchema.safeParse({
+      reason: 'Manual review restored this evidence.',
+      field: 'scores.relayScore',
+      source: 'manual_review',
+    });
+    const invalid = fieldEvidenceRestorationPayloadSchema.safeParse({
+      reason: '',
+      unsafe: true,
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'reason',
+      '',
+    ]));
+  });
+
+  it('validates bulk field evidence status payloads', () => {
+    const valid = fieldEvidenceBulkStatusPayloadSchema.safeParse({
+      action: 'invalidate',
+      reason: 'Batch review superseded selected evidence.',
+      items: [
+        {
+          opportunityId: 'opp-1',
+          evidenceId: 'evt-1',
+          field: 'scores.relayScore',
+          source: 'manual_review',
+        },
+      ],
+    });
+    const invalid = fieldEvidenceBulkStatusPayloadSchema.safeParse({
+      action: 'delete',
+      reason: '',
+      items: [{ opportunityId: '', evidenceId: '', extra: true }],
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'action',
+      'reason',
+      'items.0.opportunityId',
+      'items.0.evidenceId',
+      'items.0',
+    ]));
+  });
+
+  it('validates field registry import payloads', () => {
+    const valid = fieldRegistryImportPayloadSchema.safeParse({
+      dryRun: true,
+      updatedBy: 'dashboard-import',
+      items: [
+        {
+          field: 'scores.relayScore',
+          label: 'Relay momentum score',
+          kind: 'score',
+          source: 'manual_registry',
+          confidence: 'confirmed',
+          note: 'Desk-reviewed default.',
+          updatedAt: '2026-05-09T00:00:00.000Z',
+        },
+      ],
+    });
+    const invalid = fieldRegistryImportPayloadSchema.safeParse({
+      items: [
+        {
+          field: '',
+          kind: 'bad',
+          unsafe: true,
+        },
+        {
+          field: 'scores.policyScore',
+        },
+      ],
+    });
+
+    expect(valid.success).toBe(true);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success ? [] : invalid.error.issues.map((issue) => issue.path.join('.'))).toEqual(expect.arrayContaining([
+      'items.0.field',
+      'items.0.kind',
+      'items.0',
+      'items.1.field',
+    ]));
   });
 });

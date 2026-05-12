@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { ArrowRight } from 'lucide-react';
 import type {
   OpportunityInboxItem,
@@ -20,16 +21,21 @@ import {
   liveSignalLabel,
 } from './live';
 import { buildInboxPrimaryAction } from './selectors';
-import { MissionRecoveryPanel } from './MissionRecoveryPanel';
 import { PreTradeChecklistBlock } from './PreTradeChecklistBlock';
 import { ScoreExplanationBlock } from './ScoreExplanationBlock';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
+
+const MissionRecoveryPanel = lazy(() => (
+  import('./MissionRecoveryPanel').then((module) => ({ default: module.MissionRecoveryPanel }))
+));
 
 type InboxOpportunityCardProps = {
   item: OpportunityInboxItem;
   liveNow: number;
   livePriorityEvent?: OpportunityStreamEvent | null;
   liveRank?: number;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
   recoveringMissionActionKey?: string | null;
   onOpenOpportunity: (opportunity: OpportunitySummary) => void;
   onExecutePrimaryAction: (
@@ -52,6 +58,7 @@ export function InboxOpportunityCard({
   liveNow,
   livePriorityEvent,
   liveRank,
+  missionRecoveryActionFeedback,
   recoveringMissionActionKey,
   onOpenOpportunity,
   onExecutePrimaryAction,
@@ -62,11 +69,15 @@ export function InboxOpportunityCard({
   const primaryAction = buildInboxPrimaryAction(item);
   const liveRankBadge = buildLiveRankBadge(livePriorityEvent, liveRank ?? -1, liveNow);
   const extraTemplates = buildExtraTemplates(item, primaryAction.template?.id, 2);
+  const showMissionRecoveryPanel = item.latestMission?.status === 'failed'
+    || item.latestMission?.status === 'canceled'
+    || missionRecoveryActionFeedback?.opportunityId === item.id;
 
   return (
     <article
       key={item.id}
       className={`today-card ${liveRankBadge ? 'live-ranked' : ''} ${liveRankBadge?.state || ''}`}
+      data-opportunity-id={item.id}
     >
       <div className="today-card-top">
         <span className={`consensus-badge ${statusTone(item.status)}`}>
@@ -156,14 +167,25 @@ export function InboxOpportunityCard({
           <span key={`${item.id}_${reason.code}`} className="ticker-pill">{reason.label}</span>
         ))}
       </div>
-      <MissionRecoveryPanel
-        opportunity={item}
-        busyActionKey={recoveringMissionActionKey}
-        limit={3}
-        onRecoverMission={onRecoverMission}
-      />
+      {showMissionRecoveryPanel && (
+        <Suspense fallback={null}>
+          <MissionRecoveryPanel
+            opportunity={item}
+            actionFeedback={missionRecoveryActionFeedback}
+            busyActionKey={recoveringMissionActionKey}
+            limit={3}
+            onRecoverMission={onRecoverMission}
+            onOpenMission={onOpenMission}
+          />
+        </Suspense>
+      )}
       <div className="today-actions" style={{ marginTop: 10 }}>
-        <button type="button" className="secondary-btn" onClick={() => onOpenOpportunity(item)}>
+        <button
+          type="button"
+          className="secondary-btn"
+          data-opportunity-action="details"
+          onClick={() => onOpenOpportunity(item)}
+        >
           详情 / 编辑
         </button>
         <button type="button" className="secondary-btn" onClick={() => void onExecutePrimaryAction(item, primaryAction)}>

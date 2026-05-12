@@ -8,6 +8,7 @@ vi.mock('../db', () => ({
 
 function createMissionRunDbMock(seedRows: any[]) {
   const rows = new Map<string, any>(seedRows.map((row) => [row.id, { ...row }]));
+  const latestMissionRuns = new Map<string, any>();
 
   return {
     get: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
@@ -25,6 +26,25 @@ function createMissionRunDbMock(seedRows: any[]) {
     }),
     all: vi.fn().mockResolvedValue([]),
     run: vi.fn().mockImplementation(async (sql: string, ...params: any[]) => {
+      if (sql.includes('INSERT INTO mission_runs')) {
+        rows.set(params[0], {
+          id: params[0],
+          missionId: params[1],
+          taskId: params[2],
+          status: params[3],
+          stage: params[4],
+          attempt: params[5],
+          workerLeaseId: null,
+          createdAt: params[6],
+          startedAt: null,
+          heartbeatAt: null,
+          completedAt: null,
+          failureMessage: null,
+          cancelRequestedAt: null,
+          failureCode: null,
+          degradedFlags: null,
+        });
+      }
       if (sql.includes('UPDATE mission_runs')) {
         const id = params[10];
         const row = rows.get(id);
@@ -42,9 +62,16 @@ function createMissionRunDbMock(seedRows: any[]) {
           degradedFlags: params[9],
         });
       }
+      if (sql.includes('UPDATE missions') && sql.includes('latestRunId')) {
+        latestMissionRuns.set(params[3], {
+          latestRunId: params[0],
+          updatedAt: params[1],
+        });
+      }
       return { changes: 1 };
     }),
     __rows: rows,
+    __latestMissionRuns: latestMissionRuns,
   };
 }
 
@@ -53,6 +80,26 @@ beforeEach(() => {
 });
 
 describe('mission runs lifecycle fields', () => {
+  it('materializes the latest run id on canonical mission rows when creating a run', async () => {
+    const db = createMissionRunDbMock([]);
+    getDbMock.mockResolvedValue(db as any);
+    const { createMissionRun } = await import('../workflows/mission-runs');
+
+    const run = await createMissionRun({ missionId: 'mission-1', taskId: 'task-1' });
+
+    expect(run).toMatchObject({
+      missionId: 'mission-1',
+      taskId: 'task-1',
+      status: 'queued',
+      stage: 'queued',
+      attempt: 1,
+    });
+    expect(db.__latestMissionRuns.get('mission-1')).toEqual({
+      latestRunId: run.id,
+      updatedAt: run.createdAt,
+    });
+  });
+
   it('records cancel request timestamp and failure code when canceling a run', async () => {
     const db = createMissionRunDbMock([
       {

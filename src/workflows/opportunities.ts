@@ -1,5 +1,9 @@
 import { getDb } from '../db';
 import { eventBus } from '../utils/event-bus';
+import {
+  normalizeOpportunityFieldEvidenceDescriptor,
+  type OpportunityFieldRegistryOverride,
+} from './opportunity-field-registry';
 import { appendStreamEvent, getRuntimeEventSourceService } from './stream-events';
 import type {
   OpportunityCatalystItem,
@@ -9,6 +13,10 @@ import type {
   HeatTransferEdge,
   HeatTransferValidationStatus,
   OpportunityFieldEvidence,
+  OpportunityFieldEvidenceIndexItem,
+  OpportunityFieldEvidenceKind,
+  OpportunityFieldEvidenceRecord,
+  OpportunityFieldEvidenceStatus,
   OpportunityHeatProfile,
   OpportunityIpoEvidence,
   OpportunityIpoProfile,
@@ -18,6 +26,7 @@ import type {
   OpportunitySnapshotRecord,
   OpportunityStage,
   OpportunityStatus,
+  OpportunitySourceProvenanceConfidence,
   OpportunityType,
 } from './types';
 
@@ -67,6 +76,58 @@ interface OpportunitySnapshotRow {
   payload: string;
 }
 
+interface OpportunityFieldEvidenceRow {
+  id: string;
+  opportunityId: string;
+  field: string;
+  label: string;
+  kind: string;
+  source: string;
+  confidence: string;
+  status: string;
+  value: string | null;
+  note: string | null;
+  observedAt: string | null;
+  recordedAt: string;
+  updatedAt: string;
+  createdEventId: string | null;
+  invalidatedEventId: string | null;
+  restoredEventId: string | null;
+}
+
+interface OpportunityFieldEvidenceIndexRow extends OpportunityFieldEvidenceRow {
+  opportunityTitle: string;
+  opportunityType: OpportunityType;
+  opportunityStage: OpportunityStage;
+  opportunityStatus: OpportunityStatus;
+  opportunityPrimaryTicker: string | null;
+  opportunityLatestMissionId: string | null;
+  opportunityLatestEventAt: string | null;
+}
+
+interface OpportunityFieldRegistryOverrideRow {
+  field: string;
+  label: string | null;
+  kind: string | null;
+  source: string | null;
+  confidence: string | null;
+  note: string | null;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+interface OpportunityFieldRegistryAuditRow {
+  id: string;
+  field: string;
+  action: string;
+  changedFields: string;
+  beforePayload: string | null;
+  afterPayload: string | null;
+  note: string | null;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
 export interface CreateOpportunityInput {
   type: OpportunityType;
   title: string;
@@ -113,6 +174,158 @@ export interface UpdateOpportunityInput {
   latestMissionId?: string | null | undefined;
 }
 
+export interface RecordOpportunityFieldEvidenceInput {
+  id: string;
+  opportunityId: string;
+  field: string;
+  label: string;
+  kind: OpportunityFieldEvidenceKind;
+  source: string;
+  confidence: OpportunitySourceProvenanceConfidence;
+  value?: string | undefined;
+  note?: string | undefined;
+  observedAt?: string | undefined;
+  recordedAt?: string | undefined;
+  createdEventId?: string | undefined;
+}
+
+export interface UpsertOpportunityFieldRegistryOverrideInput {
+  field: string;
+  label?: string | undefined;
+  kind?: OpportunityFieldEvidenceKind | undefined;
+  source?: string | undefined;
+  confidence?: OpportunitySourceProvenanceConfidence | undefined;
+  note?: string | undefined;
+  updatedAt?: string | undefined;
+  updatedBy?: string | undefined;
+}
+
+export type OpportunityFieldRegistryAuditAction = 'upsert' | 'delete';
+export type OpportunityFieldRegistryAuditField = 'label' | 'kind' | 'source' | 'confidence' | 'note';
+
+export interface OpportunityFieldRegistryAuditEntry {
+  id: string;
+  field: string;
+  action: OpportunityFieldRegistryAuditAction;
+  changedFields: OpportunityFieldRegistryAuditField[];
+  before?: OpportunityFieldRegistryOverride | undefined;
+  after?: OpportunityFieldRegistryOverride | undefined;
+  note?: string | undefined;
+  updatedAt: string;
+  updatedBy?: string | undefined;
+}
+
+export type OpportunityFieldEvidenceCoverageStatus = 'ok' | 'warning' | 'degraded';
+export type OpportunityFieldEvidenceCoverageIssueCode =
+  | 'missing_canonical'
+  | 'orphan_canonical'
+  | 'status_mismatch'
+  | 'missing_field';
+
+export interface OpportunityFieldEvidenceCoverageIssue {
+  code: OpportunityFieldEvidenceCoverageIssueCode;
+  evidenceId?: string;
+  opportunityId?: string;
+  field?: string;
+  eventStatus?: OpportunityFieldEvidenceStatus;
+  canonicalStatus?: OpportunityFieldEvidenceStatus;
+  message: string;
+}
+
+export interface OpportunityFieldEvidenceCoverageDiagnostics {
+  status: OpportunityFieldEvidenceCoverageStatus;
+  checkedAt: string;
+  recordedEvents: number;
+  canonicalRows: number;
+  covered: number;
+  missingCanonical: number;
+  orphanCanonical: number;
+  statusMismatch: number;
+  missingField: number;
+  invalidatedEvents: number;
+  restoredEvents: number;
+  issues: OpportunityFieldEvidenceCoverageIssue[];
+}
+
+export interface OpportunityFieldEvidenceBackfillResult {
+  checkedAt: string;
+  eventsScanned: number;
+  recordedEvents: number;
+  invalidatedEvents: number;
+  restoredEvents: number;
+  inserted: number;
+  refreshed: number;
+  invalidated: number;
+  restored: number;
+  skippedMissingField: number;
+}
+
+export type OpportunityFieldEvidenceRepairPlanStatus = 'ok' | 'actionable' | 'blocked';
+export type OpportunityFieldEvidenceRepairActionKind =
+  | 'backfill_canonical'
+  | 'sync_status'
+  | 'review_orphan'
+  | 'repair_event_metadata';
+export type OpportunityFieldEvidenceRepairActionSafety = 'automatic' | 'manual_review' | 'blocked';
+
+export interface OpportunityFieldEvidenceRepairAction {
+  evidenceId: string;
+  issueCode: OpportunityFieldEvidenceCoverageIssueCode;
+  action: OpportunityFieldEvidenceRepairActionKind;
+  safety: OpportunityFieldEvidenceRepairActionSafety;
+  reason: string;
+  opportunityId?: string | undefined;
+  field?: string | undefined;
+  eventStatus?: OpportunityFieldEvidenceStatus | undefined;
+  canonicalStatus?: OpportunityFieldEvidenceStatus | undefined;
+  api?: {
+    method: 'POST';
+    path: string;
+    body?: Record<string, unknown> | undefined;
+  } | undefined;
+}
+
+export interface OpportunityFieldEvidenceRepairPlan {
+  status: OpportunityFieldEvidenceRepairPlanStatus;
+  checkedAt: string;
+  recordedEvents: number;
+  canonicalRows: number;
+  totalActions: number;
+  automaticActions: number;
+  manualReviewActions: number;
+  blockedActions: number;
+  sampledActions: OpportunityFieldEvidenceRepairAction[];
+}
+
+export interface OpportunityFieldEvidenceRepairOptions {
+  evidenceIds?: string[] | undefined;
+}
+
+export interface OpportunityFieldEvidenceRepairResult {
+  checkedAt: string;
+  requestedEvidenceIds: string[];
+  notFoundEvidenceIds: string[];
+  totalEvidence: number;
+  totalActions: number;
+  eligibleActions: number;
+  applied: number;
+  skippedHealthy: number;
+  skippedManualReview: number;
+  blocked: number;
+  updatedEvidenceIds: string[];
+  skippedActions: OpportunityFieldEvidenceRepairAction[];
+}
+
+export interface OpportunityFieldEvidenceListFilters {
+  opportunityId?: string | undefined;
+  field?: string | undefined;
+  source?: string | undefined;
+  kind?: OpportunityFieldEvidenceKind | undefined;
+  confidence?: OpportunitySourceProvenanceConfidence | undefined;
+  status?: OpportunityFieldEvidenceStatus | undefined;
+  q?: string | undefined;
+}
+
 function generateOpportunityId(): string {
   return `opp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -123,6 +336,16 @@ function generateEventId(): string {
 
 function generateSnapshotId(): string {
   return `osnap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function generateFieldRegistryAuditId(): string {
+  return `ofreg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function textMetaValue(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
 }
 
 function normalizeTicker(value?: string | null): string | undefined {
@@ -669,6 +892,598 @@ function toOpportunitySnapshotRecord(row: OpportunitySnapshotRow): OpportunitySn
   }
 }
 
+function normalizeFieldEvidenceKind(value: string): OpportunityFieldEvidenceKind {
+  return (
+    value === 'record'
+    || value === 'profile'
+    || value === 'score'
+    || value === 'source'
+    || value === 'mission'
+    || value === 'event'
+  ) ? value : 'source';
+}
+
+function normalizeFieldEvidenceConfidence(value: string): OpportunitySourceProvenanceConfidence {
+  return (
+    value === 'confirmed'
+    || value === 'inferred'
+    || value === 'placeholder'
+    || value === 'unknown'
+  ) ? value : 'unknown';
+}
+
+function normalizeFieldEvidenceStatus(value: string): OpportunityFieldEvidenceStatus {
+  return value === 'invalidated' ? 'invalidated' : 'active';
+}
+
+function toOpportunityFieldEvidenceRecord(row: OpportunityFieldEvidenceRow): OpportunityFieldEvidenceRecord {
+  return {
+    id: row.id,
+    opportunityId: row.opportunityId,
+    field: row.field,
+    label: row.label,
+    kind: normalizeFieldEvidenceKind(row.kind),
+    source: row.source,
+    confidence: normalizeFieldEvidenceConfidence(row.confidence),
+    status: normalizeFieldEvidenceStatus(row.status),
+    ...(row.value ? { value: row.value } : {}),
+    ...(row.note ? { note: row.note } : {}),
+    ...(row.observedAt ? { observedAt: row.observedAt } : {}),
+    recordedAt: row.recordedAt,
+    updatedAt: row.updatedAt,
+    ...(row.createdEventId ? { createdEventId: row.createdEventId } : {}),
+    ...(row.invalidatedEventId ? { invalidatedEventId: row.invalidatedEventId } : {}),
+    ...(row.restoredEventId ? { restoredEventId: row.restoredEventId } : {}),
+  };
+}
+
+function toOpportunityFieldEvidenceIndexItem(
+  row: OpportunityFieldEvidenceIndexRow,
+): OpportunityFieldEvidenceIndexItem {
+  return {
+    ...toOpportunityFieldEvidenceRecord(row),
+    opportunityTitle: row.opportunityTitle,
+    opportunityType: row.opportunityType,
+    opportunityStage: row.opportunityStage,
+    opportunityStatus: row.opportunityStatus,
+    ...(row.opportunityPrimaryTicker ? { opportunityPrimaryTicker: row.opportunityPrimaryTicker } : {}),
+    ...(row.opportunityLatestMissionId ? { opportunityLatestMissionId: row.opportunityLatestMissionId } : {}),
+    ...(row.opportunityLatestEventAt ? { opportunityLatestEventAt: row.opportunityLatestEventAt } : {}),
+  };
+}
+
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+function buildOpportunityFieldEvidenceWhere(
+  filters: OpportunityFieldEvidenceListFilters = {},
+): { whereSql: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  const opportunityId = safeTrim(filters.opportunityId);
+  const field = safeTrim(filters.field);
+  const source = safeTrim(filters.source);
+  const q = safeTrim(filters.q);
+
+  if (opportunityId) {
+    clauses.push('e.opportunityId = ?');
+    params.push(opportunityId);
+  }
+  if (field) {
+    clauses.push('e.field = ?');
+    params.push(field);
+  }
+  if (source) {
+    clauses.push('e.source = ?');
+    params.push(source);
+  }
+  if (filters.kind) {
+    clauses.push('e.kind = ?');
+    params.push(filters.kind);
+  }
+  if (filters.confidence) {
+    clauses.push('e.confidence = ?');
+    params.push(filters.confidence);
+  }
+  if (filters.status) {
+    clauses.push('e.status = ?');
+    params.push(filters.status);
+  }
+  if (q) {
+    const needle = `%${escapeSqlLike(q)}%`;
+    clauses.push(`(
+      e.id LIKE ? ESCAPE '\\'
+      OR e.field LIKE ? ESCAPE '\\'
+      OR e.label LIKE ? ESCAPE '\\'
+      OR e.source LIKE ? ESCAPE '\\'
+      OR e.value LIKE ? ESCAPE '\\'
+      OR e.note LIKE ? ESCAPE '\\'
+      OR o.title LIKE ? ESCAPE '\\'
+      OR o.primaryTicker LIKE ? ESCAPE '\\'
+    )`);
+    params.push(needle, needle, needle, needle, needle, needle, needle, needle);
+  }
+
+  return {
+    whereSql: clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '',
+    params,
+  };
+}
+
+type FieldEvidenceEventState = {
+  recordedEvent: OpportunityEventRecord;
+  status: OpportunityFieldEvidenceStatus;
+  invalidatedEventId?: string | undefined;
+  invalidatedAt?: string | undefined;
+  restoredEventId?: string | undefined;
+  restoredAt?: string | undefined;
+};
+
+function toFieldEvidenceEventRecord(row: OpportunityEventRow): OpportunityEventRecord {
+  return toOpportunityEventRecord(row);
+}
+
+function buildFieldEvidenceEventStates(events: OpportunityEventRecord[]): Map<string, FieldEvidenceEventState> {
+  const states = new Map<string, FieldEvidenceEventState>();
+  const sortedEvents = [...events].sort((a, b) => {
+    const timestampDelta = a.timestamp.localeCompare(b.timestamp);
+    return timestampDelta !== 0 ? timestampDelta : a.id.localeCompare(b.id);
+  });
+
+  for (const event of sortedEvents) {
+    if (event.type === 'field_evidence_recorded') {
+      states.set(event.id, {
+        recordedEvent: event,
+        status: 'active',
+      });
+      continue;
+    }
+
+    const evidenceId = textMetaValue(event.meta?.evidenceId);
+    const state = evidenceId ? states.get(evidenceId) : undefined;
+    if (!state) continue;
+    if (event.type === 'field_evidence_invalidated') {
+      states.set(evidenceId!, {
+        ...state,
+        status: 'invalidated',
+        invalidatedEventId: event.id,
+        invalidatedAt: event.timestamp,
+      });
+    }
+    if (event.type === 'field_evidence_restored') {
+      states.set(evidenceId!, {
+        ...state,
+        status: 'active',
+        restoredEventId: event.id,
+        restoredAt: event.timestamp,
+      });
+    }
+  }
+
+  return states;
+}
+
+async function listAllFieldEvidenceEvents(): Promise<OpportunityEventRecord[]> {
+  const db = await getDb();
+  const rows = await db.all<OpportunityEventRow[]>(
+    `SELECT id, opportunityId, timestamp, type, message, meta
+     FROM opportunity_events
+     WHERE type IN ('field_evidence_recorded', 'field_evidence_invalidated', 'field_evidence_restored')
+     ORDER BY timestamp ASC, id ASC`,
+  );
+  return rows.map(toFieldEvidenceEventRecord);
+}
+
+function canonicalInputFromFieldEvidenceState(state: FieldEvidenceEventState): RecordOpportunityFieldEvidenceInput | null {
+  const meta = state.recordedEvent.meta || {};
+  const field = textMetaValue(meta.field);
+  if (!field) return null;
+  const descriptor = normalizeOpportunityFieldEvidenceDescriptor({
+    field,
+    label: meta.label,
+    kind: meta.kind,
+    source: textMetaValue(meta.source) || 'manual_field_evidence',
+    confidence: meta.confidence,
+  });
+
+  return {
+    id: state.recordedEvent.id,
+    opportunityId: state.recordedEvent.opportunityId,
+    field: descriptor.field,
+    label: descriptor.label,
+    kind: descriptor.kind,
+    source: descriptor.source,
+    confidence: descriptor.confidence,
+    ...(textMetaValue(meta.value) ? { value: textMetaValue(meta.value) } : {}),
+    ...(textMetaValue(meta.note) ? { note: textMetaValue(meta.note) } : {}),
+    observedAt: textMetaValue(meta.observedAt) || state.recordedEvent.timestamp,
+    recordedAt: state.recordedEvent.timestamp,
+    createdEventId: state.recordedEvent.id,
+  };
+}
+
+function createFieldEvidenceRepairApi(evidenceId: string) {
+  return {
+    method: 'POST' as const,
+    path: '/api/diagnostics/opportunity-field-evidence/repair',
+    body: { evidenceIds: [evidenceId] },
+  };
+}
+
+function createFieldEvidenceRepairAction(
+  issueCode: OpportunityFieldEvidenceCoverageIssueCode,
+  evidenceId: string,
+  input: Omit<OpportunityFieldEvidenceRepairAction, 'issueCode' | 'evidenceId'>,
+): OpportunityFieldEvidenceRepairAction {
+  return {
+    evidenceId,
+    issueCode,
+    ...input,
+  };
+}
+
+async function syncOpportunityFieldEvidenceCanonicalStatus(
+  state: FieldEvidenceEventState,
+  checkedAt = new Date().toISOString(),
+): Promise<OpportunityFieldEvidenceRecord | null> {
+  const db = await getDb();
+  const updatedAt = state.status === 'invalidated'
+    ? state.invalidatedAt || checkedAt
+    : state.restoredAt || state.recordedEvent.timestamp || checkedAt;
+  await db.run(
+    `UPDATE opportunity_field_evidence
+     SET status = ?, updatedAt = ?, invalidatedEventId = ?, restoredEventId = ?
+     WHERE opportunityId = ? AND id = ?`,
+    state.status,
+    updatedAt,
+    state.invalidatedEventId || null,
+    state.restoredEventId || null,
+    state.recordedEvent.opportunityId,
+    state.recordedEvent.id,
+  );
+  return getOpportunityFieldEvidence(state.recordedEvent.opportunityId, state.recordedEvent.id);
+}
+
+async function inspectOpportunityFieldEvidenceRepairs() {
+  const checkedAt = new Date().toISOString();
+  const events = await listAllFieldEvidenceEvents();
+  const states = buildFieldEvidenceEventStates(events);
+  const canonicalRows = await (await getDb()).all<OpportunityFieldEvidenceRow[]>(
+    `SELECT id, opportunityId, field, label, kind, source, confidence, status, value, note,
+            observedAt, recordedAt, updatedAt, createdEventId, invalidatedEventId, restoredEventId
+     FROM opportunity_field_evidence
+     ORDER BY updatedAt DESC, id DESC`,
+  );
+  const canonical = canonicalRows.map(toOpportunityFieldEvidenceRecord);
+  const canonicalById = new Map(canonical.map((row) => [row.id, row]));
+  const evidenceIds = new Set<string>([
+    ...states.keys(),
+    ...canonical.map((row) => row.id),
+  ]);
+  const actions: OpportunityFieldEvidenceRepairAction[] = [];
+
+  for (const [evidenceId, state] of states.entries()) {
+    const field = textMetaValue(state.recordedEvent.meta?.field);
+    if (!field) {
+      actions.push(createFieldEvidenceRepairAction('missing_field', evidenceId, {
+        action: 'repair_event_metadata',
+        safety: 'blocked',
+        opportunityId: state.recordedEvent.opportunityId,
+        eventStatus: state.status,
+        reason: 'Recorded field evidence event is missing field metadata; automatic canonical repair would guess the field.',
+      }));
+      continue;
+    }
+
+    const row = canonicalById.get(evidenceId);
+    if (!row) {
+      actions.push(createFieldEvidenceRepairAction('missing_canonical', evidenceId, {
+        action: 'backfill_canonical',
+        safety: 'automatic',
+        opportunityId: state.recordedEvent.opportunityId,
+        field,
+        eventStatus: state.status,
+        reason: 'Recorded field evidence event has no canonical row; replay event metadata into the canonical table.',
+        api: createFieldEvidenceRepairApi(evidenceId),
+      }));
+      continue;
+    }
+
+    if (row.status !== state.status) {
+      actions.push(createFieldEvidenceRepairAction('status_mismatch', evidenceId, {
+        action: 'sync_status',
+        safety: 'automatic',
+        opportunityId: state.recordedEvent.opportunityId,
+        field,
+        eventStatus: state.status,
+        canonicalStatus: row.status,
+        reason: 'Canonical field evidence status differs from the audited event stream; sync canonical status from events.',
+        api: createFieldEvidenceRepairApi(evidenceId),
+      }));
+    }
+  }
+
+  for (const row of canonical) {
+    if (states.has(row.id)) continue;
+    actions.push(createFieldEvidenceRepairAction('orphan_canonical', row.id, {
+      action: 'review_orphan',
+      safety: 'manual_review',
+      opportunityId: row.opportunityId,
+      field: row.field,
+      canonicalStatus: row.status,
+      reason: 'Canonical field evidence row has no recorded audit event; review before deleting or recreating audit history.',
+      api: createFieldEvidenceRepairApi(row.id),
+    }));
+  }
+
+  return {
+    checkedAt,
+    recordedEvents: states.size,
+    canonicalRows: canonical.length,
+    states,
+    evidenceIds,
+    actions,
+  };
+}
+
+function toOpportunityFieldRegistryOverride(row: OpportunityFieldRegistryOverrideRow): OpportunityFieldRegistryOverride {
+  return {
+    field: row.field,
+    ...(safeTrim(row.label) ? { label: safeTrim(row.label) } : {}),
+    ...(row.kind ? { kind: normalizeFieldEvidenceKind(row.kind) } : {}),
+    ...(safeTrim(row.source) ? { source: safeTrim(row.source) } : {}),
+    ...(row.confidence ? { confidence: normalizeFieldEvidenceConfidence(row.confidence) } : {}),
+    ...(safeTrim(row.note) ? { note: safeTrim(row.note) } : {}),
+    updatedAt: row.updatedAt,
+    ...(safeTrim(row.updatedBy) ? { updatedBy: safeTrim(row.updatedBy) } : {}),
+  };
+}
+
+function parseRegistryOverridePayload(value: string | null): OpportunityFieldRegistryOverride | undefined {
+  const parsed = parseJsonObject<OpportunityFieldRegistryOverride>(value);
+  if (!parsed?.field) return undefined;
+  return {
+    field: parsed.field,
+    ...(safeTrim(parsed.label) ? { label: safeTrim(parsed.label) } : {}),
+    ...(isFieldRegistryKind(parsed.kind) ? { kind: parsed.kind } : {}),
+    ...(safeTrim(parsed.source) ? { source: safeTrim(parsed.source) } : {}),
+    ...(isFieldRegistryConfidence(parsed.confidence) ? { confidence: parsed.confidence } : {}),
+    ...(safeTrim(parsed.note) ? { note: safeTrim(parsed.note) } : {}),
+    ...(safeTrim(parsed.updatedAt) ? { updatedAt: safeTrim(parsed.updatedAt) } : {}),
+    ...(safeTrim(parsed.updatedBy) ? { updatedBy: safeTrim(parsed.updatedBy) } : {}),
+  };
+}
+
+function isFieldRegistryKind(value: unknown): value is OpportunityFieldEvidenceKind {
+  return value === 'record'
+    || value === 'profile'
+    || value === 'score'
+    || value === 'source'
+    || value === 'mission'
+    || value === 'event';
+}
+
+function isFieldRegistryConfidence(value: unknown): value is OpportunitySourceProvenanceConfidence {
+  return value === 'confirmed'
+    || value === 'inferred'
+    || value === 'placeholder'
+    || value === 'unknown';
+}
+
+function parseRegistryAuditFields(value: string): OpportunityFieldRegistryAuditField[] {
+  const parsed = parseJsonObject<unknown[]>(value);
+  if (!Array.isArray(parsed)) return [];
+  const allowed = new Set<OpportunityFieldRegistryAuditField>(['label', 'kind', 'source', 'confidence', 'note']);
+  return parsed.filter((field): field is OpportunityFieldRegistryAuditField => (
+    typeof field === 'string' && allowed.has(field as OpportunityFieldRegistryAuditField)
+  ));
+}
+
+function registryOverrideChangedFields(
+  before?: OpportunityFieldRegistryOverride | null,
+  after?: OpportunityFieldRegistryOverride | null,
+): OpportunityFieldRegistryAuditField[] {
+  const fields: OpportunityFieldRegistryAuditField[] = ['label', 'kind', 'source', 'confidence', 'note'];
+  return fields.filter((field) => (before?.[field] || '') !== (after?.[field] || ''));
+}
+
+function toOpportunityFieldRegistryAuditEntry(
+  row: OpportunityFieldRegistryAuditRow,
+): OpportunityFieldRegistryAuditEntry {
+  const action: OpportunityFieldRegistryAuditAction = row.action === 'delete' ? 'delete' : 'upsert';
+  return {
+    id: row.id,
+    field: row.field,
+    action,
+    changedFields: parseRegistryAuditFields(row.changedFields),
+    ...(parseRegistryOverridePayload(row.beforePayload) ? { before: parseRegistryOverridePayload(row.beforePayload) } : {}),
+    ...(parseRegistryOverridePayload(row.afterPayload) ? { after: parseRegistryOverridePayload(row.afterPayload) } : {}),
+    ...(safeTrim(row.note) ? { note: safeTrim(row.note) } : {}),
+    updatedAt: row.updatedAt,
+    ...(safeTrim(row.updatedBy) ? { updatedBy: safeTrim(row.updatedBy) } : {}),
+  };
+}
+
+async function recordOpportunityFieldRegistryAudit(input: {
+  field: string;
+  action: OpportunityFieldRegistryAuditAction;
+  before?: OpportunityFieldRegistryOverride | null | undefined;
+  after?: OpportunityFieldRegistryOverride | null | undefined;
+  note?: string | undefined;
+  updatedAt: string;
+  updatedBy?: string | undefined;
+}): Promise<OpportunityFieldRegistryAuditEntry> {
+  const db = await getDb();
+  const id = generateFieldRegistryAuditId();
+  const changedFields = registryOverrideChangedFields(input.before, input.after);
+  await db.run(
+    `INSERT INTO opportunity_field_registry_audit (
+      id,
+      field,
+      action,
+      changedFields,
+      beforePayload,
+      afterPayload,
+      note,
+      updatedAt,
+      updatedBy
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    id,
+    input.field,
+    input.action,
+    JSON.stringify(changedFields),
+    input.before ? JSON.stringify(input.before) : null,
+    input.after ? JSON.stringify(input.after) : null,
+    safeTrim(input.note) || null,
+    input.updatedAt,
+    safeTrim(input.updatedBy) || null,
+  );
+
+  return {
+    id,
+    field: input.field,
+    action: input.action,
+    changedFields,
+    ...(input.before ? { before: input.before } : {}),
+    ...(input.after ? { after: input.after } : {}),
+    ...(safeTrim(input.note) ? { note: safeTrim(input.note) } : {}),
+    updatedAt: input.updatedAt,
+    ...(safeTrim(input.updatedBy) ? { updatedBy: safeTrim(input.updatedBy) } : {}),
+  };
+}
+
+export async function listOpportunityFieldRegistryOverrides(): Promise<OpportunityFieldRegistryOverride[]> {
+  const db = await getDb();
+  const rows = await db.all<OpportunityFieldRegistryOverrideRow[]>(
+    `SELECT field, label, kind, source, confidence, note, updatedAt, updatedBy
+     FROM opportunity_field_registry_overrides
+     ORDER BY field ASC`,
+  );
+  return rows.map(toOpportunityFieldRegistryOverride);
+}
+
+export async function getOpportunityFieldRegistryOverride(
+  field: string,
+): Promise<OpportunityFieldRegistryOverride | null> {
+  const db = await getDb();
+  const row = await db.get<OpportunityFieldRegistryOverrideRow>(
+    `SELECT field, label, kind, source, confidence, note, updatedAt, updatedBy
+     FROM opportunity_field_registry_overrides
+     WHERE field = ?`,
+    field,
+  );
+  return row ? toOpportunityFieldRegistryOverride(row) : null;
+}
+
+export async function listOpportunityFieldRegistryAudit(input: {
+  field?: string | undefined;
+  limit?: number | undefined;
+} = {}): Promise<OpportunityFieldRegistryAuditEntry[]> {
+  const db = await getDb();
+  const limit = Math.max(1, Math.min(100, Math.floor(input.limit || 20)));
+  const field = safeTrim(input.field);
+  const rows = field
+    ? await db.all<OpportunityFieldRegistryAuditRow[]>(
+      `SELECT id, field, action, changedFields, beforePayload, afterPayload, note, updatedAt, updatedBy
+       FROM opportunity_field_registry_audit
+       WHERE field = ?
+       ORDER BY updatedAt DESC, id DESC
+       LIMIT ?`,
+      field,
+      limit,
+    )
+    : await db.all<OpportunityFieldRegistryAuditRow[]>(
+      `SELECT id, field, action, changedFields, beforePayload, afterPayload, note, updatedAt, updatedBy
+       FROM opportunity_field_registry_audit
+       ORDER BY updatedAt DESC, id DESC
+       LIMIT ?`,
+      limit,
+    );
+  return rows.map(toOpportunityFieldRegistryAuditEntry);
+}
+
+export async function upsertOpportunityFieldRegistryOverride(
+  input: UpsertOpportunityFieldRegistryOverrideInput,
+): Promise<{ override: OpportunityFieldRegistryOverride; audit: OpportunityFieldRegistryAuditEntry }> {
+  const db = await getDb();
+  const updatedAt = input.updatedAt || new Date().toISOString();
+  const field = safeTrim(input.field);
+  if (!field) throw new Error('field is required');
+  const before = await getOpportunityFieldRegistryOverride(field);
+
+  await db.run(
+    `INSERT INTO opportunity_field_registry_overrides (
+      field,
+      label,
+      kind,
+      source,
+      confidence,
+      note,
+      updatedAt,
+      updatedBy
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(field) DO UPDATE SET
+      label = excluded.label,
+      kind = excluded.kind,
+      source = excluded.source,
+      confidence = excluded.confidence,
+      note = excluded.note,
+      updatedAt = excluded.updatedAt,
+      updatedBy = excluded.updatedBy`,
+    field,
+    safeTrim(input.label) || null,
+    input.kind || null,
+    safeTrim(input.source) || null,
+    input.confidence || null,
+    safeTrim(input.note) || null,
+    updatedAt,
+    safeTrim(input.updatedBy) || null,
+  );
+
+  const override = (await getOpportunityFieldRegistryOverride(field)) || {
+    field,
+    updatedAt,
+  };
+  const audit = await recordOpportunityFieldRegistryAudit({
+    field,
+    action: 'upsert',
+    before,
+    after: override,
+    note: input.note,
+    updatedAt,
+    updatedBy: input.updatedBy,
+  });
+  return { override, audit };
+}
+
+export async function deleteOpportunityFieldRegistryOverride(field: string): Promise<{
+  deleted: boolean;
+  audit?: OpportunityFieldRegistryAuditEntry | undefined;
+}> {
+  const db = await getDb();
+  const normalizedField = safeTrim(field);
+  if (!normalizedField) return { deleted: false };
+  const before = await getOpportunityFieldRegistryOverride(normalizedField);
+  const result = await db.run(
+    'DELETE FROM opportunity_field_registry_overrides WHERE field = ?',
+    normalizedField,
+  );
+  const deleted = (result.changes || 0) > 0;
+  if (!deleted || !before) return { deleted };
+  const updatedAt = new Date().toISOString();
+  return {
+    deleted,
+    audit: await recordOpportunityFieldRegistryAudit({
+      field: normalizedField,
+      action: 'delete',
+      before,
+      updatedAt,
+      updatedBy: 'dashboard',
+    }),
+  };
+}
+
 export async function getOpportunity(id: string): Promise<OpportunityRecord | null> {
   const db = await getDb();
   const row = await db.get<OpportunityRow>('SELECT * FROM opportunities WHERE id = ?', id);
@@ -740,6 +1555,476 @@ export async function listOpportunitySnapshots(
   return rows
     .map(toOpportunitySnapshotRecord)
     .filter((snapshot): snapshot is OpportunitySnapshotRecord => Boolean(snapshot));
+}
+
+export async function listOpportunityFieldEvidence(
+  opportunityId: string,
+  limit = 100,
+): Promise<OpportunityFieldEvidenceRecord[]> {
+  const db = await getDb();
+  const rows = await db.all<OpportunityFieldEvidenceRow[]>(
+    `SELECT id, opportunityId, field, label, kind, source, confidence, status, value, note,
+            observedAt, recordedAt, updatedAt, createdEventId, invalidatedEventId, restoredEventId
+     FROM opportunity_field_evidence
+     WHERE opportunityId = ?
+     ORDER BY updatedAt DESC, id DESC
+     LIMIT ?`,
+    opportunityId,
+    limit,
+  );
+  return rows.map(toOpportunityFieldEvidenceRecord);
+}
+
+export async function listOpportunityFieldEvidenceIndex(input: {
+  limit?: number | undefined;
+  offset?: number | undefined;
+  filters?: OpportunityFieldEvidenceListFilters | undefined;
+} = {}): Promise<OpportunityFieldEvidenceIndexItem[]> {
+  const db = await getDb();
+  const limit = Math.max(1, Math.min(input.limit || 100, 500));
+  const offset = Math.max(0, input.offset || 0);
+  const { whereSql, params } = buildOpportunityFieldEvidenceWhere(input.filters);
+  const rows = await db.all<OpportunityFieldEvidenceIndexRow[]>(
+    `SELECT
+       e.id,
+       e.opportunityId,
+       e.field,
+       e.label,
+       e.kind,
+       e.source,
+       e.confidence,
+       e.status,
+       e.value,
+       e.note,
+       e.observedAt,
+       e.recordedAt,
+       e.updatedAt,
+       e.createdEventId,
+       e.invalidatedEventId,
+       e.restoredEventId,
+       o.title AS opportunityTitle,
+       o.type AS opportunityType,
+       o.stage AS opportunityStage,
+       o.status AS opportunityStatus,
+       o.primaryTicker AS opportunityPrimaryTicker,
+       o.latestMissionId AS opportunityLatestMissionId,
+       o.latestEventAt AS opportunityLatestEventAt
+     FROM opportunity_field_evidence e
+     INNER JOIN opportunities o ON o.id = e.opportunityId
+     ${whereSql}
+     ORDER BY e.updatedAt DESC, e.id DESC
+     LIMIT ? OFFSET ?`,
+    ...params,
+    limit,
+    offset,
+  );
+  return rows.map(toOpportunityFieldEvidenceIndexItem);
+}
+
+export async function getOpportunityFieldEvidence(
+  opportunityId: string,
+  evidenceId: string,
+): Promise<OpportunityFieldEvidenceRecord | null> {
+  const db = await getDb();
+  const row = await db.get<OpportunityFieldEvidenceRow>(
+    `SELECT id, opportunityId, field, label, kind, source, confidence, status, value, note,
+            observedAt, recordedAt, updatedAt, createdEventId, invalidatedEventId, restoredEventId
+     FROM opportunity_field_evidence
+     WHERE opportunityId = ? AND id = ?`,
+    opportunityId,
+    evidenceId,
+  );
+  return row ? toOpportunityFieldEvidenceRecord(row) : null;
+}
+
+export async function recordOpportunityFieldEvidence(
+  input: RecordOpportunityFieldEvidenceInput,
+): Promise<OpportunityFieldEvidenceRecord> {
+  const db = await getDb();
+  const recordedAt = input.recordedAt || new Date().toISOString();
+  const observedAt = safeTrim(input.observedAt) || recordedAt;
+
+  await db.run(
+    `INSERT INTO opportunity_field_evidence (
+      id,
+      opportunityId,
+      field,
+      label,
+      kind,
+      source,
+      confidence,
+      status,
+      value,
+      note,
+      observedAt,
+      recordedAt,
+      updatedAt,
+      createdEventId,
+      invalidatedEventId,
+      restoredEventId,
+      meta
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+    ON CONFLICT(id) DO UPDATE SET
+      opportunityId = excluded.opportunityId,
+      field = excluded.field,
+      label = excluded.label,
+      kind = excluded.kind,
+      source = excluded.source,
+      confidence = excluded.confidence,
+      status = 'active',
+      value = excluded.value,
+      note = excluded.note,
+      observedAt = excluded.observedAt,
+      recordedAt = excluded.recordedAt,
+      updatedAt = excluded.updatedAt,
+      createdEventId = excluded.createdEventId,
+      invalidatedEventId = NULL,
+      restoredEventId = NULL`,
+    input.id,
+    input.opportunityId,
+    input.field,
+    input.label,
+    input.kind,
+    input.source,
+    input.confidence,
+    safeTrim(input.value) || null,
+    safeTrim(input.note) || null,
+    observedAt,
+    recordedAt,
+    recordedAt,
+    input.createdEventId || input.id,
+  );
+
+  return (await getOpportunityFieldEvidence(input.opportunityId, input.id)) || {
+    id: input.id,
+    opportunityId: input.opportunityId,
+    field: input.field,
+    label: input.label,
+    kind: input.kind,
+    source: input.source,
+    confidence: input.confidence,
+    status: 'active',
+    ...(safeTrim(input.value) ? { value: safeTrim(input.value) } : {}),
+    ...(safeTrim(input.note) ? { note: safeTrim(input.note) } : {}),
+    observedAt,
+    recordedAt,
+    updatedAt: recordedAt,
+    createdEventId: input.createdEventId || input.id,
+  };
+}
+
+export async function updateOpportunityFieldEvidenceStatus(
+  opportunityId: string,
+  evidenceId: string,
+  status: OpportunityFieldEvidenceStatus,
+  eventId: string,
+  updatedAt = new Date().toISOString(),
+): Promise<OpportunityFieldEvidenceRecord | null> {
+  const db = await getDb();
+  const eventColumn = status === 'invalidated' ? 'invalidatedEventId' : 'restoredEventId';
+  await db.run(
+    `UPDATE opportunity_field_evidence
+     SET status = ?, updatedAt = ?, ${eventColumn} = ?
+     WHERE opportunityId = ? AND id = ?`,
+    status,
+    updatedAt,
+    eventId,
+    opportunityId,
+    evidenceId,
+  );
+  return getOpportunityFieldEvidence(opportunityId, evidenceId);
+}
+
+export async function backfillOpportunityFieldEvidence(): Promise<OpportunityFieldEvidenceBackfillResult> {
+  const checkedAt = new Date().toISOString();
+  const events = await listAllFieldEvidenceEvents();
+  const states = buildFieldEvidenceEventStates(events);
+  const existingRows = await (await getDb()).all<Array<{ id: string }>>(
+    'SELECT id FROM opportunity_field_evidence',
+  );
+  const existingIds = new Set(existingRows.map((row) => row.id));
+  let inserted = 0;
+  let refreshed = 0;
+  let invalidated = 0;
+  let restored = 0;
+  let skippedMissingField = 0;
+
+  for (const [evidenceId, state] of states.entries()) {
+    const input = canonicalInputFromFieldEvidenceState(state);
+    if (!input) {
+      skippedMissingField += 1;
+      continue;
+    }
+
+    await recordOpportunityFieldEvidence(input);
+    if (existingIds.has(evidenceId)) refreshed += 1;
+    else inserted += 1;
+
+    if (state.status === 'invalidated' && state.invalidatedEventId) {
+      await updateOpportunityFieldEvidenceStatus(
+        state.recordedEvent.opportunityId,
+        evidenceId,
+        'invalidated',
+        state.invalidatedEventId,
+        state.invalidatedAt || checkedAt,
+      );
+      invalidated += 1;
+    }
+    if (state.status === 'active' && state.restoredEventId) {
+      await updateOpportunityFieldEvidenceStatus(
+        state.recordedEvent.opportunityId,
+        evidenceId,
+        'active',
+        state.restoredEventId,
+        state.restoredAt || checkedAt,
+      );
+      restored += 1;
+    }
+  }
+
+  return {
+    checkedAt,
+    eventsScanned: events.length,
+    recordedEvents: events.filter((event) => event.type === 'field_evidence_recorded').length,
+    invalidatedEvents: events.filter((event) => event.type === 'field_evidence_invalidated').length,
+    restoredEvents: events.filter((event) => event.type === 'field_evidence_restored').length,
+    inserted,
+    refreshed,
+    invalidated,
+    restored,
+    skippedMissingField,
+  };
+}
+
+export async function getOpportunityFieldEvidenceCoverageDiagnostics(): Promise<OpportunityFieldEvidenceCoverageDiagnostics> {
+  const checkedAt = new Date().toISOString();
+  const events = await listAllFieldEvidenceEvents();
+  const states = buildFieldEvidenceEventStates(events);
+  const canonicalRows = await (await getDb()).all<OpportunityFieldEvidenceRow[]>(
+    `SELECT id, opportunityId, field, label, kind, source, confidence, status, value, note,
+            observedAt, recordedAt, updatedAt, createdEventId, invalidatedEventId, restoredEventId
+     FROM opportunity_field_evidence
+     ORDER BY updatedAt DESC, id DESC`,
+  );
+  const canonical = canonicalRows.map(toOpportunityFieldEvidenceRecord);
+  const canonicalById = new Map(canonical.map((row) => [row.id, row]));
+  const issues: OpportunityFieldEvidenceCoverageIssue[] = [];
+  let missingCanonical = 0;
+  let orphanCanonical = 0;
+  let statusMismatch = 0;
+  let missingField = 0;
+  let covered = 0;
+
+  for (const [evidenceId, state] of states.entries()) {
+    const field = textMetaValue(state.recordedEvent.meta?.field);
+    if (!field) {
+      missingField += 1;
+      if (issues.length < 20) {
+        issues.push({
+          code: 'missing_field',
+          evidenceId,
+          opportunityId: state.recordedEvent.opportunityId,
+          message: `Field evidence event ${evidenceId} is missing field metadata.`,
+        });
+      }
+      continue;
+    }
+
+    const row = canonicalById.get(evidenceId);
+    if (!row) {
+      missingCanonical += 1;
+      if (issues.length < 20) {
+        issues.push({
+          code: 'missing_canonical',
+          evidenceId,
+          opportunityId: state.recordedEvent.opportunityId,
+          field,
+          eventStatus: state.status,
+          message: `Field evidence event ${evidenceId} has no canonical row.`,
+        });
+      }
+      continue;
+    }
+
+    covered += 1;
+    if (row.status !== state.status) {
+      statusMismatch += 1;
+      if (issues.length < 20) {
+        issues.push({
+          code: 'status_mismatch',
+          evidenceId,
+          opportunityId: state.recordedEvent.opportunityId,
+          field,
+          eventStatus: state.status,
+          canonicalStatus: row.status,
+          message: `Field evidence ${evidenceId} status differs between events and canonical row.`,
+        });
+      }
+    }
+  }
+
+  for (const row of canonical) {
+    if (states.has(row.id)) continue;
+    orphanCanonical += 1;
+    if (issues.length < 20) {
+      issues.push({
+        code: 'orphan_canonical',
+        evidenceId: row.id,
+        opportunityId: row.opportunityId,
+        field: row.field,
+        canonicalStatus: row.status,
+        message: `Canonical field evidence ${row.id} has no matching recorded event.`,
+      });
+    }
+  }
+
+  const status: OpportunityFieldEvidenceCoverageStatus = missingCanonical > 0 || missingField > 0
+    ? 'degraded'
+    : statusMismatch > 0 || orphanCanonical > 0
+      ? 'warning'
+      : 'ok';
+
+  return {
+    status,
+    checkedAt,
+    recordedEvents: [...states.values()].length,
+    canonicalRows: canonical.length,
+    covered,
+    missingCanonical,
+    orphanCanonical,
+    statusMismatch,
+    missingField,
+    invalidatedEvents: events.filter((event) => event.type === 'field_evidence_invalidated').length,
+    restoredEvents: events.filter((event) => event.type === 'field_evidence_restored').length,
+    issues,
+  };
+}
+
+export async function getOpportunityFieldEvidenceRepairPlan(
+  actionLimit = 40,
+): Promise<OpportunityFieldEvidenceRepairPlan> {
+  const inspection = await inspectOpportunityFieldEvidenceRepairs();
+  const plan: OpportunityFieldEvidenceRepairPlan = {
+    status: 'ok',
+    checkedAt: inspection.checkedAt,
+    recordedEvents: inspection.recordedEvents,
+    canonicalRows: inspection.canonicalRows,
+    totalActions: inspection.actions.length,
+    automaticActions: 0,
+    manualReviewActions: 0,
+    blockedActions: 0,
+    sampledActions: [],
+  };
+
+  for (const action of inspection.actions) {
+    if (action.safety === 'automatic') {
+      plan.automaticActions += 1;
+    } else if (action.safety === 'manual_review') {
+      plan.manualReviewActions += 1;
+    } else {
+      plan.blockedActions += 1;
+    }
+    if (plan.sampledActions.length < actionLimit) {
+      plan.sampledActions.push(action);
+    }
+  }
+
+  if (plan.blockedActions > 0) {
+    plan.status = 'blocked';
+  } else if (plan.automaticActions > 0 || plan.manualReviewActions > 0) {
+    plan.status = 'actionable';
+  }
+
+  return plan;
+}
+
+export async function repairOpportunityFieldEvidence(
+  options: OpportunityFieldEvidenceRepairOptions = {},
+): Promise<OpportunityFieldEvidenceRepairResult> {
+  const inspection = await inspectOpportunityFieldEvidenceRepairs();
+  const requestedEvidenceIds = Array.from(new Set(
+    (options.evidenceIds || []).map(id => id.trim()).filter(Boolean),
+  ));
+  const requestedSet = new Set(requestedEvidenceIds);
+  const targetActions = requestedEvidenceIds.length > 0
+    ? inspection.actions.filter(action => requestedSet.has(action.evidenceId))
+    : inspection.actions;
+  const actionEvidenceIds = new Set(targetActions.map(action => action.evidenceId));
+  const result: OpportunityFieldEvidenceRepairResult = {
+    checkedAt: inspection.checkedAt,
+    requestedEvidenceIds,
+    notFoundEvidenceIds: requestedEvidenceIds.filter(id => !inspection.evidenceIds.has(id)),
+    totalEvidence: inspection.evidenceIds.size,
+    totalActions: targetActions.length,
+    eligibleActions: 0,
+    applied: 0,
+    skippedHealthy: requestedEvidenceIds.length > 0
+      ? requestedEvidenceIds.filter(id => inspection.evidenceIds.has(id) && !actionEvidenceIds.has(id)).length
+      : Math.max(0, inspection.evidenceIds.size - new Set(inspection.actions.map(action => action.evidenceId)).size),
+    skippedManualReview: 0,
+    blocked: 0,
+    updatedEvidenceIds: [],
+    skippedActions: [],
+  };
+
+  for (const action of targetActions) {
+    if (action.safety === 'blocked') {
+      result.blocked += 1;
+      result.skippedActions.push(action);
+      continue;
+    }
+    if (action.safety === 'manual_review') {
+      result.skippedManualReview += 1;
+      result.skippedActions.push(action);
+      continue;
+    }
+
+    const state = inspection.states.get(action.evidenceId);
+    if (!state) {
+      result.blocked += 1;
+      result.skippedActions.push({
+        ...action,
+        safety: 'blocked',
+        reason: `${action.reason} Event state was no longer available during repair.`,
+      });
+      continue;
+    }
+
+    const input = canonicalInputFromFieldEvidenceState(state);
+    if (action.action === 'backfill_canonical') {
+      if (!input) {
+        result.blocked += 1;
+        result.skippedActions.push({
+          ...action,
+          safety: 'blocked',
+          reason: `${action.reason} Canonical input could not be derived from event metadata.`,
+        });
+        continue;
+      }
+      result.eligibleActions += 1;
+      await recordOpportunityFieldEvidence(input);
+      if (state.status === 'invalidated' || state.restoredEventId || state.invalidatedEventId) {
+        await syncOpportunityFieldEvidenceCanonicalStatus(state, inspection.checkedAt);
+      }
+      result.applied += 1;
+      result.updatedEvidenceIds.push(action.evidenceId);
+      continue;
+    }
+
+    if (action.action === 'sync_status') {
+      result.eligibleActions += 1;
+      await syncOpportunityFieldEvidenceCanonicalStatus(state, inspection.checkedAt);
+      result.applied += 1;
+      result.updatedEvidenceIds.push(action.evidenceId);
+      continue;
+    }
+
+    result.blocked += 1;
+    result.skippedActions.push(action);
+  }
+
+  result.updatedEvidenceIds = Array.from(new Set(result.updatedEvidenceIds));
+  return result;
 }
 
 export async function saveOpportunitySnapshot(record: OpportunityRecord): Promise<OpportunitySnapshotRecord> {
@@ -1224,18 +2509,30 @@ export async function emitOpportunityDerivedEvents(
   }
 }
 
-export async function listOpportunityEvents(opportunityId?: string, limit = 50): Promise<OpportunityEventRecord[]> {
+export async function listOpportunityEvents(
+  opportunityId?: string,
+  limit = 50,
+  types: OpportunityEventType[] = [],
+): Promise<OpportunityEventRecord[]> {
   const db = await getDb();
-  const rows = opportunityId
-    ? await db.all<OpportunityEventRow[]>(
-        'SELECT * FROM opportunity_events WHERE opportunityId = ? ORDER BY timestamp DESC LIMIT ?',
-        opportunityId,
-        limit,
-      )
-    : await db.all<OpportunityEventRow[]>(
-        'SELECT * FROM opportunity_events ORDER BY timestamp DESC LIMIT ?',
-        limit,
-      );
+  const conditions: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (opportunityId) {
+    conditions.push('opportunityId = ?');
+    params.push(opportunityId);
+  }
+  if (types.length > 0) {
+    conditions.push(`type IN (${types.map(() => '?').join(', ')})`);
+    params.push(...types);
+  }
+
+  const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await db.all<OpportunityEventRow[]>(
+    `SELECT * FROM opportunity_events${whereClause} ORDER BY timestamp DESC LIMIT ?`,
+    ...params,
+    limit,
+  );
 
   return rows.map(toOpportunityEventRecord);
 }

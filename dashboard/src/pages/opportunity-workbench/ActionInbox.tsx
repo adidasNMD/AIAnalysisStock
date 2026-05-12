@@ -14,6 +14,7 @@ import {
 import { inboxLaneMeta } from './live';
 import { buildInboxPrimaryAction } from './selectors';
 import { InboxOpportunityCard } from './InboxOpportunityCard';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
 
 type LanePriorityView = {
@@ -37,6 +38,7 @@ type ActionInboxProps = {
   setLaneRef: (lane: InboxLane, node: HTMLElement | null) => void;
   executePrimaryAction: (opportunity: OpportunitySummary, action: OpportunityPrimaryAction) => void | Promise<void>;
   liveNow: number;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
   recoveringMissionActionKey?: string | null;
   onOpenOpportunity: (opportunity: OpportunitySummary) => void;
   onLaunchOpportunityAnalysis: (opportunity: OpportunitySummary, suggested?: OpportunitySuggestedMission) => void;
@@ -54,6 +56,7 @@ export function ActionInbox({
   setLaneRef,
   executePrimaryAction,
   liveNow,
+  missionRecoveryActionFeedback,
   recoveringMissionActionKey,
   onOpenOpportunity,
   onLaunchOpportunityAnalysis,
@@ -173,6 +176,7 @@ export function ActionInbox({
                       liveNow={liveNow}
                       livePriorityEvent={laneView.recentEvents.get(item.id)}
                       liveRank={index}
+                      missionRecoveryActionFeedback={missionRecoveryActionFeedback}
                       recoveringMissionActionKey={recoveringMissionActionKey}
                       onOpenOpportunity={onOpenOpportunity}
                       onExecutePrimaryAction={executePrimaryAction}

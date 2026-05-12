@@ -204,7 +204,15 @@ export function buildOpportunitySuggestedMissions(
 
 function opportunityEventTone(event: OpportunityEventRecord): OpportunityActionTimelineEntry['tone'] {
   if (['leader_broken', 'mission_failed', 'thesis_degraded'].includes(event.type)) return 'negative';
-  if (['thesis_upgraded', 'relay_triggered', 'proxy_ignited'].includes(event.type)) return 'positive';
+  if (event.type === 'catalyst_reminder_updated') {
+    const preference = stringifyMeta(event.meta?.preference);
+    if (preference === 'acknowledge' || preference === 'subscribe') return 'positive';
+    if (preference === 'snooze') return 'warning';
+    return 'neutral';
+  }
+  if (['thesis_upgraded', 'relay_triggered', 'proxy_ignited', 'pretrade_confirmed'].includes(event.type)) {
+    return 'positive';
+  }
   if (['catalyst_due', 'signal_changed'].includes(event.type)) return 'warning';
   return 'neutral';
 }
@@ -253,26 +261,60 @@ function opportunityEventLabel(event: OpportunityEventRecord): string {
       return 'Proxy ignited';
     case 'catalyst_due':
       return 'Catalyst due';
+    case 'catalyst_reminder_updated': {
+      const preference = stringifyMeta(event.meta?.preference);
+      if (preference === 'acknowledge') return 'Catalyst reminder acknowledged';
+      if (preference === 'snooze') return 'Catalyst reminder snoozed';
+      if (preference === 'reopen') return 'Catalyst reminder reopened';
+      if (preference === 'subscribe') return 'Catalyst reminder subscribed';
+      if (preference === 'unsubscribe') return 'Catalyst reminder unsubscribed';
+      return 'Catalyst reminder updated';
+    }
+    case 'pretrade_confirmed':
+      return 'Pre-trade confirmed';
+    case 'pretrade_unconfirmed':
+      return 'Pre-trade reopened';
+    case 'field_evidence_recorded':
+      return 'Field evidence recorded';
+    case 'field_evidence_invalidated':
+      return 'Field evidence invalidated';
+    case 'field_evidence_restored':
+      return 'Field evidence restored';
     default:
       return 'Opportunity updated';
   }
 }
 
 function opportunityEventCategory(event: OpportunityEventRecord): OpportunityActionTimelineEntry['category'] {
-  if (['catalyst_due'].includes(event.type)) return 'calendar';
+  if (['catalyst_due', 'catalyst_reminder_updated'].includes(event.type)) return 'calendar';
   if (['thesis_upgraded', 'thesis_degraded'].includes(event.type)) return 'thesis';
   if (['relay_triggered', 'proxy_ignited', 'signal_changed', 'leader_broken'].includes(event.type)) return 'signal';
   return 'execution';
 }
 
 function opportunityEventSource(event: OpportunityEventRecord): OpportunityActionTimelineEntry['source'] {
+  if (
+    event.type === 'pretrade_confirmed'
+    || event.type === 'pretrade_unconfirmed'
+    || event.type === 'catalyst_reminder_updated'
+    || event.type === 'field_evidence_recorded'
+    || event.type === 'field_evidence_invalidated'
+    || event.type === 'field_evidence_restored'
+  ) return 'manual';
   if (event.message.toLowerCase().includes('auto-')) return 'automation';
   if (event.type === 'created' || event.type === 'updated') return 'manual';
   return 'system';
 }
 
 function opportunityEventDriver(event: OpportunityEventRecord): OpportunityActionTimelineEntry['driver'] {
-  if (event.type === 'catalyst_due') return 'calendar';
+  if (event.type === 'catalyst_due' || event.type === 'catalyst_reminder_updated') return 'calendar';
+  if (
+    event.type === 'pretrade_confirmed'
+    || event.type === 'pretrade_unconfirmed'
+    || event.type === 'field_evidence_recorded'
+    || event.type === 'field_evidence_invalidated'
+    || event.type === 'field_evidence_restored'
+  ) return 'manual';
   if (['mission_linked', 'mission_queued', 'mission_completed', 'mission_failed', 'mission_canceled'].includes(event.type)) {
     return 'execution';
   }
@@ -308,6 +350,13 @@ function opportunityEventDecision(event: OpportunityEventRecord): OpportunityAct
     case 'mission_linked':
     case 'mission_queued':
       return 'act';
+    case 'pretrade_confirmed':
+    case 'pretrade_unconfirmed':
+    case 'catalyst_reminder_updated':
+    case 'field_evidence_recorded':
+    case 'field_evidence_invalidated':
+    case 'field_evidence_restored':
+      return 'review';
     case 'mission_completed':
     case 'mission_failed':
     case 'mission_canceled':
@@ -383,6 +432,74 @@ function opportunityEventReason(event: OpportunityEventRecord): string | undefin
     }
     case 'catalyst_due':
       return stringifyMeta(event.meta?.nextCatalystAt);
+    case 'catalyst_reminder_updated': {
+      const preference = stringifyMeta(event.meta?.preference);
+      const label = stringifyMeta(event.meta?.catalystLabel);
+      const urgency = stringifyMeta(event.meta?.urgency);
+      const action = stringifyMeta(event.meta?.actionKind);
+      const snoozedUntil = stringifyMeta(event.meta?.snoozedUntil);
+      const leadDays = stringifyMeta(event.meta?.subscriptionLeadDays);
+      const note = stringifyMeta(event.meta?.note);
+      const parts = [
+        preference ? `Preference ${preference}` : undefined,
+        label ? `Catalyst ${label}` : undefined,
+        urgency ? `Urgency ${urgency}` : undefined,
+        action ? `Action ${action}` : undefined,
+        snoozedUntil ? `Until ${snoozedUntil}` : undefined,
+        leadDays ? `Lead ${leadDays}d` : undefined,
+        note,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' · ') : undefined;
+    }
+    case 'pretrade_confirmed':
+    case 'pretrade_unconfirmed': {
+      const status = stringifyMeta(event.meta?.status);
+      const action = stringifyMeta(event.meta?.actionKind);
+      const urgency = stringifyMeta(event.meta?.catalystUrgency);
+      const evidence = stringifyMeta(event.meta?.evidence);
+      const parts = [
+        status ? `Status ${status}` : undefined,
+        action ? `Action ${action}` : undefined,
+        urgency ? `Catalyst ${urgency}` : undefined,
+        evidence,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' · ') : undefined;
+    }
+    case 'field_evidence_recorded': {
+      const field = stringifyMeta(event.meta?.field);
+      const confidence = stringifyMeta(event.meta?.confidence);
+      const source = stringifyMeta(event.meta?.source);
+      const note = stringifyMeta(event.meta?.note);
+      const parts = [
+        field ? `Field ${field}` : undefined,
+        confidence ? `Confidence ${confidence}` : undefined,
+        source ? `Source ${source}` : undefined,
+        note,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' · ') : undefined;
+    }
+    case 'field_evidence_invalidated': {
+      const field = stringifyMeta(event.meta?.field);
+      const source = stringifyMeta(event.meta?.source);
+      const reason = stringifyMeta(event.meta?.reason);
+      const parts = [
+        field ? `Field ${field}` : undefined,
+        source ? `Source ${source}` : undefined,
+        reason,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' · ') : undefined;
+    }
+    case 'field_evidence_restored': {
+      const field = stringifyMeta(event.meta?.field);
+      const source = stringifyMeta(event.meta?.source);
+      const reason = stringifyMeta(event.meta?.reason);
+      const parts = [
+        field ? `Field ${field}` : undefined,
+        source ? `Source ${source}` : undefined,
+        reason,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' · ') : undefined;
+    }
     case 'mission_completed':
     case 'mission_failed':
     case 'mission_canceled':

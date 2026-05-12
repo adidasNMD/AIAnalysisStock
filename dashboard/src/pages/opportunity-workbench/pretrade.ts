@@ -1,5 +1,11 @@
 import type { OpportunityCatalystItem, OpportunitySummary } from '../../api';
-import { isRecoverableMissionStatus } from './recovery';
+import {
+  buildOpportunityCatalystReminders,
+  type CatalystReminder,
+  type CatalystReminderAction,
+  type CatalystReminderUrgency,
+} from './catalyst-reminders';
+import { isRecoverableMissionStatus } from './recovery-status';
 
 export type PreTradeChecklistStatus = 'pass' | 'warn' | 'block';
 export type PreTradeReadiness = 'ready' | 'watch' | 'blocked';
@@ -10,6 +16,8 @@ export type PreTradeChecklistItem = {
   status: PreTradeChecklistStatus;
   detail: string;
   action?: string;
+  actionKind?: CatalystReminderAction;
+  catalystUrgency?: CatalystReminderUrgency;
 };
 
 export type PreTradeChecklist = {
@@ -22,6 +30,10 @@ export type PreTradeChecklist = {
   nextAction: string;
 };
 
+export type PreTradeChecklistOptions = {
+  nowMs?: number;
+};
+
 function statusRank(status: PreTradeChecklistStatus) {
   if (status === 'pass') return 2;
   if (status === 'warn') return 1;
@@ -32,12 +44,12 @@ function hasUpcomingCatalyst(opportunity: OpportunitySummary): OpportunityCataly
   return opportunity.catalystCalendar.find((item) => item.status === 'upcoming' || item.status === 'active');
 }
 
-function daysUntil(value?: string) {
+function daysUntil(value: string | undefined, nowMs: number) {
   if (!value) return null;
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) return null;
   const dayMs = 24 * 60 * 60 * 1000;
-  return Math.ceil((timestamp - Date.now()) / dayMs);
+  return Math.ceil((timestamp - nowMs) / dayMs);
 }
 
 function missionEvidenceItem(opportunity: OpportunitySummary): PreTradeChecklistItem {
@@ -129,9 +141,38 @@ function thesisItem(opportunity: OpportunitySummary): PreTradeChecklistItem {
   };
 }
 
-function catalystItem(opportunity: OpportunitySummary): PreTradeChecklistItem {
+function catalystReminderStatus(reminder: CatalystReminder): PreTradeChecklistStatus {
+  if (reminder.urgency === 'missed' || reminder.urgency === 'overdue' || reminder.urgency === 'missing_date') {
+    return 'block';
+  }
+  if (reminder.urgency === 'today' || reminder.urgency === 'soon') {
+    return 'pass';
+  }
+  return 'warn';
+}
+
+function catalystReminderItem(reminder: CatalystReminder): PreTradeChecklistItem {
+  const status = catalystReminderStatus(reminder);
+  const statusDetail = status === 'pass'
+    ? '催化窗口清晰，已经进入可执行前确认区。'
+    : status === 'block'
+      ? '催化窗口存在硬缺口，交易前需要先处理。'
+      : '催化窗口还需要复核，适合继续准备而不是直接执行。';
+
+  return {
+    id: 'catalyst_window',
+    label: 'Catalyst window',
+    status,
+    detail: `${reminder.catalyst.label} · ${reminder.dueLabel}。${statusDetail} ${reminder.actionLabel}：${reminder.actionDetail}`,
+    action: reminder.actionDetail,
+    actionKind: reminder.action,
+    catalystUrgency: reminder.urgency,
+  };
+}
+
+function legacyCatalystItem(opportunity: OpportunitySummary, nowMs: number): PreTradeChecklistItem {
   const catalyst = hasUpcomingCatalyst(opportunity);
-  const days = daysUntil(catalyst?.dueAt || opportunity.nextCatalystAt);
+  const days = daysUntil(catalyst?.dueAt || opportunity.nextCatalystAt, nowMs);
 
   if (!catalyst && !opportunity.nextCatalystAt) {
     return {
@@ -171,6 +212,13 @@ function catalystItem(opportunity: OpportunitySummary): PreTradeChecklistItem {
       : `${catalyst?.label || opportunity.nextCatalystAt} 缺少可解析日期。`,
     action: '等待窗口接近或补齐日期。',
   };
+}
+
+function catalystItem(opportunity: OpportunitySummary, nowMs: number): PreTradeChecklistItem {
+  const reminders = buildOpportunityCatalystReminders(opportunity, nowMs);
+  const reminder = reminders.find((item) => catalystReminderStatus(item) === 'block') || reminders[0];
+  if (reminder) return catalystReminderItem(reminder);
+  return legacyCatalystItem(opportunity, nowMs);
 }
 
 function tradeabilityItem(opportunity: OpportunitySummary): PreTradeChecklistItem {
@@ -277,7 +325,11 @@ function structureRiskItem(opportunity: OpportunitySummary): PreTradeChecklistIt
   };
 }
 
-export function buildPreTradeChecklist(opportunity: OpportunitySummary): PreTradeChecklist {
+export function buildPreTradeChecklist(
+  opportunity: OpportunitySummary,
+  options: PreTradeChecklistOptions = {},
+): PreTradeChecklist {
+  const nowMs = options.nowMs ?? Date.now();
   const playbookMissingItems = opportunity.playbook?.checklist
     .filter((item) => item.status === 'missing')
     .map((item): PreTradeChecklistItem => ({
@@ -291,7 +343,7 @@ export function buildPreTradeChecklist(opportunity: OpportunitySummary): PreTrad
   const items = [
     missionEvidenceItem(opportunity),
     thesisItem(opportunity),
-    catalystItem(opportunity),
+    catalystItem(opportunity, nowMs),
     tradeabilityItem(opportunity),
     structureRiskItem(opportunity),
     ...playbookMissingItems.slice(0, 2),

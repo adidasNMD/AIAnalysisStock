@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Settings as SettingsIcon, Save, RefreshCw, CheckCircle } from 'lucide-react';
 import { fetchModelsConfig, saveModelsConfig as apiSaveConfig } from '../api';
 import type { ModelsConfig } from '../api';
+import './settings.css';
 
 export function Settings() {
   const [config, setConfig] = useState<ModelsConfig | null>(null);

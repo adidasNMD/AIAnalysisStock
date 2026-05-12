@@ -3,7 +3,7 @@ import { createMissionRecord, deleteMission, getMission, updateMissionRecord } f
 import { appendMissionEvent } from './mission-events';
 import { createMissionRun } from './mission-runs';
 import { linkMissionToOpportunity, markOpportunityMissionQueued } from './opportunities';
-import { buildMissionTaskDedupeKey, hashMissionInput } from './mission-identity';
+import { buildMissionRetryDedupeKey, buildMissionTaskDedupeKey, hashMissionInput } from './mission-identity';
 import type { MissionInput, MissionMode, UnifiedMission } from './types';
 import type { AnalysisDepth } from '../models/handoff';
 
@@ -17,6 +17,8 @@ export interface QueueMissionRequest {
   date?: string | undefined;
   opportunityId?: string | undefined;
   idempotencyKey?: string | undefined;
+  dedupeKey?: string | undefined;
+  audit?: Record<string, unknown> | undefined;
 }
 
 function inferMissionMode(query: string, tickers?: string[]): MissionMode {
@@ -51,7 +53,7 @@ async function queueMissionRun(
     {
       missionId: mission.id,
       inputPayload,
-      dedupeKey: buildMissionTaskDedupeKey(input),
+      dedupeKey: request.dedupeKey || buildMissionTaskDedupeKey(input),
       inputHash: hashMissionInput(input),
       ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     },
@@ -76,7 +78,13 @@ async function queueMissionRun(
     type: 'queued',
     status: mission.status,
     message: queuedMessage,
-    meta: { source: request.source, taskId: task.id, runId: run.id, attempt: run.attempt },
+    meta: {
+      source: request.source,
+      taskId: task.id,
+      runId: run.id,
+      attempt: run.attempt,
+      ...(request.audit || {}),
+    },
   });
 
   if (input.opportunityId) {
@@ -115,6 +123,30 @@ export async function createQueuedMission(request: QueueMissionRequest): Promise
   return queuedMission;
 }
 
+function appendRetryAuditEvent(
+  mission: UnifiedMission,
+  input: MissionInput,
+  action: 'reused_idempotent_retry' | 'reused_active_retry',
+  meta: Record<string, unknown>,
+): void {
+  appendMissionEvent(mission.id, mission.createdAt, {
+    type: 'queued',
+    status: 'queued',
+    message: action === 'reused_idempotent_retry'
+      ? 'Retry request reused an existing idempotent retry.'
+      : 'Retry request reused an active retry already in queue or running.',
+    meta: {
+      operation: 'mission_retry',
+      recoveryAction: action,
+      reusedExistingRetry: true,
+      source: input.source,
+      depth: input.depth,
+      ...(input.opportunityId ? { opportunityId: input.opportunityId } : {}),
+      ...meta,
+    },
+  });
+}
+
 export async function retryMissionRun(
   missionId: string,
   overrides: Partial<QueueMissionRequest> = {},
@@ -132,6 +164,38 @@ export async function retryMissionRun(
     opportunityId: overrides.opportunityId || existingMission.input.opportunityId,
     ...((overrides.date || existingMission.input.date) ? { date: overrides.date || existingMission.input.date } : {}),
   });
+
+  if (overrides.idempotencyKey) {
+    const existingTask = await taskQueue.getByIdempotencyKey(overrides.idempotencyKey);
+    if (existingTask?.missionId === missionId) {
+      const idempotentMission = getMission(existingTask.missionId) || existingMission;
+      appendRetryAuditEvent(idempotentMission, input, 'reused_idempotent_retry', {
+        taskId: existingTask.id,
+        ...(existingTask.runId ? { runId: existingTask.runId } : {}),
+        idempotencyKey: overrides.idempotencyKey,
+      });
+      return idempotentMission;
+    }
+    if (existingTask?.missionId) return null;
+  }
+
+  const retryDedupeKey = buildMissionRetryDedupeKey(missionId, input);
+  const activeRetryTask = await taskQueue.getActiveByDedupeKey(retryDedupeKey);
+  if (activeRetryTask?.missionId === missionId) {
+    const activeMission = updateMissionRecord(missionId, (currentMission) => ({
+      ...currentMission,
+      input,
+      status: 'queued',
+      updatedAt: new Date().toISOString(),
+    })) || existingMission;
+    appendRetryAuditEvent(activeMission, input, 'reused_active_retry', {
+      taskId: activeRetryTask.id,
+      ...(activeRetryTask.runId ? { runId: activeRetryTask.runId } : {}),
+      dedupeKey: retryDedupeKey,
+    });
+    return activeMission;
+  }
+  if (activeRetryTask?.missionId) return null;
 
   const queuedMission = updateMissionRecord(missionId, (currentMission) => ({
     ...currentMission,
@@ -152,11 +216,29 @@ export async function retryMissionRun(
       ...(input.tickers && input.tickers.length > 0 ? { tickers: input.tickers } : {}),
       ...(input.opportunityId ? { opportunityId: input.opportunityId } : {}),
       ...(input.date ? { date: input.date } : {}),
+      ...(overrides.idempotencyKey ? { idempotencyKey: overrides.idempotencyKey } : {}),
+      dedupeKey: retryDedupeKey,
+      audit: {
+        operation: 'mission_retry',
+        recoveryAction: 'queued_new_retry',
+        reusedExistingRetry: false,
+        dedupeKey: retryDedupeKey,
+        ...(overrides.idempotencyKey ? { idempotencyKey: overrides.idempotencyKey } : {}),
+      },
     },
     `Retry queued with priority ${overrides.priority ?? 90}`,
   );
 
   if (!retriedMission) {
+    const duplicateRetryTask = await taskQueue.getActiveByDedupeKey(retryDedupeKey);
+    if (duplicateRetryTask?.missionId === missionId) {
+      appendRetryAuditEvent(queuedMission, input, 'reused_active_retry', {
+        taskId: duplicateRetryTask.id,
+        ...(duplicateRetryTask.runId ? { runId: duplicateRetryTask.runId } : {}),
+        dedupeKey: retryDedupeKey,
+      });
+      return queuedMission;
+    }
     updateMissionRecord(missionId, () => existingMission);
     return null;
   }

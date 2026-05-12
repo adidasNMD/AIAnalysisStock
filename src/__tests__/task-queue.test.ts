@@ -24,6 +24,12 @@ function createDbMock(pendingTasks: any[] = []) {
           (task) => task.dedupeKey === dedupeKey && statuses.includes(task.status),
         );
       }
+      if (sql.includes('SELECT * FROM tasks WHERE dedupeKey = ?')) {
+        const [dedupeKey, ...statuses] = params;
+        return Array.from(tasks.values()).find(
+          (task) => task.dedupeKey === dedupeKey && statuses.includes(task.status),
+        );
+      }
       if (sql.includes('SELECT id, missionId, status FROM tasks WHERE query = ?')) {
         const [query, firstStatus, secondStatus] = params;
         return Array.from(tasks.values()).find(
@@ -330,6 +336,40 @@ describe('TaskQueue concurrency', () => {
 
     expect(sameQueryDifferentIdentity).not.toBeNull();
     expect(sameIdentity).toBeNull();
+  });
+
+  it('looks up active tasks by dedupe key without returning completed history', async () => {
+    const { TaskQueue } = await loadQueue();
+    const db = createDbMock([
+      {
+        id: 'task-done',
+        query: 'Done retry',
+        depth: 'quick',
+        priority: 0,
+        source: 'test',
+        status: 'done',
+        dedupeKey: 'mission-retry:v1:abc',
+        createdAt: Date.now() - 1000,
+      },
+      {
+        id: 'task-running',
+        query: 'Running retry',
+        depth: 'quick',
+        priority: 0,
+        source: 'test',
+        status: 'running',
+        dedupeKey: 'mission-retry:v1:abc',
+        createdAt: Date.now(),
+      },
+    ]);
+    getDbMock.mockResolvedValue(db as any);
+
+    const queue = new TaskQueue();
+
+    await expect(queue.getActiveByDedupeKey('mission-retry:v1:abc')).resolves.toEqual(
+      expect.objectContaining({ id: 'task-running' }),
+    );
+    await expect(queue.getActiveByDedupeKey('missing')).resolves.toBeNull();
   });
 
   it('records cancel timestamp and failure code for pending or running tasks', async () => {

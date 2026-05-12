@@ -13,8 +13,11 @@ import {
   metricToneClass,
   sortBoardItems,
 } from './selectors';
-import { OpportunityCard } from './OpportunityCard';
+import { BoardOpportunityList } from './BoardOpportunityList';
+import { buildBoardListScrollKey } from './board-list-window';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
+import type { WorkbenchSearchMatch } from './view-state';
 
 type BoardColumnProps = {
   type: OpportunityBoardType;
@@ -24,7 +27,9 @@ type BoardColumnProps = {
   activeMetricKey?: string | null;
   streamedEvents: OpportunityStreamEvent[];
   liveNow: number;
+  searchMatches: Map<string, WorkbenchSearchMatch>;
   automationAction: 'radar' | 'graph' | null;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
   recoveringMissionActionKey?: string | null;
   onToggleBoardFilter: (type: OpportunityBoardType, metricKey: string, count: number) => void;
   onClearBoardFilter: (type: OpportunityBoardType) => void;
@@ -44,7 +49,9 @@ export function BoardColumn({
   activeMetricKey,
   streamedEvents,
   liveNow,
+  searchMatches,
   automationAction,
+  missionRecoveryActionFeedback,
   recoveringMissionActionKey,
   onToggleBoardFilter,
   onClearBoardFilter,
@@ -60,6 +67,7 @@ export function BoardColumn({
   const { items: filteredItems, activeMetric } = filterBoardItems(items, boardHealth, activeMetricKey);
   const visibleItems = activeMetric ? sortBoardItems(filteredItems, activeMetric.key) : filteredItems;
   const boardPriorityView = buildBoardPriorityView(visibleItems, streamedEvents, liveNow);
+  const scrollKey = buildBoardListScrollKey(type, activeMetric?.key);
 
   return (
     <section className="op-board glass-panel">
@@ -146,28 +154,22 @@ export function BoardColumn({
         </div>
       </div>
       <div className="op-board-list">
-        {items.length === 0 ? (
-          <div className="today-empty">这个板块还没有机会卡</div>
-        ) : boardPriorityView.items.length === 0 ? (
-          <div className="today-empty">当前筛选下没有机会卡</div>
-        ) : (
-          boardPriorityView.items.map((opportunity, index) => (
-            <OpportunityCard
-              key={opportunity.id}
-              opportunity={opportunity}
-              activeMetricKey={activeMetric?.key}
-              rank={index}
-              liveNow={liveNow}
-              livePriorityEvent={boardPriorityView.recentEvents.get(opportunity.id)}
-              recoveringMissionActionKey={recoveringMissionActionKey}
-              onOpenOpportunity={onOpenOpportunity}
-              onRecoverMission={onRecoverMission}
-              onLaunchOpportunityAnalysis={onLaunchOpportunityAnalysis}
-              onOpenMission={onOpenMission}
-              onOpenCommandCenter={onOpenCommandCenter}
-            />
-          ))
-        )}
+        <BoardOpportunityList
+          scrollKey={scrollKey}
+          allItemCount={items.length}
+          items={boardPriorityView.items}
+          recentEvents={boardPriorityView.recentEvents}
+          activeMetricKey={activeMetric?.key}
+          liveNow={liveNow}
+          searchMatches={searchMatches}
+          missionRecoveryActionFeedback={missionRecoveryActionFeedback}
+          recoveringMissionActionKey={recoveringMissionActionKey}
+          onOpenOpportunity={onOpenOpportunity}
+          onRecoverMission={onRecoverMission}
+          onLaunchOpportunityAnalysis={onLaunchOpportunityAnalysis}
+          onOpenMission={onOpenMission}
+          onOpenCommandCenter={onOpenCommandCenter}
+        />
       </div>
     </section>
   );

@@ -1,13 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { getTraceByMissionId, getTraceByRunId } from '../../utils/agent-logger';
+import {
+  sendBadRequest,
+  sendInternalError,
+  sendNotFound,
+} from '../route-helpers';
 import * as fs from 'fs';
 import * as path from 'path';
 
 export const artifactsRouter = Router();
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function listDatedFiles(rootDir: string, extension: string): Array<{ date: string; filename: string }> {
   if (!fs.existsSync(rootDir)) return [];
@@ -31,7 +32,7 @@ artifactsRouter.get('/reports', (_req: Request, res: Response) => {
   try {
     res.json(listDatedFiles(path.join(process.cwd(), 'out', 'reports'), '.md'));
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -39,7 +40,7 @@ artifactsRouter.get('/reports/content', (req: Request, res: Response) => {
   try {
     const { date, filename } = req.query;
     if (!date || !filename || typeof date !== 'string' || typeof filename !== 'string') {
-      return res.status(400).json({ error: 'Missing date or filename' });
+      return sendBadRequest(res, 'Missing date or filename');
     }
 
     const reportPath = path.join(
@@ -50,12 +51,12 @@ artifactsRouter.get('/reports/content', (req: Request, res: Response) => {
       path.basename(filename),
     );
     if (!fs.existsSync(reportPath)) {
-      return res.status(404).json({ error: 'Report not found' });
+      return sendNotFound(res, 'Report not found');
     }
 
     return res.json({ content: fs.readFileSync(reportPath, 'utf-8') });
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });
 
@@ -63,7 +64,7 @@ artifactsRouter.get('/traces', (_req: Request, res: Response) => {
   try {
     res.json(listDatedFiles(path.join(process.cwd(), 'out', 'traces'), '.json'));
   } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error) });
+    sendInternalError(res, error);
   }
 });
 
@@ -71,7 +72,7 @@ artifactsRouter.get('/traces/content', (req: Request, res: Response) => {
   try {
     const { date, filename } = req.query;
     if (!date || !filename || typeof date !== 'string' || typeof filename !== 'string') {
-      return res.status(400).json({ error: 'Missing date or filename' });
+      return sendBadRequest(res, 'Missing date or filename');
     }
 
     const tracePath = path.join(
@@ -82,12 +83,12 @@ artifactsRouter.get('/traces/content', (req: Request, res: Response) => {
       path.basename(filename),
     );
     if (!fs.existsSync(tracePath)) {
-      return res.status(404).json({ error: 'Trace not found' });
+      return sendNotFound(res, 'Trace not found');
     }
 
     return res.json({ content: JSON.parse(fs.readFileSync(tracePath, 'utf-8')) });
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });
 
@@ -95,11 +96,11 @@ artifactsRouter.get('/traces/byMission/:missionId/runs/:runId', (req: Request, r
   try {
     const trace = getTraceByRunId(req.params.missionId as string, req.params.runId as string);
     if (!trace) {
-      return res.status(404).json({ error: 'Trace not found for mission run' });
+      return sendNotFound(res, 'Trace not found for mission run');
     }
     return res.json({ content: trace });
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });
 
@@ -107,10 +108,10 @@ artifactsRouter.get('/traces/byMission/:missionId', (req: Request, res: Response
   try {
     const trace = getTraceByMissionId(req.params.missionId as string);
     if (!trace) {
-      return res.status(404).json({ error: 'Trace not found for mission' });
+      return sendNotFound(res, 'Trace not found for mission');
     }
     return res.json({ content: trace });
   } catch (error: unknown) {
-    return res.status(500).json({ error: errorMessage(error) });
+    return sendInternalError(res, error);
   }
 });

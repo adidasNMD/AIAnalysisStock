@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type DependencyList } from 'react';
+import { useState, useEffect, useCallback, type DependencyList } from 'react';
 
 export interface AgentLog {
   missionId: string;
@@ -53,14 +53,64 @@ export function normalizeOpportunityStreamEvent(value: unknown): OpportunityStre
   return null;
 }
 
-function getEventSourceUrl(path: string): string {
-  return new URL(path, window.location.origin).toString();
-}
+export type StreamAppendMode = 'start' | 'end';
 
-function getEnvelopeId(value: unknown): string | null {
+export function getEnvelopeId(value: unknown): string | null {
   if (!value || typeof value !== 'object') return null;
   const maybeEnvelope = value as { id?: unknown };
   return typeof maybeEnvelope.id === 'string' ? maybeEnvelope.id : null;
+}
+
+export function getEventSourceUrl(
+  path: string,
+  {
+    replaySince = false,
+    lastEventId = null,
+    origin = window.location.origin,
+  }: {
+    replaySince?: boolean;
+    lastEventId?: string | null;
+    origin?: string;
+  } = {},
+): string {
+  const streamUrl = new URL(path, origin);
+  if (replaySince && lastEventId) {
+    streamUrl.searchParams.set('since', lastEventId);
+  }
+  return streamUrl.toString();
+}
+
+export function nextStreamLastEventId(
+  parsed: unknown,
+  eventLastEventId: string,
+  itemId: string | null | undefined,
+  currentLastEventId: string | null,
+): string | null {
+  return eventLastEventId || getEnvelopeId(parsed) || itemId || currentLastEventId;
+}
+
+export function mergeStreamItem<T>(
+  previous: T[],
+  item: T,
+  {
+    append,
+    maxItems,
+    getItemId,
+  }: {
+    append: StreamAppendMode;
+    maxItems: number;
+    getItemId?: (item: T) => string | null;
+  },
+): T[] {
+  const itemId = getItemId?.(item);
+  const base = itemId
+    ? previous.filter((existing) => getItemId?.(existing) !== itemId)
+    : previous;
+  return (
+    append === 'start'
+      ? [item, ...base].slice(0, maxItems)
+      : [...base, item].slice(-maxItems)
+  );
 }
 
 export function nextReconnectDelay(attempt: number): number {
@@ -74,10 +124,103 @@ function errorMessage(error: unknown): string {
 interface EventSourceStreamOptions<T> {
   path: string;
   maxItems: number;
-  append: 'start' | 'end';
+  append: StreamAppendMode;
   replaySince?: boolean;
   normalize: (value: unknown, event: MessageEvent<string>) => T | null;
   getItemId?: (item: T) => string | null;
+}
+
+export interface EventSourceLike {
+  onopen: ((event?: Event) => void) | null;
+  onerror: ((event?: Event) => void) | null;
+  onmessage: ((event: MessageEvent<string>) => void) | null;
+  close: () => void;
+}
+
+interface EventSourceStreamControllerOptions<T> extends EventSourceStreamOptions<T> {
+  origin?: string;
+  eventSourceFactory?: (url: string) => EventSourceLike;
+  onConnectionChange: (connected: boolean) => void;
+  onItem: (item: T) => void;
+  setReconnectTimeout?: typeof setTimeout;
+  clearReconnectTimeout?: typeof clearTimeout;
+}
+
+export function createEventSourceStreamController<T>({
+  path,
+  replaySince = false,
+  normalize,
+  getItemId,
+  origin,
+  eventSourceFactory = (url: string) => new EventSource(url) as EventSourceLike,
+  onConnectionChange,
+  onItem,
+  setReconnectTimeout = setTimeout,
+  clearReconnectTimeout = clearTimeout,
+}: EventSourceStreamControllerOptions<T>) {
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  let retryCount = 0;
+  let source: EventSourceLike | null = null;
+  let lastEventId: string | null = null;
+
+  function connect() {
+    if (stopped) return;
+
+    const streamUrl = getEventSourceUrl(path, {
+      replaySince,
+      lastEventId,
+      ...(origin ? { origin } : {}),
+    });
+    const nextSource = eventSourceFactory(streamUrl);
+    source = nextSource;
+
+    nextSource.onopen = () => {
+      onConnectionChange(true);
+      retryCount = 0;
+    };
+
+    nextSource.onerror = () => {
+      onConnectionChange(false);
+      nextSource.close();
+      if (source !== nextSource) return;
+      source = null;
+
+      if (stopped) return;
+      const delay = nextReconnectDelay(retryCount);
+      retryCount += 1;
+      reconnectTimer = setReconnectTimeout(connect, delay);
+    };
+
+    nextSource.onmessage = (event) => {
+      try {
+        const parsed: unknown = JSON.parse(event.data);
+        const item = normalize(parsed, event);
+        if (!item) return;
+        const itemId = getItemId?.(item);
+        lastEventId = nextStreamLastEventId(parsed, event.lastEventId, itemId, lastEventId);
+        onItem(item);
+      } catch {
+        // Ignore heartbeats and malformed replay frames.
+      }
+    };
+  }
+
+  function stop() {
+    stopped = true;
+    if (reconnectTimer) {
+      clearReconnectTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    source?.close();
+    source = null;
+  }
+
+  return {
+    connect,
+    stop,
+    getLastEventId: () => lastEventId,
+  };
 }
 
 function useEventSourceStream<T>({
@@ -90,64 +233,29 @@ function useEventSourceStream<T>({
 }: EventSourceStreamOptions<T>) {
   const [items, setItems] = useState<T[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const retryCount = useRef(0);
-  const sseRef = useRef<EventSource | null>(null);
-  const lastEventId = useRef<string | null>(null);
 
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let unmounted = false;
+    const controller = createEventSourceStreamController<T>({
+      path,
+      maxItems,
+      append,
+      replaySince,
+      normalize,
+      getItemId,
+      onConnectionChange: setIsConnected,
+      onItem: (item) => {
+        setItems(prev => mergeStreamItem(prev, item, {
+          append,
+          maxItems,
+          getItemId,
+        }));
+      },
+    });
 
-    function connect() {
-      if (unmounted) return;
-
-      const streamUrl = new URL(getEventSourceUrl(path));
-      if (replaySince && lastEventId.current) {
-        streamUrl.searchParams.set('since', lastEventId.current);
-      }
-      const sse = new EventSource(streamUrl.toString());
-      sseRef.current = sse;
-
-      sse.onopen = () => {
-        setIsConnected(true);
-        retryCount.current = 0;
-      };
-
-      sse.onerror = () => {
-        setIsConnected(false);
-        sse.close();
-        sseRef.current = null;
-
-        if (unmounted) return;
-        const delay = nextReconnectDelay(retryCount.current);
-        retryCount.current += 1;
-        reconnectTimer = setTimeout(connect, delay);
-      };
-
-      sse.onmessage = (e) => {
-        try {
-          const parsed: unknown = JSON.parse(e.data);
-          const item = normalize(parsed, e);
-          if (!item) return;
-          const itemId = getItemId?.(item);
-          lastEventId.current = e.lastEventId || getEnvelopeId(parsed) || itemId || lastEventId.current;
-          setItems(prev => (
-            append === 'start'
-              ? [item, ...prev].slice(0, maxItems)
-              : [...prev, item].slice(-maxItems)
-          ));
-        } catch {
-          // Ignore heartbeats and malformed replay frames.
-        }
-      };
-    }
-
-    connect();
+    controller.connect();
 
     return () => {
-      unmounted = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      sseRef.current?.close();
+      controller.stop();
     };
   }, [append, getItemId, maxItems, normalize, path, replaySince]);
 

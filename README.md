@@ -463,6 +463,71 @@ flowchart TB
 - Mission Recovery：失败、取消或陈旧任务的恢复入口。
 - Saved View / Filters：保存视图、板块筛选、URL 状态同步。
 
+### Evidence Center
+
+路径：`/evidence`
+
+用于跨 Opportunity 查看字段级证据：
+
+- 按 ticker、标题、field、source、value、note 搜索。
+- 按 status、confidence、kind、field、source 过滤。
+- 查看 evidence 当前是否 active 或 invalidated。
+- 勾选多条 evidence 后批量作废 active 证据，或批量恢复 invalidated 证据。
+- 从 evidence 行跳回相关 Opportunity 或最新 Mission。
+
+### Catalyst Reminders
+
+路径：`/catalysts`
+
+用于跨 Opportunity 查看催化提醒审计：
+
+- 查询已处理、稍后处理、恢复、订阅、取消订阅等人工偏好。
+- 查看当前有效订阅、lead days、snooze 时间和 reminder note。
+- 按 Opportunity、偏好、关键词和 active subscription 过滤。
+- 导出当前有效订阅为 ICS 日历。
+
+### Pre-trade Audit
+
+路径：`/pretrade`
+
+用于把执行前的风险卡口放到一张审计表里：
+
+- 汇总交易前人工确认、重新打开、催化阻塞和字段级人工 evidence。
+- 按 Opportunity、类别、状态和关键词过滤。
+- 快速定位 missed、overdue、missing date 这类会阻塞交易前检查的催化项。
+- 从审计行跳回对应 Opportunity。
+
+### Review Playback
+
+路径：`/review-playback`
+
+用于把一次机会从发现到复核的关键事件串成复盘时间线：
+
+- 汇总 Mission 完成/失败/取消、交易前检查、催化提醒、字段级 evidence、thesis 和 signal 事件。
+- 顶部 Outcome Summary 会把复盘事件折成 blocked / review / ready / quiet，并显示 risk score、阻塞数、失败任务、完成任务和 evidence 变化。
+- Performance / Risk 面板会在单机会范围内展示 entry signal、exit/risk signal、持有期、真实 return / max drawdown、价格点数量、price cache fresh/stale/missing 状态、逐笔 trade legs、partial exit、position sizing、sizing rules、open exposure、收益/回撤贡献、Exit attribution、Execution quality、Plan repair suggestions、Risk backtest verdict、win rate、avg return、avg drawdown、risk-at-stop、budget usage、payoff、stop/target/risk budget 计划字段、目标捕获率、滑点、催化触发数、pre-trade block 是否命中，以及没有价格时的 heat delta / drawdown 代理指标；多机会模式会先在每个 Opportunity 内部配对 entry/exit，再聚合成跨机会 Risk backtest，并按机会类型、阶段和状态展示 Backtest slices；Strategy backtest 会进一步按策略族展示覆盖率、priced legs、最佳策略族、最弱策略族、平均收益、胜率、预算使用和问题数量，并支持用 Backtest ticker、strategy family、from、to 单独过滤策略/风险回测样本，同时保留事件时间线原始查询结果。
+- Backtest Workspace 会把当前筛选范围、Strategy/Risk backtest、样本质量、数据质量、问题数量和 pre-trade blocker 折成 readiness score、ready/watch/repair/empty 状态、决策建议和下一步动作。
+- 按 Opportunity、类别、风险语气和关键词过滤。
+- 保存常用回测视图，把关键词、Opportunity、类别、语气、Backtest ticker、strategy family 和时间窗口保存到浏览器本地，后续可一键应用或删除。
+- 区分 positive、warning、negative、neutral，优先定位失败、阻塞和 thesis 变化。
+- 从复盘行跳回对应 Opportunity 或 Mission。
+
+### Field Registry
+
+路径：`/field-registry`
+
+用于治理字段证据的默认解释规则：
+
+- 按 field、label、source、group、kind 搜索和过滤。
+- 对比系统默认值和当前 effective override。
+- 查看 overridden、base-only 和 custom 字段。
+- 编辑字段默认 label、kind、source、confidence、note。
+- 一键重置 override，恢复系统默认。
+- 查看单字段 registry audit trail。
+- 生成 registry 导出 JSON，包含 overrides、effective registry 和 diff report。
+- 粘贴导出 JSON 或 `{ "items": [...] }` 执行 dry-run / apply 批量导入。
+- 查看全局差异审计报表：override coverage、base/custom 字段数、drift 维度和最近 audit。
+
 ### Command Center
 
 路径：`/command-center`
@@ -473,6 +538,9 @@ flowchart TB
 - 查看队列状态。
 - 观察实时 agent log。
 - 快速发起单次分析。
+- 查看 Mission / artifact / field evidence 诊断卡。
+- 对可自动修复的问题执行 repair / backfill / refresh。
+- 对缺字段元数据的 field evidence 人工问题，跳到 Evidence Center 定位，或跳到 Field Registry 生成 import draft 并 dry-run。
 
 ### Mission Timeline
 
@@ -708,10 +776,15 @@ SQLite 负责可查询状态、索引和事件：
 | --- | --- |
 | `tasks` | 队列任务 |
 | `mission_runs` | Mission 每次执行记录 |
+| `missions` | Mission canonical metadata、inputHash、artifact integrity |
 | `missions_index` | Mission 可查询索引 |
 | `mission_events` | Mission 事件索引 |
 | `mission_evidence_refs` | Evidence 文件引用 |
+| `mission_artifacts` | Mission 文件产物统一引用 |
 | `opportunities` | Opportunity 主表 |
+| `opportunity_field_evidence` | Opportunity 字段级 evidence / provenance canonical rows |
+| `opportunity_field_registry_overrides` | Opportunity 字段 label、kind、source、confidence、note 的可编辑 registry override |
+| `opportunity_field_registry_audit` | Opportunity 字段 registry override 更新/重置审计历史 |
 | `opportunity_events` | Opportunity 兼容事件 |
 | `opportunity_snapshots` | Opportunity 快照 |
 | `stream_events` | durable SSE 事件流 |
@@ -749,6 +822,7 @@ SQLite 负责可查询状态、索引和事件：
 | `GET /api/missions` | Mission 列表 |
 | `GET /api/missions/:id` | Mission 详情 |
 | `GET /api/missions/:id/events` | Mission 事件 |
+| `GET /api/missions/:id/artifacts` | Mission artifact refs |
 | `GET /api/missions/:id/runs` | Mission run 列表 |
 | `GET /api/missions/:id/runs/:runId/evidence` | Run evidence |
 | `POST /api/missions/:id/retry` | 重试 Mission |
@@ -768,10 +842,54 @@ SQLite 负责可查询状态、索引和事件：
 | `GET /api/opportunities/inbox/:id` | 单个 Inbox item |
 | `GET /api/opportunities/board-health` | 板块健康指标 |
 | `GET /api/opportunity-events` | 最近 Opportunity 事件 |
+| `GET /api/opportunity-field-evidence` | 跨 Opportunity 查询字段级 evidence，支持分页和过滤 |
+| `POST /api/opportunity-field-evidence/bulk-status` | 跨 Opportunity 批量作废或恢复字段级 evidence，返回逐条处理结果 |
+| `GET /api/opportunity-catalyst-reminders` | 跨 Opportunity 查询催化提醒处理、订阅和取消订阅审计 |
+| `GET /api/opportunity-catalyst-reminders.ics` | 导出当前有效催化提醒订阅的 ICS 日历 |
+| `GET /api/opportunity-pretrade-audit` | 跨 Opportunity 查询交易前确认、催化阻塞和人工 evidence 审计 |
+| `GET /api/opportunity-review-playback` | 跨 Opportunity 查询 Mission、交易前检查、催化、evidence、thesis 和 signal 的复盘时间线，并返回 Outcome Summary 与 Performance / Risk Summary；`backtestTicker/backtestStrategy/backtestFrom/backtestTo` 可单独收窄 Strategy / Risk backtest 样本 |
 | `GET /api/opportunities/graphs/heat-transfer` | Heat Transfer Graph |
 | `POST /api/opportunities/graphs/heat-transfer/sync` | 同步热量传导机会 |
 | `POST /api/opportunities/radar/new-codes/refresh` | 刷新 New Code Radar |
+| `GET /api/opportunities/price-history/diagnostics` | 查询 Opportunity / Watchlist ticker 的价格历史 cache 覆盖率、新鲜度、缺失和 orphan 状态 |
+| `POST /api/opportunities/price-history/refresh` | 从 OpenBB 拉取历史价格并增量合并到 `data/price-history.json`，支持 symbols、limit、force 和 staleAfterHours |
 | `GET /api/opportunities/stream` | Opportunity SSE |
+| `POST /api/opportunities/:id/pretrade-confirmations` | 记录交易前检查人工确认 |
+| `POST /api/opportunities/:id/catalyst-reminders` | 记录催化提醒已处理、稍后处理、恢复、订阅或取消订阅的人工偏好 |
+| `POST /api/opportunities/:id/field-evidence` | 记录单条字段级 evidence |
+| `POST /api/opportunities/:id/field-evidence/batch` | 批量记录字段级 evidence，支持 batchId/clientId 去重、逐条失败结果和部分成功 |
+| `POST /api/opportunities/:id/field-evidence/:evidenceId/invalidate` | 作废字段级 evidence |
+| `POST /api/opportunities/:id/field-evidence/:evidenceId/restore` | 恢复字段级 evidence |
+| `GET /api/opportunity-field-registry` | 字段 registry effective 列表，包含 base 默认值和 override diff |
+| `GET /api/opportunity-field-registry/history` | 字段 registry override 审计历史 |
+| `GET /api/opportunity-field-registry/report` | 字段 registry 差异审计报表，按 group/kind/confidence/changed field 汇总 |
+| `GET /api/opportunity-field-registry/export` | 导出字段 registry overrides、effective registry 和 diff report |
+| `POST /api/opportunity-field-registry/import` | 批量导入字段 registry overrides，支持 dry-run、逐条结果和重复 field 检测 |
+| `PUT /api/opportunity-field-registry/:field` | 新增或更新字段 registry override |
+| `DELETE /api/opportunity-field-registry/:field` | 删除字段 registry override，恢复系统默认 |
+
+列表接口默认保持旧行为，直接返回数组。`GET /api/missions` 和 `GET /api/opportunities` 支持显式分页 envelope：
+
+```text
+?envelope=1&limit=50
+?cursor=<nextCursor>
+?format=page
+```
+
+启用后响应形态：
+
+```json
+{
+  "items": [],
+  "pageInfo": {
+    "limit": 50,
+    "nextCursor": null,
+    "hasMore": false
+  }
+}
+```
+
+前端 API 层已经提供 `PageEnvelope<T>`、`fetchMissionsPage()`、`fetchOpportunitiesPage()` 和 legacy array wrapper。Workbench 当前通过 query hook 消费 Opportunity page envelope，并把轮询快照、SSE 刷新结果和 board health 合并逻辑收口到 `useOpportunityLiveStore`。
 
 ### Queue、Report、Trace、Config API
 
@@ -780,6 +898,18 @@ SQLite 负责可查询状态、索引和事件：
 | `GET /api/health` | 系统健康 |
 | `GET /api/health/services` | 外部服务健康 |
 | `GET /api/diagnostics` | 诊断信息 |
+| `GET /api/diagnostics/db-migrations` | SQLite migration 健康 |
+| `GET /api/diagnostics/missions` | Mission canonical 覆盖率诊断 |
+| `GET /api/diagnostics/mission-artifacts` | Mission artifact 健康 |
+| `GET /api/diagnostics/mission-artifacts/repair-plan` | Mission artifact dry-run 修复建议 |
+| `GET /api/diagnostics/opportunity-field-evidence` | Opportunity field evidence canonical 覆盖率 |
+| `GET /api/diagnostics/opportunity-field-evidence/repair-plan` | Opportunity field evidence 修复队列 dry-run 计划 |
+| `POST /api/diagnostics/mission-artifacts/repair` | 执行安全的 Mission artifact 选择性修复 |
+| `POST /api/diagnostics/missions/backfill` | 补齐历史 Mission canonical rows |
+| `POST /api/diagnostics/mission-artifacts/backfill` | 补齐历史 artifact refs |
+| `POST /api/diagnostics/mission-artifacts/refresh-integrity` | 刷新 artifact integrity metadata |
+| `POST /api/diagnostics/opportunity-field-evidence/backfill` | 补齐历史字段级 evidence canonical rows |
+| `POST /api/diagnostics/opportunity-field-evidence/repair` | 执行安全的 Opportunity field evidence 自动修复 |
 | `GET /api/queue` | 队列状态 |
 | `DELETE /api/queue/:id` | 取消任务 |
 | `POST /api/trigger` | 快速创建 Mission |
@@ -928,6 +1058,36 @@ npm run dev:stack:no-vendors
 
 # 环境检查
 npm run check:dev-env
+
+# SQLite migration registry 检查
+npm run db:migrate:check
+
+# 补齐历史 Mission canonical rows
+npm run db:missions:backfill
+
+# 补齐历史 Mission artifact refs
+npm run db:mission-artifacts:backfill
+
+# 刷新缺失的 Mission artifact integrity metadata
+npm run db:mission-artifacts:refresh
+
+# 把历史 field_evidence_* 事件补齐到 Opportunity field evidence canonical 表
+npm run db:opportunity-field-evidence:backfill
+
+# Dashboard 720/960/1440 视口验收，默认自动启动 Vite 并 mock API
+npm run dashboard:viewport-check
+
+# Workbench 大列表压力档，独立输出报告，避免污染默认 baseline
+npm run dashboard:viewport-check -- --stress-opportunities 500 --out-dir out/viewport-qa-stress-500 --no-trend
+
+# Workbench 连续展开压力档，记录每轮 DOM / 卡片数 / 耗时
+npm run dashboard:viewport-check -- --stress-opportunities 500 --stress-expand-rounds 3 --out-dir out/viewport-qa-stress-expand-500 --no-trend
+
+# Dashboard build size 体积验收，默认先执行 dashboard build
+npm run dashboard:build-size-check
+
+# Dashboard 聚合质量验收，串联 build size 与 viewport 并输出总报告
+npm run dashboard:quality-check
 ```
 
 ## 测试和质量门禁
@@ -937,8 +1097,12 @@ npm run check:dev-env
 ```bash
 npm test
 npm run typecheck
+npm run db:migrate:check
 npm --prefix dashboard run lint
 npm --prefix dashboard run build
+npm run dashboard:viewport-check
+npm run dashboard:build-size-check
+npm run dashboard:quality-check -- --from-existing
 git diff --check
 ```
 
@@ -946,12 +1110,25 @@ git diff --check
 
 | 命令 | 状态 |
 | --- | --- |
-| `npm test` | 39 test files，249 tests passed |
+| `npm test` | 57 test files，451 tests passed |
 | `npm run typecheck` | passed |
+| `npm run db:migrate:check` | passed，12 migrations |
 | `npm --prefix dashboard run lint` | passed |
+| `npm --prefix dashboard run build` | passed |
+| `npm run dashboard:viewport-check` | 93 viewport/page/state checks passed，189/189 interaction checks，0 soft warnings |
+| `npm run dashboard:build-size-check` | 48 assets checked，total gzip 265.2KB，initial JS 76.7KB gzip，0 soft warnings |
+| `npm run dashboard:quality-check` | aggregate status ok，0 hard failures，0 warnings |
 | `git diff --check` | passed |
 
-Dashboard build 可能会提示主 bundle 超过 500 kB。这是 Vite 的体积提醒，不等同于构建失败。后续可以通过页面级 dynamic import 或 chunk splitting 优化。
+Dashboard 已经启用页面级 dynamic import，并把 Opportunity Workbench、Mission Viewer、Command Center、Watchlist、Evidence Center、Catalyst Reminders、Pre-trade Audit、Review Playback、Field Registry、Settings 与 TrendRadar 的 route CSS 拆成独立 chunk；FieldEvidencePanel、MissionRecoveryPanel 和 CatalystReminderStrip 也已从 Workbench 主 chunk 拆成按需懒加载 chunk。共享 workflow/feed/stream/timeline 样式已迁到 `dashboard/src/styles/workflow-shared.css`，app shell 样式已迁到 `dashboard/src/styles/app-shell.css`。Vite/Rolldown chunk splitting 已把 React/Router 固定到 `react-vendor`，并把 Mission Viewer 的 markdown 解析链固定到 `markdown-vendor`，且不会让 `markdown-vendor` 进入首页 initial resources。
+
+`npm run dashboard:viewport-check` 会自动启动本地 Vite、warm up route chunks、mock 核心 API，并检查 Workbench、Command Center、Mission Timeline、Evidence Center、Catalyst Reminders、Pre-trade Audit、Review Playback、Field Registry、TrendRadar、TrendRadar Raw、Mission Viewer、Watchlist、Settings 在 720/960/1440 下的横向溢出、文本溢出和 console error。当前覆盖 93 个 viewport/page/state checks，Interaction Checks 为 189/189，通过 Workbench 大列表、恢复动作、Command Center 诊断、Mission 恢复、Evidence/Field Registry、Pre-trade、Review Playback、TrendRadar Raw 和 Watchlist 的关键交互。
+
+Command Center 诊断异常态已覆盖 DB migrations 降级、Mission canonical backfill、Mission artifacts repair/refresh、Opportunity field evidence repair/backfill/inspect/registry draft、Price History cache 覆盖率/refresh、多按钮无重叠和操作点击。报告会写入 `out/viewport-qa`，并记录 navigation/action/screenshot/inspect 耗时、DOM 节点数、页面高度、渲染卡片数和截图体积。`--stress-opportunities <n>` 可以把 Workbench 压力态切到 500/1000 张，`--stress-expand-rounds <n>` 会额外连续滚动虚拟列表；warning 默认只提示，传入 `--fail-on-warning` 才会变成失败。
+
+`npm run dashboard:build-size-check` 会先执行 dashboard production build，再读取 `dashboard/dist`，把所有 JS/CSS/HTML/image/font 产物的原始体积、gzip 体积、initial resources、largest JS/CSS chunks、tracked chunks 和趋势对比写入 `out/dashboard-build-size/report.json`、`latest.json` 和 `summary.md`。默认 soft warning 包括总 gzip 超过 320KB、总 JS gzip 超过 240KB、initial JS gzip 超过 150KB、最大 JS chunk 超过 90KB、最大 CSS chunk 超过 8KB、React vendor 超过 85KB、markdown vendor 超过 55KB、Opportunity Workbench chunk 超过 45KB、asset 数超过 80，以及 markdown vendor / route chunk / workflow shared chunk 意外进入 initial resources；趋势退化也需要同时满足相对和绝对涨幅。当前 Vite chunk 策略使用 Rolldown `codeSplitting.groups` 并关闭依赖递归吸附，让 `markdown-vendor` 保持在 Mission Viewer 路由加载路径之外，MissionRecoveryPanel 独立为约 1.3KB gzip 的恢复交互 chunk，FieldEvidencePanel 独立为约 7.8KB gzip 的证据交互 chunk，Evidence Center 独立为约 3.1KB gzip 的证据索引 chunk，Field Registry 独立为约 4.8KB gzip 的规则治理 chunk，Catalyst Reminders 独立为约 2.1KB gzip 的提醒审计页 chunk，Pre-trade Audit 独立为约 2.0KB gzip 的交易前审计页 chunk，Review Playback 独立为约 8.1KB gzip 的复盘回放页 chunk，Opportunity Workbench 主 chunk 约 41.5KB gzip，首页 initial JS 约 76.7KB gzip，入口 `index` chunk 约 6.1KB gzip。后续重点是继续扩展页面级视觉 smoke、调优虚拟列表真实卡片高度，以及让 build size 趋势和 viewport 趋势一起进入发布门禁。
+
+`npm run dashboard:quality-check` 会串联 `dashboard:build-size-check` 和 `dashboard:viewport-check`，再把两份报告聚合到 `out/dashboard-quality/report.json` 和 `summary.md`。需要快速查看最近一次结果时可以使用 `npm run dashboard:quality-check -- --from-existing`，它不会重新构建或截图，只汇总已有报告。聚合报告会给出总状态、hard failure、soft warning、initial resources、slowest viewport check 和 warning/failure preview。
 
 ## 项目结构
 
@@ -960,8 +1137,8 @@ Dashboard build 可能会提示主 bundle 超过 500 kB。这是 Vite 的体积�
 ├── src
 │   ├── server
 │   │   ├── app.ts                  # Express app
-│   │   ├── routes                  # API routes
-│   │   ├── services                # Mission/Opportunity service layer
+│   │   ├── routes                  # 按领域拆分的 API routes
+│   │   ├── services                # Mission/Opportunity/Queue/Health/Stream service layer
 │   │   └── validation.ts           # Zod runtime schemas
 │   ├── workflows                   # Mission 和 Opportunity 核心流程
 │   ├── utils                       # task queue、logger、clients、config
@@ -974,13 +1151,14 @@ Dashboard build 可能会提示主 bundle 超过 500 kB。这是 Vite 的体积�
 │   │   ├── pages                   # React 页面
 │   │   ├── queries                 # query hooks
 │   │   ├── hooks                   # SSE / polling hooks
+│   │   ├── styles                  # app shell 与共享 workflow 样式
 │   │   └── api.ts                  # 前端 API client
 │   └── package.json
 ├── config                          # 模型和运行配置
 ├── data                            # watchlist、queue 等本地数据
 ├── docs                            # 技术方案和设计文档
 ├── out                             # mission/report/trace/evidence 产物
-├── scripts                         # 开发栈和环境检查脚本
+├── scripts                         # 开发栈、环境检查、Dashboard 视口验收脚本
 ├── vendors                         # OpenBB / TradingAgents / TrendRadar 等外部能力
 └── docker                          # Docker 相关文件
 ```
@@ -1080,14 +1258,51 @@ npm run dev:stack:no-vendors
 
 - Mission input 入队后保持完整，不丢 `mode / tickers / opportunityId`。
 - TaskQueue 支持 dedupe、idempotency、inputHash、lease/heartbeat 恢复。
+- Mission retry/recovery 已有服务端活跃任务幂等保护：同一 `missionId + depth + opportunityId` 的重复恢复请求会复用已有 pending/running retry，并支持客户端 `Idempotency-Key`。
 - Mission run 有统一状态、阶段、heartbeat、cancel 和 failure 字段。
-- Mission 列表和详情优先走 SQLite index，必要时 fallback 到文件 artifact。
+- Mission 列表和详情优先走 SQLite `missions` canonical table，再 fallback 到旧 index 和文件 artifact。
 - Mission evidence 可以按 run 查询，并校验 mission ownership。
+- Mission 主 artifact、事件日志和 evidence 文件会登记到 `mission_artifacts`，并记录 sha256、size、contentType，后续 trace/report/provenance 可以复用同一个 artifact 入口。
+- 历史 `missions_index` 可以通过 `npm run db:missions:backfill` 或 CommandCenter 的 Backfill 动作补齐到正式 `missions` 表，并修复 latest run/event 引用。
+- Mission canonical coverage diagnostics 会检查 missing canonical row、stale row、orphan row、artifact path mismatch 和 artifact integrity gap。
+- Mission artifact health diagnostics 会检查 missing、unreadable、checksum mismatch、size mismatch 和 metadata gap，并在 CommandCenter 展示。
+- Mission artifact repair plan 会把 artifact 问题分成 automatic、manual review 和 blocked 三类，作为安全修复入口的 dry-run 清单。
+- Mission artifact repair API 默认只执行 automatic 修复；checksum/size mismatch 需要显式 manual review 开关，missing/unreadable 不会自动改。
+- 历史 Mission artifact refs 可以通过 `npm run db:mission-artifacts:backfill` 或 CommandCenter 的 Backfill 动作补齐。
+- 缺失的 artifact integrity metadata 可以通过 `npm run db:mission-artifacts:refresh` 或 CommandCenter 的 Refresh 动作补齐；默认不会覆盖 mismatch。
+- 历史 `field_evidence_recorded/invalidated/restored` 事件可以通过 `npm run db:opportunity-field-evidence:backfill` 或 CommandCenter 的 Field Evidence Backfill 动作补齐到 `opportunity_field_evidence` canonical 表。
+- Opportunity field evidence diagnostics 会检查 missing canonical row、orphan canonical row、status mismatch 和 missing field meta；repair plan 会把问题拆成 automatic / manual review / blocked 三类。自动修复只处理 missing canonical row 和 status mismatch：前者从审计事件重放 canonical row，后者以事件流同步 canonical status；orphan canonical 和缺 field metadata 保留为人工复核。
+- Opportunity Detail 的 Field Evidence 抽屉会汇总同一字段的当前采用值、替代来源和冲突值，避免人工在多条 evidence 里反推系统采信依据。
+- Field Evidence 抽屉支持把替代来源一键带入 Add evidence 草稿，并保留 value/note；冲突字段和单来源低可信字段可以批量生成 manual review 草稿，统一确认后通过批量 API 写入 `field_evidence_recorded` 审计事件和 canonical 表。批量 API 使用 `batchId/clientId` 做幂等去重，返回 recorded / duplicate / failed 的逐条结果，失败草稿会留在前端等待重试。
+- Evidence Center 支持跨 Opportunity 查询 canonical evidence，并可对已选 active evidence 批量作废、对 invalidated evidence 批量恢复；批量状态 API 会校验原因和逐条 item，返回 invalidated / restored / not_found / failed 结果，前端只清理成功或已不存在的选择项。
+- Source Provenance 抽屉区块会按字段聚合来源和字段 evidence，标出 confirmed、weak、missing 和 conflict，优先暴露需要人工复核的来源问题。
+- Opportunity field registry 支持可编辑 override：字段 label、kind、默认 source、默认 confidence 和 note 可以通过 API 或 Field Evidence 抽屉保存/重置，summary、source provenance 和人工 evidence 表单都会消费同一套 effective registry；更新和重置会写入 `opportunity_field_registry_audit`，抽屉会展示当前字段最近 registry 变更。
+- SQLite migration registry 会记录 description、checksum、duration、status 和 error，并提供 `npm run db:migrate:check`；当前显式 registry 为 12 条 migration。
 - Opportunity create/update 使用 Zod strict runtime validation。
 - Opportunity profile、scores、catalystCalendar 在 API 边界做运行时校验。
 - Opportunity 和 Mission 聚合逻辑已开始从 route 下沉到 service layer。
+- Opportunity heat-transfer graph、New Code Radar refresh 和 Opportunity SSE replay/tail 已下沉到 service layer，route 只保留 HTTP 编排。
+- Opportunity events、heat-history 查询和通用 API 错误处理已进入 service/helper 层，query limit 会统一拒绝 `0/-1/NaN` 这类不安全值。
+- API 错误响应已统一为兼容 envelope：保留 `error`，并新增稳定 `code` 和可选 `details`。
+- Mission 和 Opportunity 列表已支持 opt-in pagination envelope；默认数组响应保持兼容。
+- Dashboard API/query 层已接入 `PageEnvelope<T>`，Mission/Opportunity legacy caller 继续拿数组，Workbench Opportunity 查询和 Mission 列表查询开始消费分页响应。
+- Opportunity SSE 到 query refresh 的映射已下沉到 `useOpportunityLiveUpdates`，并有 invalidation map 和 deduped refresh plan 测试覆盖；mission 相关事件会触发 queue/mission list 失效标记，刷新失败会被隔离为 settled result。
+- SSE stream lifecycle 已抽成可测试 controller；Opportunity stream 断线重连会携带 last event replay cursor，并覆盖 pending reconnect cleanup。
+- Workbench 的 Opportunity live state 已下沉到 `useOpportunityLiveStore`，轮询快照不会覆盖更新的 SSE/详情刷新结果，并有 live merge/remove 测试覆盖。
+- Workbench 的 live clock、lane focus、Action Inbox 快捷键已下沉到 `interaction-state` hook，页面主文件只组装数据、动作和视图。
+- Workbench actions 已拆成 creation/detail/mission/automation hooks，`actions.ts` 只保留页面兼容门面；Heat Graph 生成 Relay Opportunity 的字段映射有测试覆盖。
+- Workbench 页面入口已拆成薄入口、`workbench-controller`、`OpportunityWorkbenchView` 和 `WorkbenchSections`：controller 组装数据/动作/派生状态，view 只负责页面顺序，sections 承接 header、control、action/review、creation/feed、board、detail 大区块。
+- Workbench search 现在会生成字段级命中解释，Board 卡片能显示命中标题、标的、论点、任务等来源；Board list 渲染已从 column 中拆出，大列表使用 per-column 虚拟滚动和离屏绘制优化。
+- Workbench draft 和 saved views 的 localStorage 读写已收口到 `workbench-storage` adapter，坏 JSON、无浏览器环境和写入失败都有安全 fallback。
+- Workbench saved views 支持置顶和默认视图；没有显式 URL 查询参数时，默认视图优先于 last view 恢复。
+- Workbench 会把当前搜索、board filter 和 Action Inbox 聚焦泳道保存为 last view；没有显式 URL 查询参数时，下次打开会恢复上次工作区状态，同时保留其它 URL 参数。
+- Queue polling 已进入 `useQueueQuery`，CommandCenter 和 Opportunity Workbench 共享同一套 queue 查询入口；创建、取消、重试和恢复动作会触发 queue refresh。
+- CommandCenter 的 health、service diagnostics、DB migrations、Mission canonical health、Mission artifact health、Mission artifact repair plan、Opportunity field evidence repair plan 和 Opportunity price history diagnostics polling 已进入 `useCommandCenterDiagnostics`。
+- Heat Transfer Graph polling 已进入 `useHeatTransferGraphsQuery`，同步热图后会刷新 graph list 和 board health。
+- API route 已按领域拆出 `health`、`queue`、`mission-diagnostics`、`missions`、`opportunities`、`config`、`artifacts`、`trendradar`，`app.ts` 只负责挂载。
 - Opportunity event 会写入 durable `stream_events`。
 - Opportunity SSE 支持 replay 和跨进程 DB tail。
+- Dashboard SSE helper 已覆盖 replay cursor、lastEventId 优先级和 replay frame 去重。
 - Workbench 有 Action Inbox、board health、detail drawer、mission recovery 和响应式优化。
 
 ## 后续路线
@@ -1103,38 +1318,41 @@ docs/opportunity-runtime-maturity-technical-plan.md
 
 ### Phase 1：API 和存储边界继续收口
 
-- 继续把 `app.ts` 里的 health、queue、trace、report、TrendRadar 拆到独立 route/service。
-- 为 SQLite 引入 migrations table，替代 `ALTER TABLE ... catch {}`。
-- 把 Mission canonical index 扩展为可查询的 mission/event/evidence_ref 主入口。
+- `app.ts` 已完成薄挂载，health、queue、Mission diagnostics、trace/report artifacts、TrendRadar、Opportunity operations/stream/query 都在独立 route/service/helper；API error envelope 与列表 pagination envelope 已有，前端 API/query 层已能消费 Mission/Opportunity page envelope。下一步继续把 pagination/cursor contract 扩到更多列表接口。
+- 所有新增 schema 继续进入 `src/db/migrations.ts` 的显式 registry。
+- 为正式 `missions` 表补 dry-run 修复报告，并继续把 `mission_artifacts` 的人工复核修复做成更明确的 UI 流程。
 - 为 Opportunity create/update 增加更多 domain-level invariant。
 
 ### Phase 2：执行生命周期增强
 
 - 让 cancel 继续向 OpenClaw / TradingAgents / OpenBB 调用链传递 AbortSignal。
 - 增强 run 的 failureCode、degradedFlags 和 recovery suggestion。
-- 增加失败任务恢复 API。
+- 失败任务恢复 API、Workbench 恢复反馈、失败建议、前端重复点击保护、服务端 active retry 幂等、retry recoveryAudit、恢复动作成本提示和基于 `failureCode/degradedFlags` 的恢复诊断已完成；Workbench 会区分主动取消、输入校验、执行超时、依赖服务异常、接口限流、stale 恢复和部分降级，并高亮推荐恢复动作。下一步继续补恢复操作的历史筛选和更细的成本统计。
 - 支持 stale run 自动恢复和 UI 明示。
 
 ### Phase 3：Workbench 查询层重构
 
-- 提取统一 API client。
-- 收敛 SSE store、polling store、local draft 和 URL query 的状态来源。
-- 增加 SSE reconnect 和 cache invalidation 测试。
-- 拆分 Opportunity Workbench 为更小的页面模块。
+- 统一 API client、Mission/Opportunity page envelope wrapper、Mission/Opportunity 列表 query hook、Opportunity live store、Workbench interaction hooks 和 action controller hooks 已有，下一步继续扩 query store 能力。
+- SSE 到 query refresh 的 `useOpportunityLiveUpdates`、live state store、invalidation map、deduped refresh plan、queue/diagnostics/heat graph query hook 已有；draft、saved-view、默认/置顶视图和 last-view/localStorage 已有统一 storage adapter。
+- SSE replay cursor、lastEventId、replay 去重、hook 级 reconnect 和 cache invalidation plan 测试已有。
+- Opportunity Workbench 已拆出薄入口、controller、view composition、layout sections、Board list、搜索命中解释和 per-column 大列表虚拟滚动；下一步继续做搜索/排序解释视觉打磨、虚拟滚动真实数据微调和 query store 能力扩展。
 
 ### Phase 4：证据、解释和复盘能力
 
-- 增加 source provenance。
-- 增加字段级 evidence。
-- 增加机会评分解释器。
-- 增加催化日历提醒。
-- 增加交易前检查清单。
-- 增加策略回测和复盘视图。
+- Source provenance 初版已接入 Opportunity summary 和详情抽屉：从 IPO 字段 evidence、catalyst source/confidence、最新 Mission 和最新 Opportunity event 派生来源摘要；字段 label、kind、source、confidence 的基础规则已收口到 `src/workflows/opportunity-field-registry.ts`，并由 `opportunity_field_registry_overrides` 支持可编辑 override，避免后端汇总、手动 evidence 和前端表单各自猜字段语义。详情抽屉会按 field 聚合 provenance 和 field evidence，显示 adopted value、冲突 value group、source count、confidence 和复核提示；conflict / missing / weak 字段会优先暴露。Registry override 更新/重置已写入 `opportunity_field_registry_audit`，并提供 `/api/opportunity-field-registry/history` 查询。Field Registry 独立页已接入 `/field-registry`：可以搜索、过滤、对比 base/effective diff、编辑 override、重置默认并查看 audit trail；现在也支持全局 diff report、registry JSON 导出，以及 dry-run / apply 批量导入并返回逐条结果。下一步继续把 registry 导入结果和 Evidence Center 的缺失字段修复建议联动。
+- 字段级 evidence 已扩展成统一 summary：覆盖 Opportunity 基础字段、score snapshot、relay/proxy profile、IPO/catalyst source、最新 Mission、最新 event 和人工补充证据，详情抽屉会显示 confirmed/total 与字段覆盖数；score/profile 会在有 latest run evidence 时提供 Mission Viewer `?run=` 深链，latest Mission/event 也会带 artifact 反查入口。详情抽屉现在可以手动给字段记录 evidence/source/confidence/note，并通过 `field_evidence_recorded` 事件进入审计流，同时双写 `opportunity_field_evidence` canonical 表；录错或过期的人工证据可以通过 `field_evidence_invalidated` 作废，summary 会隐藏已作废项但保留审计事件并更新 canonical 状态；被作废的人工证据可以通过 `field_evidence_restored` 恢复，审计视图可按 recorded / invalidated / restored、field、source、confidence 过滤。人工记录表单现在直接使用 summary 中已经归一化的字段 kind，不再用 `scores.*` 这类字符串规则推断；summary 会优先读 canonical rows，旧事件流作为历史 fallback。字段级 review 现在会说明当前采用值、采用原因、冲突值分组、低可信字段和复核提示，并可把替代来源带入 Add evidence 草稿；冲突和低可信字段可以批量生成 manual review 草稿，编辑 source/value/confidence/note 后通过 `POST /api/opportunities/:id/field-evidence/batch` 统一确认写入审计流和 canonical 表。服务端会校验每条草稿、按 `batchId/clientId` 跳过重复写入，并把部分失败结果返回前端；前端会保留失败草稿，用同一个 batch id 重试，避免成功项重复落库。Field Evidence 抽屉可以保存或重置当前字段的 registry 默认 label、kind、source、confidence 和 note，保存后 source provenance、summary 和人工记录表单会统一使用 effective registry；抽屉会显示当前字段最近 registry audit trail。Evidence Center 已接入 `GET /api/opportunity-field-evidence`，可以跨机会按关键词、field、source、status、confidence、kind 分页查询 canonical evidence，并从行内跳转到相关 Opportunity 或最新 Mission；也已接入 `POST /api/opportunity-field-evidence/bulk-status`，支持勾选多条 evidence 后批量作废 active 项或恢复 invalidated 项，并返回逐条结果。Command Center 已接入 Opportunity field evidence repair plan：missing canonical 和 status mismatch 可以自动修复，orphan canonical 与 missing field metadata 会留作人工复核。
+- 机会评分解释器已增强：关键评分因子会优先使用统一 fieldEvidence，缺失时回退 sourceProvenance/profile 数据，卡片和详情抽屉会显示证据来源、可信度、正向/负向/观察方向和相对权重；下一步继续用真实排序数据校准权重。
+- 催化日历提醒已增强：Workbench 详情抽屉会把 missed、overdue、today、soon、missing date、observed、watch 等催化状态转成下一步行动，例如复核错过、今天验证、提前准备、补日期和复盘观察；单机会催化提醒也已按紧急度排序，避免 pre-trade 消费原始日历顺序。提醒现在支持人工“已处理”、“稍后”、“恢复”、“订阅”和“取消订阅”，前端用本地偏好即时隐藏/显示处理状态并保存 3d lead 订阅状态，后端通过 `catalyst_reminder_updated` 写入 Opportunity 事件流，meta 会保留 reminderId、catalyst label、urgency、actionKind、preference、snoozedUntil 和 subscriptionLeadDays；详情抽屉会展示催化提醒 audit trail，Catalyst Reminders 独立页可以跨机会查询偏好审计，并把当前有效订阅导出为 ICS 日历。
+- 交易前检查清单已和催化提醒联动：missed / overdue / missing date 会成为执行前 block，observed / watch 会成为 warn，today / soon 会成为 pass；详情抽屉 QA 已硬断言 missing-date 催化会进入 pre-trade 的 `fill_date` 阻塞项。非 pass 清单项可以在前端本地标记已处理并记录 evidence/source note，并会通过 pre-trade confirmation API 写入 Opportunity 事件流；Opportunity event 查询支持 type filter，详情抽屉会拉取并展示 pre-trade audit trail，人工确认不会覆盖系统自动 readiness。催化提醒偏好也已进入同一事件审计链路，提醒偏好查询页和外部 ICS 日历导出已完成。
+- Review Playback 独立页已接入 `/review-playback`，通过 `GET /api/opportunity-review-playback` 把 Mission 结果、机会事件、交易前检查、催化处理和字段级 evidence 串成复盘时间线，并由服务端聚合 Outcome Summary、risk score、阻塞数、失败任务、evidence 变化、Performance / Risk Summary、逐笔 trade legs、Position sizing、Exit attribution、Execution quality、Plan repair suggestions、Risk backtest、Backtest slices 和 Strategy backtest；价格优先用 price-history cache，缺价格时回退事件 meta 或保留 event-only 复盘腿。Backtest Workspace 已把当前样本折成 readiness score、ready/watch/repair/empty 状态、决策建议和下一步动作；Backtest ticker / strategy family / from / to 已能单独过滤策略/风险回测样本而不改变事件时间线查询结果，常用过滤组合也可保存成本地回测视图。
+- Pre-trade Audit 独立页已接入 `/pretrade`，通过 `GET /api/opportunity-pretrade-audit` 跨机会查询交易前确认、催化阻塞和人工 evidence，并支持 Opportunity、类别、状态和关键词过滤。下一步继续推进 Review Playback 的正式回测/复盘页。
 
 ### Phase 5：前端性能和产品化
 
-- Dashboard code splitting。
-- Workbench 大列表虚拟化。
+- Dashboard code splitting 已有，Opportunity Workbench、Mission Viewer、Command Center、Evidence Center、Catalyst Reminders、Pre-trade Audit、Review Playback、Field Registry、Watchlist、Settings 和 TrendRadar CSS 已拆成 route-level CSS chunk；共享 workflow/feed/stream/timeline 样式已迁到 `dashboard/src/styles/workflow-shared.css`；app shell 样式已迁到 `dashboard/src/styles/app-shell.css`；React/Router 和 markdown 解析链已有稳定 vendor chunk；首屏壳层图标已轻量化，`lucide-react` 不再进入 initial resources；MissionRecoveryPanel 已从 Workbench 主 chunk 拆成低频懒加载 chunk，Workbench 主 chunk 回到 45KB gzip 软阈值以内；Evidence Center、Catalyst Reminders、Pre-trade Audit、Review Playback 和 Field Registry 作为独立 route chunk 进入 viewport smoke；`dashboard:viewport-check`、`dashboard:build-size-check` 和 `dashboard:quality-check` 已作为前端质量门禁。
+- Workbench 大列表已有 per-column 虚拟滚动、滚动位置记忆、动态 row estimate、active row 键盘定位、Enter 打开详情、详情抽屉焦点恢复和 `content-visibility`；viewport QA 已硬断言 drawer 焦点恢复、虚拟卡片 drawer 焦点恢复、active row 导航、Enter 后恢复列表焦点、键盘滚动、filter scope reset 和滚动位置恢复，Workbench 压力态检查为 21/21 通过；Command Center 诊断异常态已覆盖 DB migrations 降级、Mission canonical backfill、Mission artifacts repair/refresh、Opportunity field evidence repair/backfill/inspect/registry draft、Price History cache 覆盖率/refresh、多按钮无重叠和操作点击；Field Registry 已覆盖搜索、overridden scope、base/effective diff、diff report、导出 JSON、dry-run 导入、URL import draft、保存 override 和重置 override；Pre-trade Audit 已覆盖确认项、催化阻塞、人工 evidence、指标卡和过滤交互；Review Playback 已覆盖 Outcome Summary、Performance / Risk Summary、Price cache freshness、Position sizing、Sizing rules、Scaled down、Open exposure、Exit attribution、Risk reduction、Execution quality、Early exit、Plan repairs、Add stop loss、Risk backtest、Backtest slices、Strategy family backtest filter、Saved backtest view save/apply/delete、Relay chain slice、Unfavorable verdict、Trade legs、Partial exit、Mission、Pre-trade、Evidence、Risk 指标和过滤交互；叠加 Workbench 恢复成功/失败动作、恢复成本提示、恢复重复点击保护、Mission 运行中取消、Mission 失败恢复、Mission Timeline 恢复审计/筛选、Workbench source provenance 抽屉断言、field evidence filter/artifact link/record/invalidate/restore/batch draft 断言、score evidence/contribution 抽屉断言、catalyst action 抽屉断言、catalyst reminder preference 审计/恢复/订阅断言、pre-trade catalyst link 断言、manual pre-trade confirmation、审计同步与详情抽屉 audit trail 断言、TrendRadar Raw 搜索/筛选/分页/横向滚动和 Watchlist 搜索/展开/收起后总 Interaction Checks 为 189/189 通过；`--stress-opportunities` 和 `--stress-expand-rounds` 压力档也已支持，当前默认 120 张 mock 机会卡压力态最大 DOM 3577、最多挂载 9 张机会卡，720px 总耗时 4858ms，0 soft warning；后续按真实数据规模继续微调 overscan 和更细的卡片内操作焦点。
+- TrendRadar Raw 已拆出过滤/统计/分页状态 helper，页面支持标题/来源/标签搜索、80 条稳定分页、状态统计条、长标题双行截断、来源/标签紧凑展示和可聚焦横向表格；viewport QA 已覆盖 Raw 正常态、空态和 260 条长表格压力态，并对压力态硬断言初始分页、搜索、状态筛选、下一页和窄屏横向滚动。
+- TrendRadar Hub 已拆出聚合 helper，平台分组不再在渲染中重复 filter，页面补充信号/平台/波次统计、长标题截断和懒加载报告 iframe；Watchlist 已拆出搜索/分组/排序/统计 helper，页面支持代码/名称/趋势/来源搜索、状态统计、稳定排序、价格变化和长理由截断，大分组默认只展示前 9 个并可展开；viewport QA 已覆盖 TrendRadar 72 条长标题压力态和 Watchlist 84 标的大监控池压力态，Watchlist stress 的 720px 页面高度已收敛到 8308px。
 - 响应式继续覆盖 720px、960px、1440px。
 - 优化长标题、窄屏底栏、卡片操作按钮。
 - 给失败、降级、恢复和排序理由做更明确的 UI 表达。

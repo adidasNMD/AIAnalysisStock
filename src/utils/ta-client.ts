@@ -20,15 +20,27 @@ interface RequestOptions {
   signal?: AbortSignal | undefined;
 }
 
-function isExternallyAborted(signal?: AbortSignal): boolean {
-  return Boolean(signal?.aborted);
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getCancelReason(signal);
+  }
 }
 
 function createRequestController(timeoutMs: number, externalSignal?: AbortSignal) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const onAbort = () => controller.abort(externalSignal?.reason);
+  const timeoutId = setTimeout(
+    () => controller.abort(new Error(`TradingAgents request timed out after ${Math.round(timeoutMs / 1000)}s`)),
+    timeoutMs,
+  );
+  const onAbort = () => controller.abort(getCancelReason(externalSignal));
   externalSignal?.addEventListener('abort', onAbort, { once: true });
+  if (externalSignal?.aborted) {
+    onAbort();
+  }
 
   return {
     signal: controller.signal,
@@ -98,9 +110,7 @@ export async function analyzeTicker(
   context?: string,
   options: RequestOptions = {},
 ): Promise<TAAnalysisResult> {
-  if (isExternallyAborted(options.signal)) {
-    throw new Error('Canceled by user');
-  }
+  throwIfCanceled(options.signal);
   const analysisDate: string = date || new Date().toISOString().split('T')[0] || '';
   console.log(`[TradingAgents] 🟢 开始分析: ${ticker} (${analysisDate})`);
 
@@ -134,7 +144,9 @@ export async function analyzeTicker(
       throw new Error(`TradingAgents API 错误 (${response.status}): ${errorBody}`);
     }
 
+    throwIfCanceled(options.signal);
     const result = await response.json();
+    throwIfCanceled(options.signal);
     const duration = Math.round((Date.now() - startTime) / 1000);
 
     // 解析 TradingAgents 的 log_states_dict 到我们的结构
@@ -143,9 +155,7 @@ export async function analyzeTicker(
 
     return parsed;
   } catch (e: any) {
-    if (isExternallyAborted(options.signal)) {
-      throw new Error('Canceled by user');
-    }
+    throwIfCanceled(options.signal);
     const duration = Math.round((Date.now() - startTime) / 1000);
     console.error(`[TradingAgents] ❌ ${ticker} 分析失败 (${duration}s): ${e.message}`);
 
@@ -177,10 +187,14 @@ export async function analyzeMultipleTickers(
   console.log(`[TradingAgents] 🟢 批量分析 ${tickers.length} 只标的: ${tickers.join(', ')}`);
 
   const results: TAAnalysisResult[] = [];
+  throwIfCanceled(options.signal);
   for (let i = 0; i < tickers.length; i++) {
+    throwIfCanceled(options.signal);
     const t = tickers[i]!;
     if (onProgress) onProgress(t, i, tickers.length);
+    throwIfCanceled(options.signal);
     const result = await analyzeTicker(t, date, undefined, options);
+    throwIfCanceled(options.signal);
     results.push(result);
   }
 
@@ -191,19 +205,16 @@ export async function analyzeMultipleTickers(
  * 健康检查：TradingAgents 服务是否在线
  */
 export async function checkTAHealth(options: RequestOptions = {}): Promise<boolean> {
-  if (isExternallyAborted(options.signal)) {
-    throw new Error('Canceled by user');
-  }
+  throwIfCanceled(options.signal);
   const request = createRequestController(5000, options.signal);
   try {
     const response = await fetch(`${TA_BASE_URL}/api/health`, {
       signal: request.signal,
     });
+    throwIfCanceled(options.signal);
     return response.ok;
   } catch {
-    if (isExternallyAborted(options.signal)) {
-      throw new Error('Canceled by user');
-    }
+    throwIfCanceled(options.signal);
     return false;
   } finally {
     request.cleanup();

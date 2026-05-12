@@ -114,6 +114,12 @@ const EVENT_RULES: Record<string, EventRule> = {
     label: '催化临近，检查交易前条件',
     chip: 'CATALYST',
   },
+  catalyst_reminder_updated: {
+    kind: 'execution',
+    tone: 'neutral',
+    label: '催化提醒已人工处理，复盘偏好记录',
+    chip: 'REMINDER',
+  },
 };
 
 function parseTime(value?: string): number {

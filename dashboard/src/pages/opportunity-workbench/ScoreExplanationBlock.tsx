@@ -13,6 +13,19 @@ function factorToneLabel(factor: ScoreExplanationFactor) {
   return 'WATCH';
 }
 
+function contributionValue(factor: ScoreExplanationFactor) {
+  if (!factor.contribution) return '';
+  if (factor.contribution.direction === 'positive') return `+${factor.contribution.weight}`;
+  if (factor.contribution.direction === 'negative') return `-${factor.contribution.weight}`;
+  return `watch ${factor.contribution.weight}`;
+}
+
+function contributionLabel(factor: ScoreExplanationFactor) {
+  if (factor.contribution?.direction === 'positive') return 'Positive driver';
+  if (factor.contribution?.direction === 'negative') return 'Risk drag';
+  return 'Watch factor';
+}
+
 export function ScoreExplanationBlock({ opportunity, compact = false }: ScoreExplanationBlockProps) {
   const explanation = buildScoreExplanation(opportunity);
   const visibleFactors = compact
@@ -24,7 +37,7 @@ export function ScoreExplanationBlock({ opportunity, compact = false }: ScoreExp
     : explanation.factors;
 
   return (
-    <section className={`score-explanation ${compact ? 'compact' : ''}`}>
+    <section className={`score-explanation ${compact ? 'compact' : ''}`} data-score-explanation={opportunity.id}>
       <div className="score-explanation-head">
         <div>
           <span><Gauge size={13} /> Score explanation</span>
@@ -42,12 +55,38 @@ export function ScoreExplanationBlock({ opportunity, compact = false }: ScoreExp
       )}
       <div className="score-explanation-factors">
         {visibleFactors.map((factor) => (
-          <div key={`${opportunity.id}_${factor.id}`} className={`score-factor ${factor.tone}`}>
+          <div
+            key={`${opportunity.id}_${factor.id}`}
+            className={`score-factor ${factor.tone}`}
+            data-score-factor={factor.id}
+          >
             <div className="score-factor-top">
               <span>{factor.label}</span>
               <strong>{factor.value ?? factorToneLabel(factor)}</strong>
             </div>
             <small>{factor.detail}</small>
+            {factor.contribution && (
+              <div
+                className={`score-factor-contribution ${factor.contribution.direction}`}
+                data-score-factor-contribution={factor.id}
+              >
+                <span>{contributionLabel(factor)}</span>
+                <strong>{contributionValue(factor)}</strong>
+              </div>
+            )}
+            {factor.evidence && factor.evidence.length > 0 && (
+              <div className="score-factor-evidence" data-score-factor-evidence={factor.id}>
+                {factor.evidence.slice(0, compact ? 1 : 3).map((evidence) => (
+                  <span key={evidence.id} title={evidence.note || evidence.source || evidence.label}>
+                    {evidence.source || evidence.label}
+                    {evidence.confidence ? ` · ${evidence.confidence}` : ''}
+                  </span>
+                ))}
+                {factor.evidence.length > (compact ? 1 : 3) && (
+                  <span>+{factor.evidence.length - (compact ? 1 : 3)}</span>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>

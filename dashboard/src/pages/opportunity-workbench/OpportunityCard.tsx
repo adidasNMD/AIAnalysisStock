@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { ArrowRight } from 'lucide-react';
 import type { OpportunitySummary, OpportunitySuggestedMission } from '../../api';
 import type { OpportunityStreamEvent } from '../../hooks/useAgentStream';
@@ -6,8 +7,8 @@ import { buildBoardPrimaryAction, buildBoardPriorityReason } from './selectors';
 import { CatalystList } from './CatalystList';
 import { IpoEvidenceBlock } from './IpoEvidenceBlock';
 import { MissionStatusBlock } from './MissionStatusBlock';
-import { MissionRecoveryPanel } from './MissionRecoveryPanel';
 import { OpportunityCardHeader } from './OpportunityCardHeader';
+import { OpportunitySearchMatchBlock } from './OpportunitySearchMatchBlock';
 import { OpportunityPlaybookBlock } from './OpportunityPlaybookBlock';
 import { PreTradeChecklistBlock } from './PreTradeChecklistBlock';
 import { ScoreExplanationBlock } from './ScoreExplanationBlock';
@@ -17,7 +18,13 @@ import { OpportunityTimelineBlock } from './OpportunityTimelineBlock';
 import { ProxyScoreBlock } from './ProxyScoreBlock';
 import { RelayProfileBlock } from './RelayProfileBlock';
 import { SuggestedMissionsBlock } from './SuggestedMissionsBlock';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
+import type { WorkbenchSearchMatch } from './view-state';
+
+const MissionRecoveryPanel = lazy(() => (
+  import('./MissionRecoveryPanel').then((module) => ({ default: module.MissionRecoveryPanel }))
+));
 
 type OpportunityCardProps = {
   opportunity: OpportunitySummary;
@@ -25,6 +32,8 @@ type OpportunityCardProps = {
   rank: number;
   liveNow: number;
   livePriorityEvent?: OpportunityStreamEvent | null;
+  searchMatch?: WorkbenchSearchMatch | null;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
   recoveringMissionActionKey?: string | null;
   onOpenOpportunity: (opportunity: OpportunitySummary) => void;
   onRecoverMission: (opportunity: OpportunitySummary, action: MissionRecoveryAction) => void;
@@ -39,6 +48,8 @@ export function OpportunityCard({
   rank,
   liveNow,
   livePriorityEvent,
+  searchMatch,
+  missionRecoveryActionFeedback,
   recoveringMissionActionKey,
   onOpenOpportunity,
   onRecoverMission,
@@ -50,11 +61,15 @@ export function OpportunityCard({
   const primaryAction = buildBoardPrimaryAction(opportunity, activeMetricKey);
   const liveRankBadge = buildLiveRankBadge(livePriorityEvent, rank, liveNow);
   const extraTemplates = buildExtraTemplates(opportunity, primaryAction.template?.id, 2);
+  const showMissionRecoveryPanel = opportunity.latestMission?.status === 'failed'
+    || opportunity.latestMission?.status === 'canceled'
+    || missionRecoveryActionFeedback?.opportunityId === opportunity.id;
 
   return (
     <article
       key={opportunity.id}
       className={`op-card ${liveRankBadge ? 'live-ranked' : ''} ${liveRankBadge?.state || ''}`}
+      data-opportunity-id={opportunity.id}
     >
       <OpportunityCardHeader
         opportunity={opportunity}
@@ -63,6 +78,7 @@ export function OpportunityCard({
         liveRankBadge={liveRankBadge}
         priorityReason={priorityReason}
       />
+      <OpportunitySearchMatchBlock match={searchMatch} />
       <OpportunityPlaybookBlock opportunity={opportunity} />
       <PreTradeChecklistBlock opportunity={opportunity} compact />
       <ScoreExplanationBlock opportunity={opportunity} compact />
@@ -87,12 +103,18 @@ export function OpportunityCard({
       <OpportunityTickerBlock opportunity={opportunity} />
       <OpportunityStatusNotes opportunity={opportunity} />
       <MissionStatusBlock mission={opportunity.latestMission} diff={opportunity.latestDiff} />
-      <MissionRecoveryPanel
-        opportunity={opportunity}
-        busyActionKey={recoveringMissionActionKey}
-        limit={3}
-        onRecoverMission={onRecoverMission}
-      />
+      {showMissionRecoveryPanel && (
+        <Suspense fallback={null}>
+          <MissionRecoveryPanel
+            opportunity={opportunity}
+            actionFeedback={missionRecoveryActionFeedback}
+            busyActionKey={recoveringMissionActionKey}
+            limit={3}
+            onRecoverMission={onRecoverMission}
+            onOpenMission={onOpenMission}
+          />
+        </Suspense>
+      )}
       <OpportunityTimelineBlock entries={opportunity.recentActionTimeline} />
       {opportunity.playbook && (
         <div className="op-card-detail">
@@ -103,6 +125,7 @@ export function OpportunityCard({
         <button
           type="button"
           className="secondary-btn"
+          data-opportunity-action="details"
           onClick={() => onOpenOpportunity(opportunity)}
         >
           详情 / 编辑

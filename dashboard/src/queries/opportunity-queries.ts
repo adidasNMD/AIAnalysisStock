@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
+  emptyPage,
   fetchOpportunities,
+  fetchOpportunitiesPage,
   fetchOpportunityBoardHealth,
   fetchOpportunityDetail,
   fetchOpportunityEvents,
@@ -10,15 +12,12 @@ import {
   type OpportunityEvent,
   type OpportunityInboxItem,
   type OpportunitySummary,
+  type PageEnvelope,
 } from '../api';
 import { useOpportunityStream, type OpportunityStreamEvent } from '../hooks/useAgentStream';
-import {
-  mergeInboxItem,
-  mergeOpportunitySummary,
-  shouldRefreshInboxItem,
-  shouldRefreshOpportunitySummary,
-} from '../pages/opportunity-workbench/live';
-import { mergeSnapshotPreservingFresh, usePollingQuery } from './query-client';
+import { useOpportunityLiveStore } from './opportunity-live-store';
+import { useOpportunityLiveUpdates } from './opportunity-live-updates';
+import { usePollingQuery } from './query-client';
 
 export function useOpportunityListQuery(limit = 60) {
   return usePollingQuery<OpportunitySummary[]>({
@@ -26,6 +25,15 @@ export function useOpportunityListQuery(limit = 60) {
     fetcher: () => fetchOpportunities(limit),
     intervalMs: 5000,
     initialData: [],
+  });
+}
+
+export function useOpportunityListPageQuery(limit = 60) {
+  return usePollingQuery<PageEnvelope<OpportunitySummary>>({
+    queryKey: `opportunities:list-page:${limit}`,
+    fetcher: () => fetchOpportunitiesPage({ limit }),
+    intervalMs: 5000,
+    initialData: emptyPage<OpportunitySummary>(limit),
   });
 }
 
@@ -78,6 +86,8 @@ export interface OpportunityWorkbenchDataOptions {
   inboxLimit?: number;
   eventLimit?: number;
   streamLimit?: number;
+  refreshQueue?: () => Promise<unknown>;
+  refreshMissionList?: () => Promise<unknown>;
 }
 
 export function useOpportunityWorkbenchData({
@@ -85,50 +95,32 @@ export function useOpportunityWorkbenchData({
   inboxLimit = 10,
   eventLimit = 20,
   streamLimit = 20,
+  refreshQueue,
+  refreshMissionList,
 }: OpportunityWorkbenchDataOptions = {}) {
-  const [liveInbox, setLiveInbox] = useState<OpportunityInboxItem[]>([]);
-  const [liveOpportunities, setLiveOpportunities] = useState<OpportunitySummary[]>([]);
-  const [liveBoardHealth, setLiveBoardHealth] = useState<OpportunityBoardHealthMap | null>(null);
-  const processedInboxEvents = useRef<Set<string>>(new Set());
-  const processedOpportunityEvents = useRef<Set<string>>(new Set());
-
-  const { data: opportunities } = useOpportunityListQuery(opportunityLimit);
+  const { data: opportunityPage } = useOpportunityListPageQuery(opportunityLimit);
   const { data: boardHealth } = useOpportunityBoardHealthQuery(opportunityLimit);
   const { data: inbox } = useOpportunityInboxQuery(inboxLimit);
   const { data: recentEvents } = useOpportunityEventsQuery(eventLimit);
   const { events: streamedEvents, isConnected } = useOpportunityStream(streamLimit);
+  const opportunities = opportunityPage?.items;
+  const opportunityPageInfo = opportunityPage?.pageInfo ?? null;
 
-  useEffect(() => {
-    if (inbox) {
-      setLiveInbox((current) => mergeSnapshotPreservingFresh(current, inbox, inboxLimit));
-    }
-  }, [inbox, inboxLimit]);
-
-  useEffect(() => {
-    if (opportunities) {
-      setLiveOpportunities((current) => (
-        mergeSnapshotPreservingFresh(current, opportunities, opportunityLimit)
-      ));
-    }
-  }, [opportunities, opportunityLimit]);
-
-  useEffect(() => {
-    if (boardHealth) {
-      setLiveBoardHealth(boardHealth);
-    }
-  }, [boardHealth]);
-
-  const upsertInboxItem = useCallback((item: OpportunityInboxItem | null) => {
-    setLiveInbox((current) => mergeInboxItem(current, item, inboxLimit));
-  }, [inboxLimit]);
-
-  const removeInboxItem = useCallback((id: string) => {
-    setLiveInbox((current) => current.filter((item) => item.id !== id));
-  }, []);
-
-  const upsertOpportunity = useCallback((item: OpportunitySummary | null) => {
-    setLiveOpportunities((current) => mergeOpportunitySummary(current, item, opportunityLimit));
-  }, [opportunityLimit]);
+  const {
+    liveInbox,
+    liveOpportunities,
+    liveBoardHealth,
+    setLiveBoardHealth,
+    upsertInboxItem,
+    removeInboxItem,
+    upsertOpportunity,
+  } = useOpportunityLiveStore({
+    inboxSnapshot: inbox,
+    opportunitySnapshot: opportunities,
+    boardHealthSnapshot: boardHealth,
+    inboxLimit,
+    opportunityLimit,
+  });
 
   const refreshInboxItem = useCallback(async (id: string) => {
     const item = await fetchOpportunityInboxItem(id);
@@ -154,26 +146,16 @@ export function useOpportunityWorkbenchData({
       setLiveBoardHealth(next);
     }
     return next;
-  }, [opportunityLimit]);
+  }, [opportunityLimit, setLiveBoardHealth]);
 
-  useEffect(() => {
-    const latestEvent = streamedEvents[0];
-    if (!latestEvent || !shouldRefreshInboxItem(latestEvent)) return;
-    if (processedInboxEvents.current.has(latestEvent.id)) return;
-
-    processedInboxEvents.current.add(latestEvent.id);
-    void refreshInboxItem(latestEvent.opportunityId);
-  }, [refreshInboxItem, streamedEvents]);
-
-  useEffect(() => {
-    const latestEvent = streamedEvents[0];
-    if (!latestEvent || !shouldRefreshOpportunitySummary(latestEvent)) return;
-    if (processedOpportunityEvents.current.has(latestEvent.id)) return;
-
-    processedOpportunityEvents.current.add(latestEvent.id);
-    void refreshOpportunity(latestEvent.opportunityId);
-    void refreshBoardHealth();
-  }, [refreshBoardHealth, refreshOpportunity, streamedEvents]);
+  useOpportunityLiveUpdates({
+    streamedEvents,
+    refreshInboxItem,
+    refreshOpportunity,
+    refreshBoardHealth,
+    refreshQueue,
+    refreshMissionList,
+  });
 
   const eventFeed = useMemo(() => (
     mergeOpportunityEventFeed(streamedEvents, recentEvents || [], 14)
@@ -183,6 +165,7 @@ export function useOpportunityWorkbenchData({
     liveInbox,
     liveOpportunities,
     liveBoardHealth,
+    opportunityPageInfo,
     eventFeed,
     streamedEvents,
     isConnected,

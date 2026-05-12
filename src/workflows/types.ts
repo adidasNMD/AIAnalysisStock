@@ -104,6 +104,100 @@ export interface OpportunityCatalystItem {
   confidence?: OpportunityCatalystConfidence | undefined;
 }
 
+export type OpportunitySourceProvenanceKind = 'ipo_field' | 'catalyst' | 'mission' | 'event';
+export type OpportunitySourceProvenanceConfidence = OpportunityCatalystConfidence | 'unknown';
+
+export interface OpportunitySourceProvenanceItem {
+  id: string;
+  kind: OpportunitySourceProvenanceKind;
+  field: string;
+  label: string;
+  source: string;
+  confidence: OpportunitySourceProvenanceConfidence;
+  value?: string | undefined;
+  note?: string | undefined;
+  observedAt?: string | undefined;
+}
+
+export interface OpportunitySourceProvenanceSummary {
+  total: number;
+  confirmed: number;
+  inferred: number;
+  placeholder: number;
+  unknown: number;
+  sources: string[];
+  latestObservedAt?: string | undefined;
+  items: OpportunitySourceProvenanceItem[];
+}
+
+export type OpportunityFieldEvidenceKind = 'record' | 'profile' | 'score' | 'source' | 'mission' | 'event';
+
+export type OpportunityFieldEvidenceArtifactKind = 'mission' | 'event_log' | 'evidence' | 'trace' | 'report';
+
+export interface OpportunityFieldEvidenceArtifactRef {
+  missionId: string;
+  kind: OpportunityFieldEvidenceArtifactKind;
+  href: string;
+  label: string;
+  runId?: string | undefined;
+  artifactId?: string | undefined;
+  artifactPath?: string | undefined;
+}
+
+export interface OpportunityFieldEvidenceRef {
+  id: string;
+  kind: OpportunityFieldEvidenceKind;
+  field: string;
+  label: string;
+  source: string;
+  confidence: OpportunitySourceProvenanceConfidence;
+  value?: string | undefined;
+  note?: string | undefined;
+  observedAt?: string | undefined;
+  auditEventId?: string | undefined;
+  artifact?: OpportunityFieldEvidenceArtifactRef | undefined;
+}
+
+export interface OpportunityFieldEvidenceSummary {
+  total: number;
+  fields: number;
+  sources: string[];
+  invalidated?: number | undefined;
+  latestObservedAt?: string | undefined;
+  items: OpportunityFieldEvidenceRef[];
+}
+
+export type OpportunityFieldEvidenceStatus = 'active' | 'invalidated';
+
+export interface OpportunityFieldEvidenceRecord {
+  id: string;
+  opportunityId: string;
+  field: string;
+  label: string;
+  kind: OpportunityFieldEvidenceKind;
+  source: string;
+  confidence: OpportunitySourceProvenanceConfidence;
+  status: OpportunityFieldEvidenceStatus;
+  value?: string | undefined;
+  note?: string | undefined;
+  observedAt?: string | undefined;
+  recordedAt: string;
+  updatedAt: string;
+  createdEventId?: string | undefined;
+  invalidatedEventId?: string | undefined;
+  restoredEventId?: string | undefined;
+}
+
+export interface OpportunityFieldEvidenceIndexItem extends OpportunityFieldEvidenceRecord {
+  opportunityTitle: string;
+  opportunityType: OpportunityType;
+  opportunityStage: OpportunityStage;
+  opportunityStatus: OpportunityStatus;
+  opportunityPrimaryTicker?: string | undefined;
+  opportunityLatestMissionId?: string | undefined;
+  opportunityLatestEventAt?: string | undefined;
+}
+
 export interface OpportunityRecord {
   id: string;
   type: OpportunityType;
@@ -161,6 +255,8 @@ export interface OpportunitySummaryRecord extends OpportunityRecord {
   suggestedMission?: OpportunitySuggestedMission | undefined;
   suggestedMissions?: OpportunitySuggestedMission[] | undefined;
   recentActionTimeline?: OpportunityActionTimelineEntry[] | undefined;
+  sourceProvenance?: OpportunitySourceProvenanceSummary | undefined;
+  fieldEvidence?: OpportunityFieldEvidenceSummary | undefined;
 }
 
 export type OpportunityBoardType = Exclude<OpportunityType, 'ad_hoc'>;
@@ -392,7 +488,13 @@ export type OpportunityEventType =
   | 'leader_broken'
   | 'relay_triggered'
   | 'proxy_ignited'
-  | 'catalyst_due';
+  | 'catalyst_due'
+  | 'catalyst_reminder_updated'
+  | 'pretrade_confirmed'
+  | 'pretrade_unconfirmed'
+  | 'field_evidence_recorded'
+  | 'field_evidence_invalidated'
+  | 'field_evidence_restored';
 
 export interface OpportunityEventRecord {
   id: string;

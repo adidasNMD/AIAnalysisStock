@@ -18,3 +18,4 @@ export * from './opportunity-actions';
 export * from './opportunity-ranking';
 export * from './opportunity-board-health';
 export * from './heat-transfer-graph';
+export * from './opportunity-field-registry';

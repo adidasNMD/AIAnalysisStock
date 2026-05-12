@@ -78,6 +78,27 @@ function toMissionRunRecord(row: MissionRunRow): MissionRunRecord {
   };
 }
 
+async function materializeMissionLatestRun(
+  missionId: string,
+  runId: string,
+  updatedAt: string,
+): Promise<void> {
+  const db = await getDb();
+  await db.run(
+    `UPDATE missions
+     SET latestRunId = ?,
+         updatedAt = CASE
+           WHEN updatedAt < ? THEN ?
+           ELSE updatedAt
+         END
+     WHERE id = ?`,
+    runId,
+    updatedAt,
+    updatedAt,
+    missionId,
+  );
+}
+
 async function nextAttempt(missionId: string): Promise<number> {
   const db = await getDb();
   const row = await db.get<{ maxAttempt?: number | null }>(
@@ -105,6 +126,7 @@ export async function createMissionRun(input: CreateMissionRunInput): Promise<Mi
     attempt,
     createdAt,
   );
+  await materializeMissionLatestRun(input.missionId, id, createdAt);
 
   return {
     id,
@@ -169,6 +191,11 @@ export async function updateMissionRun(id: string, updates: UpdateMissionRunInpu
     nextFailureCode,
     nextDegradedFlags ? JSON.stringify(nextDegradedFlags) : null,
     id,
+  );
+  await materializeMissionLatestRun(
+    current.missionId,
+    current.id,
+    nextCompletedAt || nextHeartbeatAt || nextStartedAt || current.createdAt,
   );
 
   return getMissionRun(id);

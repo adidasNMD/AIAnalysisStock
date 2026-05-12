@@ -92,6 +92,7 @@ export function laneForStreamEvent(event: OpportunityStreamEvent): InboxLane | n
     case 'relay_triggered':
     case 'proxy_ignited':
     case 'catalyst_due':
+    case 'catalyst_reminder_updated':
     case 'thesis_upgraded':
     case 'mission_linked':
     case 'mission_queued':
@@ -123,6 +124,8 @@ export function liveSignalLabel(event: OpportunityStreamEvent): string {
       return 'Proxy ignited';
     case 'catalyst_due':
       return 'Catalyst due';
+    case 'catalyst_reminder_updated':
+      return 'Catalyst reminder updated';
     case 'thesis_upgraded':
       return 'Thesis upgraded';
     case 'mission_linked':
@@ -444,6 +447,7 @@ export function shouldRefreshInboxItem(event: OpportunityStreamEvent): boolean {
     'relay_triggered',
     'proxy_ignited',
     'catalyst_due',
+    'catalyst_reminder_updated',
     'mission_failed',
     'mission_canceled',
     'mission_completed',

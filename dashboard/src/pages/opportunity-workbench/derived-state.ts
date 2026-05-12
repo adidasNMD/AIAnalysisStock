@@ -23,7 +23,11 @@ import {
   buildLaneInsight,
   fallbackBoardHealthSummary,
 } from './selectors';
-import { filterOpportunitiesBySearch } from './view-state';
+import {
+  buildOpportunitySearchMatch,
+  filterOpportunitiesBySearch,
+  type WorkbenchSearchMatch,
+} from './view-state';
 import { buildCatalystReminders } from './catalyst-reminders';
 import { buildStrategyReviewDigest } from './review-digest';
 
@@ -62,6 +66,14 @@ export function useOpportunityWorkbenchDerivedState({
     () => filterOpportunitiesBySearch(liveOpportunities || EMPTY_OPPORTUNITIES, searchQuery),
     [liveOpportunities, searchQuery],
   );
+  const opportunitySearchMatches = useMemo(() => {
+    const matches = new Map<string, WorkbenchSearchMatch>();
+    visibleOpportunities.forEach((opportunity) => {
+      const match = buildOpportunitySearchMatch(opportunity, searchQuery);
+      if (match) matches.set(opportunity.id, match);
+    });
+    return matches;
+  }, [searchQuery, visibleOpportunities]);
   const visibleInbox = useMemo(
     () => filterOpportunitiesBySearch(liveInbox || EMPTY_INBOX, searchQuery),
     [liveInbox, searchQuery],
@@ -180,6 +192,7 @@ export function useOpportunityWorkbenchDerivedState({
 
   return {
     visibleOpportunities,
+    opportunitySearchMatches,
     visibleInbox,
     catalystReminders,
     strategyReviewDigest,

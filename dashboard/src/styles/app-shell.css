@@ -1,0 +1,205 @@
+/* ===========================================
+   Sineige Alpha Engine — App Shell Styles
+   =========================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Layout: Sidebar + Main ── */
+
+.spa-root {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: var(--app-sidebar-width);
+  min-width: var(--app-sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.sidebar-brand {
+  padding: 20px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.brand-icon { color: var(--accent-cyan); }
+.brand-text { font-weight: 700; font-size: 1rem; letter-spacing: 2px; color: var(--text-primary); }
+.brand-sub { font-size: 0.6rem; color: var(--text-tertiary); letter-spacing: 1px; width: 100%; padding-left: 28px; margin-top: -4px; }
+
+.nav-items {
+  flex: 1;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-item.active {
+  background: rgba(0, 229, 255, 0.08);
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--glass-border);
+}
+.version-badge {
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.main-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: var(--macro-strip-height);
+}
+
+/* ── Pages ── */
+
+.page {
+  padding: 24px 28px;
+  min-height: 100vh;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+.header-status, .header-count {
+  font-size: 0.8rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.status-dot.ok { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+.status-dot.warn { background: var(--accent-amber); box-shadow: 0 0 6px var(--accent-amber); }
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-tertiary);
+}
+.empty-state p { margin-top: 12px; }
+.empty-state .hint { font-size: 0.8rem; }
+
+.loading-state, .error-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 300px;
+  color: var(--text-tertiary);
+  font-size: 1rem;
+}
+
+@media (max-width: 720px) {
+  :root {
+    --app-sidebar-width: 0px;
+    --macro-strip-height: 96px;
+  }
+
+  .spa-root {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .sidebar {
+    width: 100%;
+    min-width: 100%;
+  }
+
+  .nav-items {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .main-content {
+    overflow: visible;
+  }
+
+  .page {
+    padding: 18px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* ── 底部宏观数据带（始终可见） ── */
+
+.macro-strip {
+  position: fixed;
+  bottom: 0;
+  left: var(--app-sidebar-width);
+  right: 0;
+  min-height: var(--macro-strip-height);
+  background: rgba(10, 10, 13, 0.95);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  padding: 0 24px;
+  z-index: 100;
+}
+.macro-item { display: flex; align-items: center; gap: 6px; }
+.macro-label { font-size: 0.65rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
+.macro-value { font-size: 0.8rem; font-family: var(--font-mono); color: var(--text-primary); }
+
+@media (max-width: 720px) {
+  .macro-strip {
+    height: auto;
+    min-height: 48px;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 8px max(18px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  }
+
+  .main-content {
+    padding-bottom: var(--macro-strip-height);
+  }
+}
+
+/* ── Animations ── */
+
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.pulse { animation: pulse 1.5s ease-in-out infinite; }

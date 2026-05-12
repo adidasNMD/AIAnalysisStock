@@ -2,21 +2,38 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Crosshair, Rocket, Activity, Search, BarChart3, RefreshCw } from 'lucide-react';
 import {
+  backfillCanonicalMissions,
+  backfillMissionArtifacts,
+  backfillOpportunityFieldEvidence,
   cancelMission,
   createMission,
-  fetchDiagnostics,
-  fetchHealth,
-  fetchMissions,
-  fetchQueue,
   recoverQueueTask,
   recoverStaleQueueTasks,
+  refreshMissionArtifactIntegrity,
+  repairMissionArtifacts,
+  repairOpportunityFieldEvidence,
+  refreshOpportunityPriceHistory,
   retryMission,
 } from '../api';
-import type { HealthStatus, MissionSummary, TaskQueueResponse, DiagnosticsResult } from '../api';
-import { useAgentStream, usePolling } from '../hooks/useAgentStream';
+import type {
+  DiagnosticsResult,
+  ImportOpportunityFieldRegistryItem,
+  MissionSummary,
+  OpportunityFieldEvidenceRepairAction,
+  TaskQueueResponse,
+} from '../api';
+import { useAgentStream } from '../hooks/useAgentStream';
+import { useCommandCenterDiagnostics } from '../queries/diagnostics-queries';
+import { useMissionListQuery } from '../queries/mission-queries';
+import {
+  DEFAULT_STALE_TASK_THRESHOLD_MS,
+  isQueueTaskStale,
+  recoverableQueueTasks,
+  useQueueQuery,
+} from '../queries/queue-queries';
 import { getFailureCodeInfo } from '../utils/recovery';
-
-const STALE_TASK_THRESHOLD_MS = 2 * 60 * 1000;
+import '../styles/workflow-shared.css';
+import './command-center.css';
 
 function missionStatusBadge(status: string) {
   switch (status) {
@@ -45,6 +62,43 @@ function missionDiffBadge(diff?: MissionSummary['latestDiff']) {
     : { label: 'STABLE', tone: 'stable' as const };
 }
 
+function evidenceRepairSearchUrl(action: OpportunityFieldEvidenceRepairAction) {
+  const params = new URLSearchParams();
+  if (action.evidenceId) params.set('q', action.evidenceId);
+  if (action.field) params.set('field', action.field);
+  if (action.canonicalStatus) params.set('status', action.canonicalStatus);
+  return `/evidence?${params.toString()}`;
+}
+
+function registryDraftField(action: OpportunityFieldEvidenceRepairAction) {
+  const fallback = action.evidenceId || action.opportunityId || 'manual-field';
+  const compact = fallback
+    .replace(/[^a-zA-Z0-9]+/g, '.')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 48);
+  return `custom.${compact || 'manualField'}`;
+}
+
+function registryDraftUrl(action: OpportunityFieldEvidenceRepairAction) {
+  const item: ImportOpportunityFieldRegistryItem = {
+    field: action.field || registryDraftField(action),
+    label: action.field || 'Recovered evidence field',
+    kind: 'source',
+    source: 'manual_event_repair',
+    confidence: 'unknown',
+    note: [
+      `Diagnostic draft for ${action.issueCode}.`,
+      action.evidenceId ? `Evidence: ${action.evidenceId}.` : '',
+      action.opportunityId ? `Opportunity: ${action.opportunityId}.` : '',
+      action.reason,
+    ].filter(Boolean).join(' '),
+  };
+  const params = new URLSearchParams({
+    importDraft: JSON.stringify({ items: [item] }),
+  });
+  return `/field-registry?${params.toString()}`;
+}
+
 export function CommandCenter() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<'explore' | 'analyze'>('explore');
@@ -54,24 +108,38 @@ export function CommandCenter() {
   const [cancelingTaskId, setCancelingTaskId] = useState<string | null>(null);
   const [recoveringTaskId, setRecoveringTaskId] = useState<string | null>(null);
   const [recoveringStale, setRecoveringStale] = useState(false);
+  const [backfillingMissions, setBackfillingMissions] = useState(false);
+  const [backfillingArtifacts, setBackfillingArtifacts] = useState(false);
+  const [backfillingFieldEvidence, setBackfillingFieldEvidence] = useState(false);
+  const [repairingArtifacts, setRepairingArtifacts] = useState(false);
+  const [repairingFieldEvidence, setRepairingFieldEvidence] = useState(false);
+  const [refreshingPriceHistory, setRefreshingPriceHistory] = useState(false);
+  const [refreshingArtifactIntegrity, setRefreshingArtifactIntegrity] = useState(false);
   const [retryingMissionId, setRetryingMissionId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const { logs, isConnected } = useAgentStream(80);
-
-  const { data: health } = usePolling<HealthStatus>(() => fetchHealth(), 5000, []);
-  const { data: queue } = usePolling<TaskQueueResponse>(() => fetchQueue(), 3000, []);
-  const { data: diagnostics } = usePolling<DiagnosticsResult | null>(() => fetchDiagnostics(), 10000, []);
-  const { data: recentMissions } = usePolling<MissionSummary[]>(() => fetchMissions(8), 5000, []);
+  const { data: queue, refresh: refreshQueue } = useQueueQuery();
+  const { data: recentMissions } = useMissionListQuery(8);
+  const {
+    health: { data: health },
+    services: { data: diagnostics },
+    dbMigrations: { data: dbMigrations },
+    missionCanonical: { data: missionCanonicalHealth },
+    missionArtifacts: { data: missionArtifactHealth },
+    missionArtifactRepairPlan: { data: missionArtifactRepairPlan },
+    opportunityFieldEvidence: { data: opportunityFieldEvidenceHealth },
+    opportunityFieldEvidenceRepairPlan: { data: opportunityFieldEvidenceRepairPlan },
+    opportunityPriceHistory: { data: opportunityPriceHistoryHealth, refresh: refreshPriceHistoryDiagnostics },
+  } = useCommandCenterDiagnostics();
 
   const isExecuting = queue?.tasks.some(t => t.status === 'running');
   const runningTask = queue?.tasks.find(t => t.status === 'running');
   const isTaskStale = (task: TaskQueueResponse['tasks'][number]) => (
-    task.status === 'running'
-    && (!task.heartbeatAt || currentTime - task.heartbeatAt > STALE_TASK_THRESHOLD_MS)
+    isQueueTaskStale(task, currentTime, DEFAULT_STALE_TASK_THRESHOLD_MS)
   );
   const staleRunningTasks = (queue?.tasks || []).filter(isTaskStale);
-  const recoverableQueueTasks = (queue?.tasks || []).filter((task) => ['failed', 'canceled'].includes(task.status));
+  const recoverableTasks = recoverableQueueTasks(queue);
   const liveMissions = (recentMissions || []).filter((mission) => ['queued', 'main_running', 'ta_running'].includes(mission.status));
   const attentionMissions = (recentMissions || []).filter((mission) => ['failed', 'canceled', 'main_only'].includes(mission.status));
   const readyMissions = (recentMissions || []).filter((mission) => mission.status === 'fully_enriched');
@@ -94,6 +162,14 @@ export function CommandCenter() {
       return bTime.localeCompare(aTime);
     })
     .slice(0, 6);
+  const fieldEvidenceManualAction = opportunityFieldEvidenceRepairPlan?.sampledActions.find((action) => (
+    action.issueCode === 'missing_field'
+  )) || opportunityFieldEvidenceRepairPlan?.sampledActions.find((action) => action.safety !== 'automatic');
+  const priceHistoryIssues = (opportunityPriceHistoryHealth?.metrics.missing || 0)
+    + (opportunityPriceHistoryHealth?.metrics.stale || 0);
+  const priceHistoryStatus = opportunityPriceHistoryHealth
+    ? priceHistoryIssues > 0 ? 'warning' : 'ok'
+    : 'offline';
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(Date.now()), 3000);
@@ -107,6 +183,7 @@ export function CommandCenter() {
     setSubmitError(null);
     try {
       const mission = await createMission(mode, query, undefined, depth);
+      void refreshQueue();
       setQuery('');
       navigate(`/missions/${mission.missionId}`);
     } catch (error) {
@@ -123,6 +200,8 @@ export function CommandCenter() {
       const canceled = await cancelMission(taskId);
       if (!canceled) {
         setSubmitError('任务取消失败');
+      } else {
+        void refreshQueue();
       }
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : '任务取消失败');
@@ -136,6 +215,7 @@ export function CommandCenter() {
     setSubmitError(null);
     try {
       await retryMission(missionId, depth);
+      void refreshQueue();
       navigate(`/missions/${missionId}`);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : '任务重试失败');
@@ -149,6 +229,7 @@ export function CommandCenter() {
     setSubmitError(null);
     try {
       const recovered = await recoverQueueTask(taskId);
+      void refreshQueue();
       if (recovered.missionId) {
         navigate(`/missions/${recovered.missionId}`);
       }
@@ -163,7 +244,8 @@ export function CommandCenter() {
     setRecoveringStale(true);
     setSubmitError(null);
     try {
-      const result = await recoverStaleQueueTasks(STALE_TASK_THRESHOLD_MS);
+      const result = await recoverStaleQueueTasks(DEFAULT_STALE_TASK_THRESHOLD_MS);
+      void refreshQueue();
       if (result.totalRecovered === 0) {
         setSubmitError(result.skippedActiveTaskIds.length > 0
           ? '检测到本进程仍在执行的任务，暂不自动恢复'
@@ -173,6 +255,120 @@ export function CommandCenter() {
       setSubmitError(error instanceof Error ? error.message : '卡住任务恢复失败');
     }
     setRecoveringStale(false);
+  };
+
+  const handleBackfillMissionArtifacts = async () => {
+    if (backfillingArtifacts) return;
+    setBackfillingArtifacts(true);
+    setSubmitError(null);
+    try {
+      const result = await backfillMissionArtifacts();
+      if (result.totalArtifactsUpserted === 0) {
+        setSubmitError('没有需要补齐的 Mission artifact 引用');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Mission artifact 补齐失败');
+    }
+    setBackfillingArtifacts(false);
+  };
+
+  const handleBackfillCanonicalMissions = async () => {
+    if (backfillingMissions) return;
+    setBackfillingMissions(true);
+    setSubmitError(null);
+    try {
+      const result = await backfillCanonicalMissions();
+      if (result.inserted + result.refreshed === 0) {
+        setSubmitError('没有需要补齐的 Mission canonical rows');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Mission canonical backfill 失败');
+    }
+    setBackfillingMissions(false);
+  };
+
+  const handleBackfillOpportunityFieldEvidence = async () => {
+    if (backfillingFieldEvidence) return;
+    setBackfillingFieldEvidence(true);
+    setSubmitError(null);
+    try {
+      const result = await backfillOpportunityFieldEvidence();
+      if (result.inserted + result.refreshed === 0) {
+        setSubmitError('没有需要补齐的 Opportunity field evidence rows');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Opportunity field evidence backfill 失败');
+    }
+    setBackfillingFieldEvidence(false);
+  };
+
+  const handleRepairOpportunityFieldEvidence = async () => {
+    if (repairingFieldEvidence) return;
+    setRepairingFieldEvidence(true);
+    setSubmitError(null);
+    try {
+      const result = await repairOpportunityFieldEvidence();
+      if (result.applied === 0) {
+        setSubmitError(result.skippedManualReview > 0 || result.blocked > 0
+          ? '没有可自动修复的 Field Evidence，剩余项需要人工复核'
+          : '没有需要修复的 Field Evidence');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Field Evidence 自动修复失败');
+    }
+    setRepairingFieldEvidence(false);
+  };
+
+  const handleRefreshMissionArtifactIntegrity = async () => {
+    if (refreshingArtifactIntegrity) return;
+    setRefreshingArtifactIntegrity(true);
+    setSubmitError(null);
+    try {
+      const result = await refreshMissionArtifactIntegrity(false);
+      if (result.refreshed === 0) {
+        setSubmitError(result.skippedMismatches > 0
+          ? '检测到 artifact mismatch，已跳过自动覆盖'
+          : '没有需要刷新的 artifact 元数据');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Mission artifact 元数据刷新失败');
+    }
+    setRefreshingArtifactIntegrity(false);
+  };
+
+  const handleRepairMissionArtifacts = async () => {
+    if (repairingArtifacts) return;
+    setRepairingArtifacts(true);
+    setSubmitError(null);
+    try {
+      const result = await repairMissionArtifacts(undefined, false);
+      if (result.applied === 0) {
+        setSubmitError(result.skippedManualReview > 0 || result.blocked > 0
+          ? '没有可自动修复的 artifact，剩余项需要人工复核或恢复文件'
+          : '没有需要修复的 Mission artifact');
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Mission artifact 自动修复失败');
+    }
+    setRepairingArtifacts(false);
+  };
+
+  const handleRefreshPriceHistory = async () => {
+    if (refreshingPriceHistory) return;
+    setRefreshingPriceHistory(true);
+    setSubmitError(null);
+    try {
+      const result = await refreshOpportunityPriceHistory({ staleAfterHours: 24 });
+      void refreshPriceHistoryDiagnostics();
+      if (result.refreshed === 0 && result.skippedFresh > 0 && result.failed === 0) {
+        setSubmitError('Price history cache 已经是最新的');
+      } else if (result.failed > 0) {
+        setSubmitError(`Price history refresh 有 ${result.failed} 个 ticker 失败，请检查 OpenBB`);
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Price history refresh 失败');
+    }
+    setRefreshingPriceHistory(false);
   };
 
   const openMissionCompare = (mission: MissionSummary) => {
@@ -209,7 +405,12 @@ export function CommandCenter() {
           const probe = diagnostics?.probes?.[srv.key as keyof DiagnosticsResult['probes']];
           const statusClass = probe ? probe.status : 'offline';
           return (
-            <div key={srv.key} className={`service-card ${statusClass}`} title={probe?.details || 'N/A'}>
+            <div
+              key={srv.key}
+              className={`service-card ${statusClass}`}
+              title={probe?.details || 'N/A'}
+              data-command-service={srv.key}
+            >
               <div className="service-dot" />
               <div className="service-name">{srv.label}</div>
               <div className="service-port">{probe?.latency ? `${probe.latency}ms` : ''}</div>
@@ -217,6 +418,210 @@ export function CommandCenter() {
             </div>
           );
         })}
+        <div
+          className={`service-card ${dbMigrations?.status || 'offline'}`}
+          title={dbMigrations
+            ? `${dbMigrations.applied}/${dbMigrations.total} applied · failed ${dbMigrations.failed} · missing ${dbMigrations.missing} · checksum ${dbMigrations.mismatched}`
+            : 'N/A'}
+          data-command-service="db-migrations"
+        >
+          <div className="service-dot" />
+          <div className="service-name">DB Migrations</div>
+          <div className="service-port">
+            {dbMigrations ? `${dbMigrations.applied}/${dbMigrations.total}` : ''}
+          </div>
+          {dbMigrations?.status === 'degraded' && <div className="probe-error-hint">Hover for details</div>}
+        </div>
+        <div
+          className={`service-card ${missionCanonicalHealth?.status || 'offline'}`}
+          title={missionCanonicalHealth
+            ? `${missionCanonicalHealth.covered}/${missionCanonicalHealth.indexTotal} covered · missing ${missionCanonicalHealth.missingCanonical} · stale ${missionCanonicalHealth.staleCanonical} · orphan ${missionCanonicalHealth.orphanCanonical} · metadata ${missionCanonicalHealth.integrityMissing}`
+            : 'N/A'}
+          data-command-service="mission-canonical"
+        >
+          <div className="service-dot" />
+          <div className="service-name">Mission Canonical</div>
+          <div className="service-port">
+            {missionCanonicalHealth ? `${missionCanonicalHealth.covered}/${missionCanonicalHealth.indexTotal}` : ''}
+          </div>
+          {missionCanonicalHealth?.status !== 'ok' && missionCanonicalHealth && <div className="probe-error-hint">Hover for details</div>}
+          {missionCanonicalHealth && missionCanonicalHealth.status !== 'ok' && (
+            <div className="service-actions">
+              <button
+                type="button"
+                className="service-card-action"
+                onClick={handleBackfillCanonicalMissions}
+                disabled={backfillingMissions}
+                title="Backfill canonical Mission rows"
+                data-command-action="backfill-canonical"
+              >
+                <RefreshCw size={10} className={backfillingMissions ? 'spin' : undefined} />
+                {backfillingMissions ? 'Backfilling' : 'Backfill'}
+              </button>
+            </div>
+          )}
+        </div>
+        <div
+          className={`service-card ${missionArtifactHealth?.status || 'offline'}`}
+          title={missionArtifactHealth
+            ? `${missionArtifactHealth.present}/${missionArtifactHealth.total} present · missing ${missionArtifactHealth.missing} · hash ${missionArtifactHealth.checksumMismatch} · size ${missionArtifactHealth.sizeMismatch} · metadata ${missionArtifactHealth.integrityMissing} · repair ${missionArtifactRepairPlan?.automaticActions || 0} auto / ${missionArtifactRepairPlan?.manualReviewActions || 0} review / ${missionArtifactRepairPlan?.blockedActions || 0} blocked`
+            : 'N/A'}
+          data-command-service="mission-artifacts"
+        >
+          <div className="service-dot" />
+          <div className="service-name">Mission Artifacts</div>
+          <div className="service-port">
+            {missionArtifactHealth
+              ? missionArtifactRepairPlan?.totalActions
+                ? `${missionArtifactRepairPlan.automaticActions}/${missionArtifactRepairPlan.totalActions} fix`
+                : `${missionArtifactHealth.present}/${missionArtifactHealth.total}`
+              : ''}
+          </div>
+          {(Boolean(missionArtifactRepairPlan?.automaticActions)
+            || missionArtifactHealth?.status === 'warning'
+            || missionArtifactHealth?.status === 'degraded') && (
+            <div className="service-actions">
+              {Boolean(missionArtifactRepairPlan?.automaticActions) && (
+                <button
+                  type="button"
+                  className="service-card-action"
+                  onClick={handleRepairMissionArtifacts}
+                  disabled={repairingArtifacts}
+                  title="Apply automatic Mission artifact repairs"
+                  data-command-action="repair-artifacts"
+                >
+                  <RefreshCw size={10} className={repairingArtifacts ? 'spin' : undefined} />
+                  {repairingArtifacts ? 'Repairing' : 'Repair'}
+                </button>
+              )}
+              {missionArtifactHealth?.status === 'warning' && (
+                <button
+                  type="button"
+                  className="service-card-action"
+                  onClick={handleRefreshMissionArtifactIntegrity}
+                  disabled={refreshingArtifactIntegrity}
+                  title="Refresh missing artifact integrity metadata"
+                  data-command-action="refresh-artifact-integrity"
+                >
+                  <RefreshCw size={10} className={refreshingArtifactIntegrity ? 'spin' : undefined} />
+                  {refreshingArtifactIntegrity ? 'Refreshing' : 'Refresh'}
+                </button>
+              )}
+              {missionArtifactHealth?.status === 'degraded' && (
+                <button
+                  type="button"
+                  className="service-card-action"
+                  onClick={handleBackfillMissionArtifacts}
+                  disabled={backfillingArtifacts}
+                  title="Backfill Mission artifact refs"
+                  data-command-action="backfill-artifacts"
+                >
+                  <RefreshCw size={10} className={backfillingArtifacts ? 'spin' : undefined} />
+                  {backfillingArtifacts ? 'Backfilling' : 'Backfill'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <div
+          className={`service-card ${opportunityFieldEvidenceHealth?.status || 'offline'}`}
+          title={opportunityFieldEvidenceHealth
+            ? `${opportunityFieldEvidenceHealth.covered}/${opportunityFieldEvidenceHealth.recordedEvents} covered · canonical ${opportunityFieldEvidenceHealth.canonicalRows} · missing ${opportunityFieldEvidenceHealth.missingCanonical} · orphan ${opportunityFieldEvidenceHealth.orphanCanonical} · mismatch ${opportunityFieldEvidenceHealth.statusMismatch} · repair ${opportunityFieldEvidenceRepairPlan?.automaticActions || 0} auto / ${opportunityFieldEvidenceRepairPlan?.manualReviewActions || 0} review / ${opportunityFieldEvidenceRepairPlan?.blockedActions || 0} blocked`
+            : 'N/A'}
+          data-command-service="opportunity-field-evidence"
+        >
+          <div className="service-dot" />
+          <div className="service-name">Field Evidence</div>
+          <div className="service-port">
+            {opportunityFieldEvidenceHealth
+              ? `${opportunityFieldEvidenceHealth.covered}/${opportunityFieldEvidenceHealth.recordedEvents}`
+              : ''}
+          </div>
+          {opportunityFieldEvidenceHealth?.status !== 'ok' && opportunityFieldEvidenceHealth && (
+            <>
+              <div className="probe-error-hint">Hover for details</div>
+              <div className="service-actions">
+                {(opportunityFieldEvidenceRepairPlan?.automaticActions || 0) > 0 && (
+                  <button
+                    type="button"
+                    className="service-card-action"
+                    onClick={handleRepairOpportunityFieldEvidence}
+                    disabled={repairingFieldEvidence}
+                    title="Apply automatic Field Evidence repairs"
+                    data-command-action="repair-field-evidence"
+                  >
+                    <RefreshCw size={10} className={repairingFieldEvidence ? 'spin' : undefined} />
+                    {repairingFieldEvidence ? 'Repairing' : 'Repair'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="service-card-action"
+                  onClick={handleBackfillOpportunityFieldEvidence}
+                  disabled={backfillingFieldEvidence}
+                  title="Backfill Opportunity field evidence canonical rows"
+                  data-command-action="backfill-field-evidence"
+                >
+                  <RefreshCw size={10} className={backfillingFieldEvidence ? 'spin' : undefined} />
+                  {backfillingFieldEvidence ? 'Backfilling' : 'Backfill'}
+                </button>
+                {fieldEvidenceManualAction && (
+                  <>
+                    <button
+                      type="button"
+                      className="service-card-action"
+                      onClick={() => navigate(evidenceRepairSearchUrl(fieldEvidenceManualAction))}
+                      title="Open Evidence Center with this repair issue pre-filtered"
+                      data-command-action="inspect-field-evidence"
+                    >
+                      Inspect
+                    </button>
+                    <button
+                      type="button"
+                      className="service-card-action"
+                      onClick={() => navigate(registryDraftUrl(fieldEvidenceManualAction))}
+                      title="Create a Field Registry import draft for manual field metadata repair"
+                      data-command-action="draft-field-registry"
+                    >
+                      Registry Draft
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        <div
+          className={`service-card ${priceHistoryStatus}`}
+          title={opportunityPriceHistoryHealth
+            ? `${opportunityPriceHistoryHealth.metrics.fresh}/${opportunityPriceHistoryHealth.metrics.tracked} fresh · stale ${opportunityPriceHistoryHealth.metrics.stale} · missing ${opportunityPriceHistoryHealth.metrics.missing} · orphan ${opportunityPriceHistoryHealth.metrics.orphan} · points ${opportunityPriceHistoryHealth.metrics.totalPoints}`
+            : 'N/A'}
+          data-command-service="opportunity-price-history"
+        >
+          <div className="service-dot" />
+          <div className="service-name">Price History</div>
+          <div className="service-port">
+            {opportunityPriceHistoryHealth
+              ? `${opportunityPriceHistoryHealth.metrics.coveragePct}%`
+              : ''}
+          </div>
+          {opportunityPriceHistoryHealth && (
+            <div className="service-actions">
+              {priceHistoryIssues > 0 && <div className="probe-error-hint">Hover for details</div>}
+              <button
+                type="button"
+                className="service-card-action"
+                onClick={handleRefreshPriceHistory}
+                disabled={refreshingPriceHistory}
+                title="Refresh missing or stale price history from OpenBB"
+                data-command-action="refresh-price-history"
+              >
+                <RefreshCw size={10} className={refreshingPriceHistory ? 'spin' : undefined} />
+                {refreshingPriceHistory ? 'Refreshing' : 'Refresh'}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 双模式触发器 */}
@@ -255,7 +660,15 @@ export function CommandCenter() {
             ? '探索模式：OpenClaw 先推导标的 → 然后 TradingAgents 接力分析'
             : '分析模式：两个大脑同时启动，独立分析同一只票'}
         </div>
-        {submitError && <div className="mode-hint" style={{ color: 'var(--accent-crimson)', marginTop: '8px' }}>{submitError}</div>}
+        {submitError && (
+          <div
+            className="mode-hint"
+            style={{ color: 'var(--accent-crimson)', marginTop: '8px' }}
+            data-command-submit-error
+          >
+            {submitError}
+          </div>
+        )}
       </div>
 
       {/* 活跃任务 */}
@@ -491,7 +904,7 @@ export function CommandCenter() {
             </button>
           </div>
         ))}
-        {recoverableQueueTasks.slice(0, 5).map(task => {
+        {recoverableTasks.slice(0, 5).map(task => {
           const failureInfo = getFailureCodeInfo(task.failureCode);
           return (
             <div
