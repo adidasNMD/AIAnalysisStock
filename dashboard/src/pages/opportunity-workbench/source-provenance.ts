@@ -151,24 +151,31 @@ export function buildSourceProvenanceInspection(
   limit = 4,
 ): SourceProvenanceInspection | null {
   const provenance = opportunity.sourceProvenance;
-  if (!provenance || provenance.total === 0) return null;
+  const fieldEvidenceItems = opportunity.fieldEvidence?.items || [];
+  if ((!provenance || provenance.total === 0) && fieldEvidenceItems.length === 0) return null;
 
   const evidenceByField = new Map<string, OpportunityFieldEvidenceRef[]>();
-  for (const evidence of opportunity.fieldEvidence?.items || []) {
+  for (const evidence of fieldEvidenceItems) {
     const items = evidenceByField.get(evidence.field) || [];
     items.push(evidence);
     evidenceByField.set(evidence.field, items);
   }
 
   const provenanceByField = new Map<string, OpportunitySourceProvenanceItem[]>();
-  for (const item of provenance.items) {
+  for (const item of provenance?.items || []) {
     const items = provenanceByField.get(item.field) || [];
     items.push(item);
     provenanceByField.set(item.field, items);
   }
 
-  const rows = [...provenanceByField.entries()]
-    .map(([field, provenanceItems]): SourceProvenanceFieldInspection => {
+  const fields = new Set<string>([
+    ...provenanceByField.keys(),
+    ...evidenceByField.keys(),
+  ]);
+
+  const rows = [...fields]
+    .map((field): SourceProvenanceFieldInspection => {
+      const provenanceItems = provenanceByField.get(field) || [];
       const evidenceItems = evidenceByField.get(field) || [];
       const allItems = [...provenanceItems, ...evidenceItems];
       const values = new Set(allItems.map(itemValue).filter(Boolean));

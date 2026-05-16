@@ -1,4 +1,3 @@
-import { FileSearch, ShieldCheck } from 'lucide-react';
 import type { OpportunitySummary, OpportunitySourceProvenanceItem } from '../../api';
 import { catalystConfidenceLabel } from './model';
 import {
@@ -42,9 +41,14 @@ function statusTone(status: SourceProvenanceFieldStatus) {
 
 export function SourceProvenanceBlock({ opportunity, limit = 5 }: SourceProvenanceBlockProps) {
   const provenance = opportunity.sourceProvenance;
-  if (!provenance || provenance.total === 0) return null;
   const fieldEvidence = opportunity.fieldEvidence;
+  if ((!provenance || provenance.total === 0) && (!fieldEvidence || fieldEvidence.total === 0)) return null;
   const inspection = buildSourceProvenanceInspection(opportunity, 4);
+  const activeProvenance = provenance && provenance.total > 0 ? provenance : null;
+  const confirmedTotal = activeProvenance ? activeProvenance.total : fieldEvidence?.total || 0;
+  const confirmedCount = activeProvenance
+    ? activeProvenance.confirmed
+    : fieldEvidence?.items.filter((item) => item.confidence === 'confirmed').length || 0;
   const inspectionSummary = inspection
     ? [
         inspection.conflictFields ? `${inspection.conflictFields} conflict` : '',
@@ -53,7 +57,8 @@ export function SourceProvenanceBlock({ opportunity, limit = 5 }: SourceProvenan
       ].filter(Boolean).join(' · ') || 'clean'
     : '';
 
-  const items = provenance.items.slice(0, limit);
+  const items = provenance?.items.slice(0, limit) || [];
+  const sources = activeProvenance ? activeProvenance.sources : fieldEvidence?.sources || [];
 
   return (
     <div className="source-provenance-block" data-source-provenance={opportunity.id}>
@@ -61,15 +66,14 @@ export function SourceProvenanceBlock({ opportunity, limit = 5 }: SourceProvenan
         <div>
           <span>Source provenance</span>
           <strong>
-            {provenance.confirmed}/{provenance.total} confirmed
+            {confirmedCount}/{confirmedTotal} confirmed
             {fieldEvidence ? ` · ${fieldEvidence.fields} fields` : ''}
           </strong>
         </div>
-        <ShieldCheck size={15} />
       </div>
 
       <div className="source-provenance-sources">
-        {provenance.sources.slice(0, 4).map((source) => (
+        {sources.slice(0, 4).map((source) => (
           <span key={source}>{source}</span>
         ))}
       </div>
@@ -126,22 +130,23 @@ export function SourceProvenanceBlock({ opportunity, limit = 5 }: SourceProvenan
         </div>
       )}
 
-      <div className="source-provenance-list">
-        {items.map((item) => (
-          <div key={item.id} className="source-provenance-item" data-source-provenance-item={item.kind}>
-            <FileSearch size={13} />
-            <div className="source-provenance-copy">
-              <div className="source-provenance-title">
-                <span>{item.label}</span>
-                <em className={`source-provenance-confidence ${provenanceTone(item)}`}>
-                  {provenanceConfidenceLabel(item)}
-                </em>
+      {items.length > 0 && (
+        <div className="source-provenance-list">
+          {items.map((item) => (
+            <div key={item.id} className="source-provenance-item" data-source-provenance-item={item.kind}>
+              <div className="source-provenance-copy">
+                <div className="source-provenance-title">
+                  <span>{item.label}</span>
+                  <em className={`source-provenance-confidence ${provenanceTone(item)}`}>
+                    {provenanceConfidenceLabel(item)}
+                  </em>
+                </div>
+                <p>{item.source}{provenanceValue(item) ? ` · ${provenanceValue(item)}` : ''}</p>
               </div>
-              <p>{item.source}{provenanceValue(item) ? ` · ${provenanceValue(item)}` : ''}</p>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

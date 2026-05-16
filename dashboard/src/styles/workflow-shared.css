@@ -82,6 +82,32 @@
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
 }
+
+.today-feed-overflow {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.02);
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+}
+
+.today-feed-overflow strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.today-feed-overflow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .today-lanes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

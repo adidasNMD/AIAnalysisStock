@@ -147,10 +147,13 @@ describe('queue recovery service', () => {
     const { recoverQueueTaskForApi } = await import('../server/services/queue-recovery-service');
     const task = makeTask({ missionId: 'mission-recovery-1', priority: 70, depth: 'quick' });
     const mission = makeMission();
+    const previousRun = makeRun({ id: 'run-recovery-1', status: 'failed', stage: 'failed' });
     const run = makeRun({ id: 'run-recovery-2', taskId: 'task-recovery-2' });
     mocks.getTask.mockResolvedValue(task);
     mocks.retryMissionRun.mockResolvedValue(mission);
-    mocks.getLatestMissionRun.mockResolvedValue(run);
+    mocks.getLatestMissionRun
+      .mockResolvedValueOnce(previousRun)
+      .mockResolvedValueOnce(run);
 
     const result = await recoverQueueTaskForApi('task-recovery-1');
 
@@ -169,6 +172,48 @@ describe('queue recovery service', () => {
         missionId: 'mission-recovery-1',
         runId: 'run-recovery-2',
         taskId: 'task-recovery-2',
+        recoveryAudit: {
+          operation: 'mission_retry',
+          action: 'queued_new_retry',
+          reusedExistingRetry: false,
+          depth: 'quick',
+          costHint: {
+            tier: 'low',
+            label: '低成本',
+            estimate: '约 1-3 分钟',
+            detail: '先验证数据源和核心链路是否恢复，适合失败后第一步。',
+          },
+          runId: 'run-recovery-2',
+          taskId: 'task-recovery-2',
+        },
+      },
+    });
+  });
+
+  it('marks queue recovery as reused when the retry attaches to the existing run', async () => {
+    const { recoverQueueTaskForApi } = await import('../server/services/queue-recovery-service');
+    const task = makeTask({ missionId: 'mission-recovery-1', depth: 'deep' });
+    const mission = makeMission();
+    const existingRun = makeRun({ id: 'run-existing', taskId: 'task-existing' });
+    mocks.getTask.mockResolvedValue(task);
+    mocks.retryMissionRun.mockResolvedValue(mission);
+    mocks.getLatestMissionRun.mockResolvedValue(existingRun);
+
+    const result = await recoverQueueTaskForApi('task-recovery-1');
+
+    expect(result).toMatchObject({
+      status: 'queued',
+      response: {
+        recoveryAudit: {
+          action: 'reused_existing_retry',
+          reusedExistingRetry: true,
+          depth: 'deep',
+          costHint: {
+            tier: 'high',
+          },
+          runId: 'run-existing',
+          taskId: 'task-existing',
+        },
       },
     });
   });

@@ -22,6 +22,7 @@ function parseArgs(argv) {
     viewportNoWarmup: false,
     viewportLiveApi: false,
     viewportBaseUrl: '',
+    viewportWorkbenchDrawerDepth: '',
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -58,12 +59,22 @@ function parseArgs(argv) {
     } else if (arg === '--viewport-base-url' && next) {
       options.viewportBaseUrl = next;
       index += 1;
+    } else if (arg === '--viewport-workbench-drawer-depth' && next) {
+      options.viewportWorkbenchDrawerDepth = parseChoice(arg, next, ['smoke', 'deep', 'both']);
+      index += 1;
     } else {
       throw new Error(`Unknown or incomplete argument: ${arg}`);
     }
   }
 
   return options;
+}
+
+function parseChoice(flag, value, choices) {
+  if (!choices.includes(value)) {
+    throw new Error(`${flag} must be one of ${choices.join(', ')}. Received: ${value}`);
+  }
+  return value;
 }
 
 function printHelp() {
@@ -89,6 +100,8 @@ Viewport child options:
   --viewport-no-start        Pass --no-start to dashboard:viewport-check.
   --viewport-no-warmup       Pass --no-warmup to dashboard:viewport-check.
   --viewport-live-api        Pass --live-api to dashboard:viewport-check.
+  --viewport-workbench-drawer-depth <smoke|deep|both>
+                             Pass --workbench-drawer-depth to dashboard:viewport-check.
 `);
 }
 
@@ -149,6 +162,21 @@ function formatBytes(bytes) {
   return `${bytes}B`;
 }
 
+function formatNumber(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+  return `${Math.round(value)}`;
+}
+
+function formatPercent(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+  return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+}
+
+function viewportLabel(viewport) {
+  if (!viewport?.width || !viewport?.height) return 'n/a';
+  return `${viewport.width}x${viewport.height}`;
+}
+
 function commandStatus(result) {
   if (!result) return 'skipped';
   return result.exitCode === 0 ? 'passed' : 'failed';
@@ -206,6 +234,7 @@ function summarizeViewport(readResult, command) {
       error: readResult.error || 'report unavailable',
       failed: [],
       warnings: [],
+      environmentWarnings: [],
       warningPreview: [],
       metrics: null,
     };
@@ -220,13 +249,19 @@ function summarizeViewport(readResult, command) {
     error: command?.error || null,
     failed: report.failed || [],
     warnings: report.warnings || [],
+    environmentWarnings: report.environmentWarnings || [],
     warningPreview: warningPreview(report.warnings),
     metrics: {
       checks: report.results?.length ?? null,
       failedCount: report.failed?.length ?? 0,
       warningCount: report.warnings?.length ?? 0,
+      environmentWarningCount: report.environmentWarnings?.length ?? 0,
       slowest: report.performanceSummary?.slowest?.[0] || null,
+      topSlowest: report.performanceSummary?.slowest?.slice(0, 5) || [],
       largestDom: report.performanceSummary?.largestDom?.[0] || null,
+      topLargestDom: report.performanceSummary?.largestDom?.slice(0, 5) || [],
+      topTallestPages: report.performanceSummary?.tallestPages?.slice(0, 5) || [],
+      trend: report.performanceSummary?.trend || null,
       warmup: report.warmup || null,
     },
   };
@@ -265,11 +300,13 @@ function buildMarkdownSummary(report) {
     '',
     '## Commands',
     '',
-    ...markdownRows(report.commands, [
-      { label: 'Command', value: (item) => item.label },
-      { label: 'Status', value: (item) => commandStatus(item) },
-      { label: 'Duration', value: (item) => `${item.durationMs}ms` },
-    ]),
+    ...(report.commands.length
+      ? markdownRows(report.commands, [
+        { label: 'Command', value: (item) => item.label },
+        { label: 'Status', value: (item) => commandStatus(item) },
+        { label: 'Duration', value: (item) => `${item.durationMs}ms` },
+      ])
+      : ['_Aggregated from existing build-size and viewport reports._']),
     '',
     '## Build Size',
     '',
@@ -306,10 +343,86 @@ function buildMarkdownSummary(report) {
       `- Checks: ${report.viewport.metrics.checks}`,
       `- Failed: ${report.viewport.metrics.failedCount}`,
       `- Warnings: ${report.viewport.warnings.length}`,
+      `- Environment pauses: ${report.viewport.environmentWarnings.length}`,
       `- Slowest: ${slowest ? `${slowest.route} ${slowest.viewport.width}px ${slowest.totalMs}ms` : 'n/a'}`,
       `- Largest DOM: ${largestDom ? `${largestDom.route} ${largestDom.viewport.width}px ${largestDom.nodeCount} nodes` : 'n/a'}`,
       `- Report: ${report.viewport.reportPath}`,
     );
+
+    const trend = report.viewport.metrics.trend;
+    if (trend?.available) {
+      lines.push(
+        `- Trend: compared ${trend.compared} checks with ${trend.previousCheckedAt}`,
+        `- Route delta: +${trend.added || 0} added, -${trend.removed || 0} removed`,
+      );
+    }
+
+    lines.push(
+      '',
+      '### Slowest Routes',
+      '',
+      ...markdownRows(report.viewport.metrics.topSlowest, [
+        { label: 'Route', value: (item) => item.route },
+        { label: 'Viewport', value: (item) => viewportLabel(item.viewport) },
+        { label: 'Total', value: (item) => `${formatNumber(item.totalMs)}ms` },
+        { label: 'DOM', value: (item) => formatNumber(item.nodeCount) },
+        { label: 'Screenshot', value: (item) => formatBytes(item.screenshotBytes) },
+      ]),
+      '',
+      '### Largest DOM',
+      '',
+      ...markdownRows(report.viewport.metrics.topLargestDom, [
+        { label: 'Route', value: (item) => item.route },
+        { label: 'Viewport', value: (item) => viewportLabel(item.viewport) },
+        { label: 'Nodes', value: (item) => formatNumber(item.nodeCount) },
+        { label: 'Visible', value: (item) => formatNumber(item.visibleNodeCount) },
+        { label: 'Cards', value: (item) => formatNumber(item.renderedOpportunityCards) },
+      ]),
+      '',
+      '### Tallest Pages',
+      '',
+      ...markdownRows(report.viewport.metrics.topTallestPages, [
+        { label: 'Route', value: (item) => item.route },
+        { label: 'Viewport', value: (item) => viewportLabel(item.viewport) },
+        { label: 'Body Height', value: (item) => formatNumber(item.bodyHeight) },
+        { label: 'Max Scroll', value: (item) => formatNumber(item.maxScrollY) },
+        { label: 'Cards', value: (item) => formatNumber(item.renderedOpportunityCards) },
+      ]),
+    );
+
+    if (trend?.available) {
+      const comparisons = trend.comparisons || [];
+      const topTimeDeltas = comparisons
+        .filter((item) => item.totalMsDelta > 0)
+        .sort((left, right) => right.totalMsDelta - left.totalMsDelta)
+        .slice(0, 5);
+      const topNodeDeltas = comparisons
+        .filter((item) => item.nodeCountDelta > 0)
+        .sort((left, right) => right.nodeCountDelta - left.nodeCountDelta)
+        .slice(0, 5);
+      lines.push(
+        '',
+        '### Trend Time Deltas',
+        '',
+        ...markdownRows(topTimeDeltas, [
+          { label: 'Route', value: (item) => item.route },
+          { label: 'Viewport', value: (item) => viewportLabel(item.viewport) },
+          { label: 'Current', value: (item) => `${formatNumber(item.totalMs)}ms` },
+          { label: 'Delta', value: (item) => `+${formatNumber(item.totalMsDelta)}ms` },
+          { label: 'Percent', value: (item) => formatPercent(item.totalMsPercentDelta) },
+        ]),
+        '',
+        '### Trend DOM Deltas',
+        '',
+        ...markdownRows(topNodeDeltas, [
+          { label: 'Route', value: (item) => item.route },
+          { label: 'Viewport', value: (item) => viewportLabel(item.viewport) },
+          { label: 'Current', value: (item) => formatNumber(item.nodeCount) },
+          { label: 'Delta', value: (item) => `+${formatNumber(item.nodeCountDelta)}` },
+          { label: 'Percent', value: (item) => formatPercent(item.nodeCountPercentDelta) },
+        ]),
+      );
+    }
   } else {
     lines.push(`_Viewport report unavailable: ${report.viewport.error || 'unknown'}_`);
   }
@@ -323,6 +436,16 @@ function buildMarkdownSummary(report) {
     for (const warning of warningLines) lines.push(`- ${warning}`);
   } else {
     lines.push('_No warnings._');
+  }
+
+  const environmentLines = report.viewport.environmentWarnings
+    .slice(0, 5)
+    .map((warning) => warning.message || `${warning.id}: ${warning.metric}`);
+  lines.push('', '## Environment Preview', '');
+  if (environmentLines.length) {
+    for (const warning of environmentLines) lines.push(`- Viewport: ${warning}`);
+  } else {
+    lines.push('_No environment timer drift._');
   }
 
   lines.push('', '## Failure Preview', '');
@@ -361,6 +484,9 @@ async function runQualityCheck(options) {
     if (options.viewportNoStart) args.push('--no-start');
     if (options.viewportNoWarmup) args.push('--no-warmup');
     if (options.viewportLiveApi) args.push('--live-api');
+    if (options.viewportWorkbenchDrawerDepth) {
+      args.push('--workbench-drawer-depth', options.viewportWorkbenchDrawerDepth);
+    }
     if (options.noTrend) args.push('--no-trend');
     const result = await runCommand(npmCommand('dashboard:viewport-check', args));
     commands.push(result);
@@ -405,6 +531,9 @@ function printSummary(report, reportPath, summaryPath) {
   }
   if (report.viewport.metrics) {
     console.log(`Viewport: ${report.viewport.metrics.checks} checks, failed ${report.viewport.metrics.failedCount}`);
+    if (report.viewport.environmentWarnings.length) {
+      console.log(`Viewport environment pauses: ${report.viewport.environmentWarnings.length}`);
+    }
   }
   console.log(`Report: ${reportPath}`);
   console.log(`Summary: ${summaryPath}`);

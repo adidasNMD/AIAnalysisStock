@@ -37,6 +37,11 @@ const FAILURE_CODE_INFO: Record<string, FailureCodeInfo> = {
     detail: '执行链路出现未细分异常，可以恢复任务并查看 trace。',
     tone: 'danger',
   },
+  stale_recovered: {
+    label: '心跳恢复',
+    detail: '任务曾因心跳或 worker lease 中断被恢复，建议确认没有重复 run 后再重跑。',
+    tone: 'warning',
+  },
 };
 
 export function getFailureCodeInfo(code?: string): FailureCodeInfo | null {

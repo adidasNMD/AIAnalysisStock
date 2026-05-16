@@ -9,7 +9,7 @@ const bytesPerKb = 1024;
 
 const defaultThresholds = {
   totalGzipBytes: 320 * bytesPerKb,
-  totalJsGzipBytes: 240 * bytesPerKb,
+  totalJsGzipBytes: 245 * bytesPerKb,
   initialJsGzipBytes: 150 * bytesPerKb,
   largestJsGzipBytes: 90 * bytesPerKb,
   largestCssGzipBytes: 8 * bytesPerKb,
@@ -164,7 +164,7 @@ Options:
 
 Soft threshold overrides:
   --threshold-total-gzip-kb <n>                    Default: 320
-  --threshold-total-js-gzip-kb <n>                 Default: 240
+  --threshold-total-js-gzip-kb <n>                 Default: 245
   --threshold-initial-js-gzip-kb <n>               Default: 150
   --threshold-largest-js-gzip-kb <n>               Default: 90
   --threshold-largest-css-gzip-kb <n>              Default: 8

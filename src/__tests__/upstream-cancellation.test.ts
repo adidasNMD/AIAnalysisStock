@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkOpenBBHealth } from '../utils/openbb-provider';
+import { checkOpenBBHealth, fetchTickerFullData } from '../utils/openbb-provider';
 import { analyzeMultipleTickers, analyzeTicker } from '../utils/ta-client';
 import { fetchGoogleNewsRSS } from '../tools/google-news';
 import { CollectorAgent } from '../agents/collector';
+import { sendMessage } from '../utils/telegram';
 
 function createAbortAwareFetch(onSignal?: (signal: AbortSignal) => void) {
   return vi.fn((_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -80,6 +81,23 @@ describe('upstream cancellation', () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
+  it('aborts in-flight OpenBB ticker enrichment requests when the mission signal is canceled', async () => {
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = createAbortAwareFetch((signal) => {
+      requestSignal = signal;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const controller = new AbortController();
+    const promise = fetchTickerFullData('NVDA', { signal: controller.signal });
+
+    expect(requestSignal).toBeDefined();
+    controller.abort(new Error('Canceled by user'));
+
+    await expect(promise).rejects.toThrow('Canceled by user');
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
   it('aborts in-flight Google News RSS fetches from OpenClaw scout', async () => {
     let requestSignal: AbortSignal | undefined;
     const fetchMock = createAbortAwareFetch((signal) => {
@@ -108,5 +126,18 @@ describe('upstream cancellation', () => {
       new CollectorAgent().collectSignals('AI infrastructure', { signal: controller.signal }),
     ).rejects.toThrow('Canceled by user');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not start Telegram notifications when already canceled', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const controller = new AbortController();
+    controller.abort(new Error('Canceled by user'));
+
+    try {
+      await expect(sendMessage('should not send', { signal: controller.signal })).rejects.toThrow('Canceled by user');
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

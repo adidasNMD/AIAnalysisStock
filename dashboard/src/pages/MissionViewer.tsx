@@ -21,6 +21,10 @@ import {
   type MissionRun,
   type TraceContent,
 } from '../api';
+import {
+  buildMissionRecoveryAuditView,
+  missionRecoveryEventFromMissionEvent,
+} from '../queries/mission-queries';
 import { DEFAULT_STALE_TASK_THRESHOLD_MS } from '../queries/queue-queries';
 import { getFailureCodeInfo } from '../utils/recovery';
 import '../styles/workflow-shared.css';
@@ -36,6 +40,12 @@ interface RunDiffItem {
   detail: string;
   tone: 'agree' | 'partial' | 'disagree' | 'pending';
 }
+
+type MissionRecoveryHistoryEvent = NonNullable<ReturnType<typeof missionRecoveryEventFromMissionEvent>>;
+type MissionRecoveryHistoryItem = {
+  event: MissionRecoveryHistoryEvent;
+  view: NonNullable<ReturnType<typeof buildMissionRecoveryAuditView>>;
+};
 
 function deriveCompleteness(payload: SnapshotPayload): 'full' | 'partial' | 'failed' | 'canceled' {
   if ('completeness' in payload) return payload.completeness;
@@ -574,6 +584,13 @@ export function MissionViewer() {
     latestRun?.status === 'running'
     && (latestHeartbeatAgeMs === null || latestHeartbeatAgeMs > DEFAULT_STALE_TASK_THRESHOLD_MS),
   );
+  const recoveryHistory: MissionRecoveryHistoryItem[] = events
+    .map(missionRecoveryEventFromMissionEvent)
+    .filter((event): event is MissionRecoveryHistoryEvent => Boolean(event))
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+    .slice(0, 5)
+    .map((event) => ({ event, view: buildMissionRecoveryAuditView(event) }))
+    .filter((item): item is MissionRecoveryHistoryItem => Boolean(item.view));
 
   // C1: optional chaining 安全取值
   const currentOpenBB = activePayload.openbbData?.find(d => d.ticker === selectedTicker);
@@ -723,6 +740,56 @@ export function MissionViewer() {
                     : <RotateCw size={12} />}
                 {recoveryActionId === action.id ? '处理中...' : action.label}
               </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {recoveryHistory.length > 0 && (
+        <section className="mission-recovery-history glass-panel" data-mission-recovery-history>
+          <div className="mission-recovery-history-header">
+            <div>
+              <h4><RotateCw size={16} /> 恢复历史</h4>
+              <span>{recoveryHistory.length} 条最近恢复审计</span>
+            </div>
+            <button
+              type="button"
+              className="secondary-btn tiny"
+              onClick={() => navigate('/missions?filter=recovery')}
+              data-mission-viewer-action="open-recovery-timeline"
+            >
+              查看时间线
+            </button>
+          </div>
+          <div className="mission-recovery-history-list">
+            {recoveryHistory.map(({ event, view }) => (
+              <div
+                key={event.id}
+                className="mission-recovery-history-item"
+                data-mission-recovery-history-item={view.action}
+              >
+                <div className="mission-recovery-history-top">
+                  <span className="mission-recovery-history-time">
+                    {new Date(event.timestamp).toLocaleString()}
+                  </span>
+                  <span className={`diff-chip ${view.tone}`}>{view.label}</span>
+                </div>
+                {view.meta.length > 0 && (
+                  <div className="mission-recovery-meta">
+                    {view.meta.map((meta) => (
+                      <span
+                        key={`${event.id}_${meta.key}`}
+                        className={meta.key === 'cost' && meta.tone
+                          ? `tc-recovery-cost ${meta.tone}`
+                          : 'tc-recovery-copy'}
+                      >
+                        {meta.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {event.message && <p>{event.message}</p>}
+              </div>
             ))}
           </div>
         </section>

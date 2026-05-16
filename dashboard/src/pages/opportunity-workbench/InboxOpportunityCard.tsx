@@ -23,6 +23,7 @@ import {
 import { buildInboxPrimaryAction } from './selectors';
 import { PreTradeChecklistBlock } from './PreTradeChecklistBlock';
 import { ScoreExplanationBlock } from './ScoreExplanationBlock';
+import { preloadOpportunityDetailDrawer } from './detail-drawer-loader';
 import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
 
@@ -184,6 +185,8 @@ export function InboxOpportunityCard({
           type="button"
           className="secondary-btn"
           data-opportunity-action="details"
+          onFocus={preloadOpportunityDetailDrawer}
+          onMouseEnter={preloadOpportunityDetailDrawer}
           onClick={() => onOpenOpportunity(item)}
         >
           详情 / 编辑

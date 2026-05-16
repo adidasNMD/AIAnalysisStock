@@ -429,6 +429,21 @@ export function buildMissionRecoveryActions(opportunity: OpportunitySummary): Mi
   ];
 }
 
+export function prioritizeMissionRecoveryActions(
+  actions: MissionRecoveryAction[],
+  primaryActionId?: string | null,
+): MissionRecoveryAction[] {
+  if (!primaryActionId || actions.length <= 1) return actions;
+
+  const primary = actions.find((action) => action.id === primaryActionId);
+  if (!primary) return actions;
+
+  return [
+    primary,
+    ...actions.filter((action) => action.id !== primaryActionId),
+  ];
+}
+
 export function recoveryTickers(opportunity: OpportunitySummary): string[] | undefined {
   const tickers = [
     opportunity.primaryTicker,

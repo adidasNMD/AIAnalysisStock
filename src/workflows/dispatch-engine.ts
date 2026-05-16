@@ -9,6 +9,7 @@ import * as path from 'path';
 import { saveTrailReport } from '../utils/trail-renderer';
 import { buildDecisionTrail, computeConsensus, triggerConsensusAlerts } from './consensus';
 import { parseStructuredVerdicts } from '../utils/report-validator';
+import { isCanceledError } from '../utils/error-classification';
 import { appendMissionEvent } from './mission-events';
 import { saveMissionEvidence } from './mission-evidence';
 import { deleteMissionIndexAsync, indexMissionAsync } from './mission-index';
@@ -39,12 +40,11 @@ function saveMission(mission: UnifiedMission) {
   indexMissionAsync(mission, artifactPath);
 }
 
-function isCanceledError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Canceled by user';
-}
-
 async function throwIfCanceled(shouldCancel?: () => Promise<boolean>, signal?: AbortSignal) {
-  if (signal?.aborted || await shouldCancel?.()) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+  }
+  if (await shouldCancel?.()) {
     throw new Error('Canceled by user');
   }
 }
@@ -228,12 +228,12 @@ export async function dispatchMission(
     }
 
     await throwIfCanceled(shouldCancel, signal);
-    const _consensusResults: ConsensusResult[] = await computeConsensus(mission);
+    const _consensusResults: ConsensusResult[] = await computeConsensus(mission, { signal });
     const lifecycleEngine = new NarrativeLifecycleEngine();
     let antiSellGuards: Array<{ ticker: string; reason: string }> = [];
     try {
       await throwIfCanceled(shouldCancel, signal);
-      const lifecycleResult = await lifecycleEngine.evaluateAllActiveNarratives();
+      const lifecycleResult = await lifecycleEngine.evaluateAllActiveNarratives({ signal });
       antiSellGuards = lifecycleResult.antiSellGuards;
     } catch (e: any) {
       if (isCanceledError(e)) throw e;
@@ -253,28 +253,34 @@ export async function dispatchMission(
       await throwIfCanceled(shouldCancel, signal);
       if (c.agreement === 'agree' && !c.vetoed && c.openclawVerdict === 'BUY' && c.taVerdict === 'BUY') {
         try {
-          await sendEntrySignal(c.ticker, '双脑共识一致看多 — 入场信号');
+          await sendEntrySignal(c.ticker, '双脑共识一致看多 — 入场信号', { signal });
         } catch (err) {
+          if (isCanceledError(err)) throw err;
           eventBus.emitSystem('error', `Failed to send entry signal for ${c.ticker}: ${err}`);
         }
       }
       if (c.openbbVerdict !== 'FAIL') continue;
       await throwIfCanceled(shouldCancel, signal);
       try {
-        await sendStopLossAlert(c.ticker, 'OpenBB 数据评级 FAIL — 风控预警');
+        await sendStopLossAlert(c.ticker, 'OpenBB 数据评级 FAIL — 风控预警', { signal });
       } catch (err) {
+        if (isCanceledError(err)) throw err;
         eventBus.emitSystem('error', `Failed to send stop loss alert for ${c.ticker}: ${err}`);
       }
     }
 
     await throwIfCanceled(shouldCancel, signal);
-    await triggerConsensusAlerts(mission.consensus);
+    await triggerConsensusAlerts(mission.consensus, { signal });
     const vetoedTickers = mission.consensus.filter(c => c.vetoed);
     if (vetoedTickers.length > 0) {
       await throwIfCanceled(shouldCancel, signal);
       try {
-        await sendMessage(`⚠️ *双脑共识否决报告*\n\n${vetoedTickers.map(v => `🚫 *${v.ticker}*: ${v.vetoReason ?? ''}`).join('\n')}\n\n_右侧跟风纪律: 双脑冲突时不行动_`);
+        await sendMessage(
+          `⚠️ *双脑共识否决报告*\n\n${vetoedTickers.map(v => `🚫 *${v.ticker}*: ${v.vetoReason ?? ''}`).join('\n')}\n\n_右侧跟风纪律: 双脑冲突时不行动_`,
+          { signal },
+        );
       } catch (err) {
+        if (isCanceledError(err)) throw err;
         eventBus.emitSystem('error', `Failed to send veto summary: ${err}`);
       }
     }

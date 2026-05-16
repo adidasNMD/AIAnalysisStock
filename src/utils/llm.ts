@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import * as dotenv from 'dotenv';
+import { isCanceledError } from './error-classification';
 dotenv.config();
 
 export interface LLMConfig {
@@ -57,9 +58,13 @@ function isExternallyAborted(signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted);
 }
 
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
 function throwIfCanceled(signal?: AbortSignal) {
   if (isExternallyAborted(signal)) {
-    throw new Error('Canceled by user');
+    throw getCancelReason(signal);
   }
 }
 
@@ -70,7 +75,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
     const timeoutId = setTimeout(resolve, ms);
     onAbort = () => {
       clearTimeout(timeoutId);
-      reject(new Error('Canceled by user'));
+      reject(getCancelReason(signal));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
   }).finally(() => {
@@ -81,8 +86,11 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 function createRequestController(timeoutMs: number, externalSignal?: AbortSignal) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const onAbort = () => controller.abort(externalSignal?.reason);
+  const onAbort = () => controller.abort(getCancelReason(externalSignal));
   externalSignal?.addEventListener('abort', onAbort, { once: true });
+  if (externalSignal?.aborted) {
+    onAbort();
+  }
 
   return {
     signal: controller.signal,
@@ -400,8 +408,8 @@ export async function generateStructuredOutput<T>(
     } catch (err: unknown) {
       request?.cleanup();
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (isExternallyAborted(config?.signal) || lastError.message === 'Canceled by user') {
-        throw new Error('Canceled by user');
+      if (isExternallyAborted(config?.signal) || isCanceledError(lastError)) {
+        throw getCancelReason(config?.signal);
       }
       const isTimeout = lastError.name === 'AbortError';
       const isParseError = lastError instanceof SyntaxError || ('issues' in lastError && Array.isArray((lastError as Record<string, unknown>).issues));
@@ -577,8 +585,8 @@ export async function generateTextCompletion(
     } catch (err: unknown) {
       request?.cleanup();
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (isExternallyAborted(config?.signal) || lastError.message === 'Canceled by user') {
-        throw new Error('Canceled by user');
+      if (isExternallyAborted(config?.signal) || isCanceledError(lastError)) {
+        throw getCancelReason(config?.signal);
       }
       const isTimeout = lastError.name === 'AbortError';
       const isRetryable = isTimeout || (lastError.message && (lastError.message.includes('429') || lastError.message.includes('500') || lastError.message.includes('503') || lastError.message.includes('空数据') || lastError.message.includes('空文本')));

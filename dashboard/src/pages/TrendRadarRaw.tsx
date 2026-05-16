@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePolling } from '../hooks/useAgentStream';
-import { RefreshCw, Database, Filter, CheckCircle, XCircle, ChevronLeft, ChevronRight, Search, ExternalLink } from 'lucide-react';
+import { RefreshCw, Database, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import {
   RAW_TREND_PAGE_SIZE,
   buildRawTrendPageInfo,
@@ -256,17 +256,13 @@ export function TrendRadarRaw() {
                   >
                     <td className="raw-table-cell raw-status-cell">
                       <span className={`raw-status-pill ${status.className}`}>
-                        {item.matched === 1 ? <CheckCircle size={15} aria-hidden="true" /> :
-                         item.matched === 0 ? <XCircle size={15} aria-hidden="true" /> :
-                         <Filter size={15} aria-hidden="true" />}
                         {status.label}
                       </span>
                     </td>
                     <td className="raw-table-cell raw-title-cell">
                       {url ? (
                         <a href={url} target="_blank" rel="noreferrer" className="raw-title-link" title={item.title}>
-                          <span>{item.title}</span>
-                          <ExternalLink size={13} aria-hidden="true" />
+                          {item.title}
                         </a>
                       ) : (
                         <span className="raw-title-link is-static" title={item.title}>
@@ -276,8 +272,7 @@ export function TrendRadarRaw() {
                     </td>
                     <td className="raw-table-cell raw-source-cell">
                       <span className={`raw-source-pill ${item.source_type === 'rss' ? 'rss' : 'hotlist'}`} title={`${item.platform_name} · ${sourceType}`}>
-                        <span>{item.platform_name}</span>
-                        <small>{sourceType}</small>
+                        {item.platform_name} · {sourceType}
                       </span>
                     </td>
                     <td className="raw-table-cell raw-muted-cell raw-time-cell">

@@ -4,7 +4,7 @@ import { Clock, ChevronRight, Search, CheckCircle, AlertTriangle, XCircle, Loade
 import { fetchTraces } from '../api';
 import type { MissionSummary, TraceItem } from '../api';
 import { usePolling } from '../hooks/useAgentStream';
-import { useMissionListQuery } from '../queries/mission-queries';
+import { buildMissionRecoveryAuditView, useMissionListQuery } from '../queries/mission-queries';
 import '../styles/workflow-shared.css';
 
 function statusIcon(status: string) {
@@ -66,13 +66,6 @@ const timelineFilters: Array<{ id: TimelineFilter; label: string }> = [
   { id: 'new', label: '新建恢复' },
   { id: 'failed', label: '失败/取消' },
 ];
-
-function recoveryTone(event?: MissionSummary['latestRecoveryEvent']) {
-  if (!event) return 'neutral';
-  if (event.reusedExistingRetry || event.action.startsWith('reused_')) return 'warning';
-  if (event.action === 'queued_new_retry') return 'changed';
-  return 'stable';
-}
 
 function recoveryMatchesFilter(item: TimelineItem, filter: TimelineFilter) {
   if (filter === 'all') return true;
@@ -192,6 +185,7 @@ export function MissionTimeline() {
           filteredTimelineItems.map(item => {
             const diffBadge = item.type === 'mission' ? missionDiffBadge(item.latestDiff) : null;
             const recoveryEvent = item.type === 'mission' ? item.latestRecoveryEvent : undefined;
+            const recoveryAudit = buildMissionRecoveryAuditView(recoveryEvent);
 
             return (
               <div
@@ -236,25 +230,24 @@ export function MissionTimeline() {
                         </button>
                       </div>
                     )}
-                    {recoveryEvent && (
+                    {recoveryAudit && (
                       <div
                         className="tc-recovery-audit"
-                        data-mission-recovery-audit={recoveryEvent.action}
+                        data-mission-recovery-audit={recoveryAudit.action}
                       >
-                        <span className={`diff-chip ${recoveryTone(recoveryEvent)}`}>
-                          {recoveryEvent.label}
+                        <span className={`diff-chip ${recoveryAudit.tone}`}>
+                          {recoveryAudit.label}
                         </span>
-                        {recoveryEvent.depth && (
-                          <span className="tc-recovery-copy">{recoveryEvent.depth} 深度</span>
-                        )}
-                        {recoveryEvent.costHint && (
-                          <span className={`tc-recovery-cost ${recoveryEvent.costHint.tier}`}>
-                            {recoveryEvent.costHint.label} · {recoveryEvent.costHint.estimate}
+                        {recoveryAudit.meta.map((meta) => (
+                          <span
+                            key={`${recoveryAudit.action}_${meta.key}`}
+                            className={meta.key === 'cost' && meta.tone
+                              ? `tc-recovery-cost ${meta.tone}`
+                              : 'tc-recovery-copy'}
+                          >
+                            {meta.label}
                           </span>
-                        )}
-                        {recoveryEvent.runId && (
-                          <span className="tc-recovery-copy">run {recoveryEvent.runId}</span>
-                        )}
+                        ))}
                       </div>
                     )}
                   </div>

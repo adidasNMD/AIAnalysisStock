@@ -7,7 +7,7 @@ interface RequestOptions {
 
 function throwIfCanceled(signal?: AbortSignal) {
   if (signal?.aborted) {
-    throw new Error('Canceled by user');
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
   }
 }
 

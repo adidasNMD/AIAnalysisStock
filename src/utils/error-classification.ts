@@ -11,7 +11,20 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export function isCanceledError(error: unknown): boolean {
-  return getErrorMessage(error) === 'Canceled by user';
+  const message = getErrorMessage(error).toLowerCase();
+  const name = error instanceof Error ? error.name : '';
+
+  if (name === 'CanceledError') return true;
+
+  return [
+    'canceled by user',
+    'cancelled by user',
+    'task canceled',
+    'task cancelled',
+    'mission canceled',
+    'mission cancelled',
+    'worker shutdown requested',
+  ].some((token) => message.includes(token));
 }
 
 export function classifyExecutionFailure(error: unknown): ExecutionFailureCode {

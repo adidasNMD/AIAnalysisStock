@@ -247,6 +247,30 @@ describe('computeConsensus with structuredVerdicts', () => {
     expect(result.overallAction).toBe('BUY');
   });
 
+  it('passes cancellation signals through to SMA veto checks', async () => {
+    const controller = new AbortController();
+    mockedCheckSMACross.mockResolvedValue([
+      { symbol: 'AAOI', period: 250, position: 'above', price: 100, sma: 90, crossedToday: false },
+    ]);
+    const mission = makeMission('AAOI', 'AAOI BUY 建仓', 'BUY');
+
+    await computeConsensus(mission, { signal: controller.signal });
+
+    expect(mockedCheckSMACross).toHaveBeenCalledWith('AAOI', [250], { signal: controller.signal });
+  });
+
+  it('rejects if cancellation happens during SMA veto checks', async () => {
+    const controller = new AbortController();
+    mockedCheckSMACross.mockImplementation(async () => {
+      controller.abort(new Error('Canceled by user'));
+      return [];
+    });
+    const mission = makeMission('AAOI', 'AAOI BUY 建仓', 'BUY');
+
+    await expect(computeConsensus(mission, { signal: controller.signal })).rejects.toThrow('Canceled by user');
+    expect(mission.consensus).toEqual([]);
+  });
+
   it('legacy fallback when structured verdict ticker missing', async () => {
     mockedCheckSMACross.mockResolvedValue([
       { symbol: 'AAOI', period: 250, position: 'above', price: 100, sma: 90, crossedToday: false },

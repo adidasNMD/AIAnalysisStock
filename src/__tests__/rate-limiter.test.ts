@@ -28,6 +28,17 @@ describe('RateLimiter', () => {
     expect(true).toBe(true);
   });
 
+  it('rejects queued acquires when the abort signal is canceled', async () => {
+    const limiter = new RateLimiter(1, 1);
+    await limiter.acquire();
+    const controller = new AbortController();
+
+    const acquirePromise = limiter.acquire(controller.signal);
+    controller.abort(new Error('Canceled by user'));
+
+    await expect(acquirePromise).rejects.toThrow('Canceled by user');
+  });
+
   it('refills tokens over time', async () => {
     const limiter = new RateLimiter(2, 2);
     await limiter.acquire();

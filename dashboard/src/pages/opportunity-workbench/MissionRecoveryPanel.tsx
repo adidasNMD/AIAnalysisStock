@@ -6,6 +6,7 @@ import {
   buildMissionRecoveryMeta,
   missionRecoveryFeedbackAutoDismissLabel,
   missionRecoveryDiagnosis,
+  prioritizeMissionRecoveryActions,
   recoveryActionGuidance,
   recoveryStatusLabel,
   recoverySummary,
@@ -17,6 +18,7 @@ type MissionRecoveryPanelProps = {
   actionFeedback?: MissionRecoveryActionFeedback | null;
   busyActionKey?: string | null;
   limit?: number;
+  compact?: boolean;
   onRecoverMission: (opportunity: OpportunitySummary, action: MissionRecoveryAction) => void;
   onOpenMission?: (missionId: string) => void;
 };
@@ -26,6 +28,7 @@ export function MissionRecoveryPanel({
   actionFeedback,
   busyActionKey,
   limit,
+  compact = false,
   onRecoverMission,
   onOpenMission,
 }: MissionRecoveryPanelProps) {
@@ -33,12 +36,15 @@ export function MissionRecoveryPanel({
   const panelFeedback = actionFeedback?.opportunityId === opportunity.id ? actionFeedback : null;
   if ((!summary || !opportunity.latestMission) && !panelFeedback) return null;
 
-  const actions = summary && opportunity.latestMission ? buildMissionRecoveryActions(opportunity) : [];
-  const visibleActions = typeof limit === 'number' ? actions.slice(0, limit) : actions;
   const statusLabel = opportunity.latestMission ? recoveryStatusLabel(opportunity.latestMission.status) : null;
   const metaItems = summary && opportunity.latestMission ? buildMissionRecoveryMeta(opportunity) : [];
   const guidance = summary && opportunity.latestMission ? recoveryActionGuidance(opportunity) : null;
   const diagnosis = summary && opportunity.latestMission ? missionRecoveryDiagnosis(opportunity) : null;
+  const actions = summary && opportunity.latestMission
+    ? prioritizeMissionRecoveryActions(buildMissionRecoveryActions(opportunity), diagnosis?.primaryActionId)
+    : [];
+  const metaLimit = compact ? 2 : 5;
+  const visibleActions = typeof limit === 'number' ? actions.slice(0, limit) : actions;
   const FeedbackIcon = panelFeedback?.status === 'success'
     ? CheckCircle2
     : panelFeedback?.status === 'error'
@@ -47,7 +53,7 @@ export function MissionRecoveryPanel({
   const autoDismissLabel = missionRecoveryFeedbackAutoDismissLabel(panelFeedback?.expiresAt);
 
   return (
-    <div className={`mission-recovery-panel ${panelFeedback ? `has-inline-feedback ${panelFeedback.status}` : ''}`}>
+    <div className={`mission-recovery-panel ${compact ? 'compact' : ''} ${panelFeedback ? `has-inline-feedback ${panelFeedback.status}` : ''}`}>
       {summary && statusLabel && (
         <>
           <div className="mission-recovery-top">
@@ -59,7 +65,7 @@ export function MissionRecoveryPanel({
       )}
       {metaItems.length > 0 && (
         <div className="mission-recovery-meta-row">
-          {metaItems.slice(0, 5).map((item) => (
+          {metaItems.slice(0, metaLimit).map((item) => (
             <span
               key={`${item.label}:${item.value}`}
               className={`mission-recovery-chip ${item.tone || 'info'}`}
@@ -79,11 +85,11 @@ export function MissionRecoveryPanel({
             <span>{diagnosis.label}</span>
             <strong>{diagnosis.primaryActionLabel}</strong>
           </div>
-          <p>{diagnosis.detail}</p>
-          {diagnosis.serviceHint && <em>{diagnosis.serviceHint}</em>}
+          {!compact && <p>{diagnosis.detail}</p>}
+          {!compact && diagnosis.serviceHint && <em>{diagnosis.serviceHint}</em>}
         </div>
       )}
-      {guidance && <div className="mission-recovery-guidance">{guidance}</div>}
+      {!compact && guidance && <div className="mission-recovery-guidance">{guidance}</div>}
       {panelFeedback && (
         <div className={`mission-recovery-inline-feedback ${panelFeedback.status}`} role="status" aria-live="polite">
           <FeedbackIcon size={14} className={panelFeedback.status === 'pending' ? 'spin' : undefined} />
@@ -124,6 +130,7 @@ export function MissionRecoveryPanel({
                 onClick={() => onRecoverMission(opportunity, action)}
                 disabled={Boolean(busyActionKey)}
                 title={action.costHint ? `${action.detail} ${action.costHint.detail}` : action.detail}
+                data-mission-recovery-action-id={action.id}
                 data-mission-recovery-recommended={diagnosis?.primaryActionId === action.id ? 'true' : 'false'}
               >
                 <RotateCw size={12} />

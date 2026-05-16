@@ -3,10 +3,12 @@ import type { OpportunitySummary } from '../../api';
 
 type SuggestedMissionsBlockProps = {
   opportunity: OpportunitySummary;
+  limit?: number;
 };
 
-export function SuggestedMissionsBlock({ opportunity }: SuggestedMissionsBlockProps) {
+export function SuggestedMissionsBlock({ opportunity, limit = 3 }: SuggestedMissionsBlockProps) {
   if (!opportunity.suggestedMission && (opportunity.suggestedMissions || []).length === 0) return null;
+  const safeLimit = Math.max(1, limit);
 
   return (
     <>
@@ -18,7 +20,7 @@ export function SuggestedMissionsBlock({ opportunity }: SuggestedMissionsBlockPr
       )}
       {(opportunity.suggestedMissions || []).length > 0 && (
         <div className="op-card-detail">
-          {(opportunity.suggestedMissions || []).slice(0, 3).map((template) => (
+          {(opportunity.suggestedMissions || []).slice(0, safeLimit).map((template) => (
             <div key={`${opportunity.id}_${template.id}`}>
               <ArrowRight size={12} /> {template.label}: {template.mode} / {template.depth} / {template.query}
               {template.whenToUse ? ` · ${template.whenToUse}` : ''}

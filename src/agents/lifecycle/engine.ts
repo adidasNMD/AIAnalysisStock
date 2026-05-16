@@ -2,12 +2,23 @@ import { NarrativeRecord, updateNarrative, loadNarratives } from '../../utils/na
 import { checkSMACross } from '../../tools/market-data';
 import { sendStopLossAlert } from '../../utils/telegram';
 
+interface LifecycleOptions {
+  signal?: AbortSignal | undefined;
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+  }
+}
+
 export class NarrativeLifecycleEngine {
-  async evaluateAllActiveNarratives(): Promise<{
+  async evaluateAllActiveNarratives(options: LifecycleOptions = {}): Promise<{
     updated: number;
     messages: string[];
     antiSellGuards: Array<{ ticker: string; reason: string }>;
   }> {
+    throwIfCanceled(options.signal);
     console.log(`\n[LifecycleEngine] 🔄 开始评估活跃叙事的生命周期状态...`);
     
     const narratives = await loadNarratives();
@@ -17,6 +28,7 @@ export class NarrativeLifecycleEngine {
     const antiSellGuards: Array<{ ticker: string; reason: string }> = [];
 
     for (const record of records) {
+      throwIfCanceled(options.signal);
       const coreTicker = record.coreTicker;
 
       if (!coreTicker) {
@@ -24,7 +36,8 @@ export class NarrativeLifecycleEngine {
       }
       
       try {
-        const smaResults = await checkSMACross(coreTicker, [20, 50]);
+        const smaResults = await checkSMACross(coreTicker, [20, 50], options);
+        throwIfCanceled(options.signal);
         const sma20 = smaResults.find((r: any) => r.period === 20);
         const sma50 = smaResults.find((r: any) => r.period === 50);
         
@@ -84,7 +97,8 @@ export class NarrativeLifecycleEngine {
             });
             if (newStage === 'narrativeFatigue' || newStage === 'postCollapse') {
               await sendStopLossAlert(coreTicker,
-                `📉 叙事阶段降级: ${record.stage} → ${newStage}\n💡 ${reason}`
+                `📉 叙事阶段降级: ${record.stage} → ${newStage}\n💡 ${reason}`,
+                options,
               );
             }
             messages.push(`📌 [${record.title}] 阶段变更: ${newStage}\n   💡 推演逻辑: ${reason}`);
@@ -100,6 +114,7 @@ export class NarrativeLifecycleEngine {
         }
 
       } catch (e: any) {
+        throwIfCanceled(options.signal);
         console.error(`[LifecycleEngine] 评估 ${record.title} 失败: ${e.message}`);
       }
     }

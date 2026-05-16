@@ -5,16 +5,18 @@ import { ActionInbox } from './ActionInbox';
 import { CreateOpportunityPanel } from './CreateOpportunityPanel';
 import { EventFeed } from './EventFeed';
 import { OpportunityBoardGrid } from './OpportunityBoardGrid';
-import { OpportunityDetailDrawer } from './OpportunityDetailDrawer';
 import { RelaySnapshotStrip } from './RelaySnapshotStrip';
 import { StrategyReviewPanel } from './StrategyReviewPanel';
 import { WorkbenchSummaryGrid } from './WorkbenchSummaryGrid';
 import { WorkbenchViewBar } from './WorkbenchViewBar';
+import { loadOpportunityDetailDrawer } from './detail-drawer-loader';
 import { missionRecoveryFeedbackAutoDismissLabel } from './recovery';
 
 const CatalystReminderStrip = lazy(() => (
   import('./CatalystReminderStrip').then((module) => ({ default: module.CatalystReminderStrip }))
 ));
+
+const OpportunityDetailDrawer = lazy(loadOpportunityDetailDrawer);
 
 type WorkbenchSectionProps = {
   controller: OpportunityWorkbenchController;
@@ -319,10 +321,13 @@ export function WorkbenchDetailSection({ controller }: WorkbenchSectionProps) {
     saveOpportunityUpdate,
   } = controller;
 
+  if (!detailOpportunity) return null;
+
   return (
-    <OpportunityDetailDrawer
-      opportunity={detailOpportunity}
-      saving={detailSavingId === detailOpportunity?.id}
+    <Suspense fallback={null}>
+      <OpportunityDetailDrawer
+        opportunity={detailOpportunity}
+        saving={detailSavingId === detailOpportunity?.id}
       error={detailError}
       now={liveNow}
       missionRecoveryActionFeedback={missionRecoveryActionFeedback}
@@ -336,6 +341,7 @@ export function WorkbenchDetailSection({ controller }: WorkbenchSectionProps) {
       onRecordFieldEvidenceBatch={(opportunity, input) => recordFieldEvidenceBatch(opportunity, input)}
       onInvalidateFieldEvidence={(opportunity, evidenceId, input) => invalidateFieldEvidence(opportunity, evidenceId, input)}
       onRestoreFieldEvidence={(opportunity, evidenceId, input) => restoreFieldEvidence(opportunity, evidenceId, input)}
-    />
+      />
+    </Suspense>
   );
 }

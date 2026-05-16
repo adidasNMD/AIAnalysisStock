@@ -25,6 +25,7 @@ import {
   type CatalystReminderSubscriptionMap,
 } from './catalyst-reminder-preferences';
 import { catalystConfidenceLabel, typeMeta } from './model';
+import { preloadOpportunityDetailDrawer } from './detail-drawer-loader';
 
 type CatalystReminderStripProps = {
   reminders?: CatalystReminder[];
@@ -289,6 +290,8 @@ export function CatalystReminderStrip({
                       type="button"
                       className="secondary-btn tiny"
                       data-opportunity-action="details"
+                      onFocus={preloadOpportunityDetailDrawer}
+                      onMouseEnter={preloadOpportunityDetailDrawer}
                       onClick={() => onOpenOpportunity(reminder.opportunity)}
                     >
                       打开机会

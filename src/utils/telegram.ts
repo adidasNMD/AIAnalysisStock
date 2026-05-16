@@ -5,6 +5,20 @@ dotenv.config();
 let bot: TelegramBot | null = null;
 const chatId = process.env.TELEGRAM_CHAT_ID || '';
 
+export interface TelegramSendOptions {
+  signal?: AbortSignal | undefined;
+}
+
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getCancelReason(signal);
+  }
+}
+
 function escapeMarkdown(text: string): string {
   return text
     .replace(/\\/g, '\\\\')
@@ -37,13 +51,17 @@ function getBot(): TelegramBot | null {
 /**
  * 发送普通消息
  */
-export async function sendMessage(message: string): Promise<void> {
+export async function sendMessage(message: string, options: TelegramSendOptions = {}): Promise<void> {
+  throwIfCanceled(options.signal);
   console.log(`[Telegram] 📤 ${message.substring(0, 80)}...`);
   const b = getBot();
   if (b && chatId) {
     try {
+      throwIfCanceled(options.signal);
       await b.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      throwIfCanceled(options.signal);
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[Telegram] Failed to send: ${e.message}`);
     }
   }
@@ -59,6 +77,7 @@ export async function sendAnalysisResult(
     sma250Veto?: boolean;
     note?: string;
   },
+  options: TelegramSendOptions = {},
 ): Promise<void> {
   const msg = buildStructuredMessage(`${ticker} Analysis Complete`, [
     `Action: \`${escapeMarkdown(payload.action)}\` | Confidence: ${formatConfidence(payload.confidence)}%`,
@@ -66,7 +85,7 @@ export async function sendAnalysisResult(
     `SMA250 Veto: ${payload.sma250Veto ? 'yes' : 'no'}`,
     payload.note ? `Note: ${escapeMarkdown(payload.note)}` : '',
   ].filter(Boolean), '📊');
-  await sendMessage(msg);
+  await sendMessage(msg, options);
 }
 
 export async function sendConsensusAlert(
@@ -76,14 +95,19 @@ export async function sendConsensusAlert(
   taSignal: string,
   openbbSignal: string,
   sma250Veto: boolean,
+  options: TelegramSendOptions = {},
 ): Promise<void> {
-  await sendAnalysisResult(ticker, { action, confidence, taSignal, openbbSignal, sma250Veto });
+  await sendAnalysisResult(ticker, { action, confidence, taSignal, openbbSignal, sma250Veto }, options);
 }
 
 /**
  * 🔴 发送紧急止损警报
  */
-export async function sendStopLossAlert(symbol: string, details: string): Promise<void> {
+export async function sendStopLossAlert(
+  symbol: string,
+  details: string,
+  options: TelegramSendOptions = {},
+): Promise<void> {
   const msg = buildStructuredMessage(`紧急止损警报`, [
     `标的: \`${escapeMarkdown(symbol)}\``,
     escapeMarkdown(details),
@@ -93,8 +117,11 @@ export async function sendStopLossAlert(symbol: string, details: string): Promis
   const b = getBot();
   if (b && chatId) {
     try {
+      throwIfCanceled(options.signal);
       await b.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+      throwIfCanceled(options.signal);
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[Telegram] Failed to send stop loss alert: ${e.message}`);
     }
   }
@@ -103,28 +130,39 @@ export async function sendStopLossAlert(symbol: string, details: string): Promis
 /**
  * 🟠 发送入场信号
  */
-export async function sendEntrySignal(symbol: string, details: string): Promise<void> {
+export async function sendEntrySignal(
+  symbol: string,
+  details: string,
+  options: TelegramSendOptions = {},
+): Promise<void> {
   const msg = buildStructuredMessage(`入场信号触发`, [
     `标的: \`${escapeMarkdown(symbol)}\``,
     escapeMarkdown(details),
   ], '🟠');
-  await sendMessage(msg);
+  await sendMessage(msg, options);
 }
 
 /**
  * 📝 发送完整研报摘要
  */
-export async function sendReportSummary(title: string, highlights: string): Promise<void> {
+export async function sendReportSummary(
+  title: string,
+  highlights: string,
+  options: TelegramSendOptions = {},
+): Promise<void> {
   const msg = buildStructuredMessage(title, [
     escapeMarkdown(highlights),
   ], '📊');
-  await sendMessage(msg);
+  await sendMessage(msg, options);
 }
 
 /**
  * 发送批量异动汇总
  */
-export async function sendAlertBatch(alerts: Array<{ symbol: string; details: string; severity: string }>): Promise<void> {
+export async function sendAlertBatch(
+  alerts: Array<{ symbol: string; details: string; severity: string }>,
+  options: TelegramSendOptions = {},
+): Promise<void> {
   if (alerts.length === 0) return;
 
   const critical = alerts.filter(a => a.severity === 'critical');
@@ -148,5 +186,5 @@ export async function sendAlertBatch(alerts: Array<{ symbol: string; details: st
     info.forEach(a => msg += `• ${escapeMarkdown(a.details)}\n`);
   }
 
-  await sendMessage(msg);
+  await sendMessage(msg, options);
 }

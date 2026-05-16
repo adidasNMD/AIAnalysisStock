@@ -136,6 +136,15 @@ export interface QueueRecoveryResponse {
   missionId?: string;
   runId?: string;
   taskId?: string;
+  recoveryAudit?: {
+    operation: 'mission_retry';
+    action: 'queued_new_retry' | 'reused_existing_retry';
+    reusedExistingRetry: boolean;
+    depth?: 'quick' | 'standard' | 'deep';
+    costHint?: MissionRecoveryCostHint;
+    runId?: string;
+    taskId?: string;
+  };
 }
 
 export interface StaleQueueRecoveryResponse {

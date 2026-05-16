@@ -18,6 +18,7 @@ import { OpportunityTimelineBlock } from './OpportunityTimelineBlock';
 import { ProxyScoreBlock } from './ProxyScoreBlock';
 import { RelayProfileBlock } from './RelayProfileBlock';
 import { SuggestedMissionsBlock } from './SuggestedMissionsBlock';
+import { preloadOpportunityDetailDrawer } from './detail-drawer-loader';
 import type { MissionRecoveryActionFeedback } from './mission-actions';
 import type { MissionRecoveryAction } from './recovery';
 import type { WorkbenchSearchMatch } from './view-state';
@@ -28,6 +29,7 @@ const MissionRecoveryPanel = lazy(() => (
 
 type OpportunityCardProps = {
   opportunity: OpportunitySummary;
+  density?: 'standard' | 'dense';
   activeMetricKey?: string | null;
   rank: number;
   liveNow: number;
@@ -44,6 +46,7 @@ type OpportunityCardProps = {
 
 export function OpportunityCard({
   opportunity,
+  density = 'standard',
   activeMetricKey,
   rank,
   liveNow,
@@ -60,7 +63,8 @@ export function OpportunityCard({
   const priorityReason = activeMetricKey ? buildBoardPriorityReason(opportunity, activeMetricKey, rank) : null;
   const primaryAction = buildBoardPrimaryAction(opportunity, activeMetricKey);
   const liveRankBadge = buildLiveRankBadge(livePriorityEvent, rank, liveNow);
-  const extraTemplates = buildExtraTemplates(opportunity, primaryAction.template?.id, 2);
+  const isDense = density === 'dense';
+  const extraTemplates = buildExtraTemplates(opportunity, primaryAction.template?.id, isDense ? 1 : 2);
   const showMissionRecoveryPanel = opportunity.latestMission?.status === 'failed'
     || opportunity.latestMission?.status === 'canceled'
     || missionRecoveryActionFeedback?.opportunityId === opportunity.id;
@@ -68,7 +72,7 @@ export function OpportunityCard({
   return (
     <article
       key={opportunity.id}
-      className={`op-card ${liveRankBadge ? 'live-ranked' : ''} ${liveRankBadge?.state || ''}`}
+      className={`op-card ${isDense ? 'dense' : ''} ${liveRankBadge ? 'live-ranked' : ''} ${liveRankBadge?.state || ''}`}
       data-opportunity-id={opportunity.id}
     >
       <OpportunityCardHeader
@@ -79,11 +83,11 @@ export function OpportunityCard({
         priorityReason={priorityReason}
       />
       <OpportunitySearchMatchBlock match={searchMatch} />
-      <OpportunityPlaybookBlock opportunity={opportunity} />
-      <PreTradeChecklistBlock opportunity={opportunity} compact />
-      <ScoreExplanationBlock opportunity={opportunity} compact />
-      <SuggestedMissionsBlock opportunity={opportunity} />
-      {opportunity.latestOpportunityDiff && (
+      <OpportunityPlaybookBlock opportunity={opportunity} checklistLimit={isDense ? 1 : 3} summaryOnly={isDense} />
+      <PreTradeChecklistBlock opportunity={opportunity} compact itemLimit={isDense ? 2 : 3} summaryOnly={isDense} />
+      <ScoreExplanationBlock opportunity={opportunity} compact factorLimit={isDense ? 2 : 3} summaryOnly={isDense} />
+      {!isDense && <SuggestedMissionsBlock opportunity={opportunity} limit={3} />}
+      {!isDense && opportunity.latestOpportunityDiff && (
         <div className="today-diff">
           <span className={`diff-chip ${opportunity.latestOpportunityDiff.changed ? 'changed' : 'stable'}`}>
             {opportunity.latestOpportunityDiff.changed ? `THESIS ${opportunity.latestOpportunityDiff.changeCount}` : 'THESIS STABLE'}
@@ -96,12 +100,16 @@ export function OpportunityCard({
         {opportunity.leaderTicker && <span>Leader {opportunity.leaderTicker}</span>}
         {opportunity.proxyTicker && <span>Proxy {opportunity.proxyTicker}</span>}
       </div>
-      <RelayProfileBlock opportunity={opportunity} />
-      <ProxyScoreBlock opportunity={opportunity} />
-      <CatalystList items={opportunity.catalystCalendar} />
-      {opportunity.type === 'ipo_spinout' && <IpoEvidenceBlock profile={opportunity.ipoProfile} />}
-      <OpportunityTickerBlock opportunity={opportunity} />
-      <OpportunityStatusNotes opportunity={opportunity} />
+      <CatalystList items={opportunity.catalystCalendar} limit={isDense ? 1 : 2} />
+      {!isDense && (
+        <>
+          <RelayProfileBlock opportunity={opportunity} />
+          <ProxyScoreBlock opportunity={opportunity} />
+          {opportunity.type === 'ipo_spinout' && <IpoEvidenceBlock profile={opportunity.ipoProfile} />}
+          <OpportunityTickerBlock opportunity={opportunity} />
+          <OpportunityStatusNotes opportunity={opportunity} />
+        </>
+      )}
       <MissionStatusBlock mission={opportunity.latestMission} diff={opportunity.latestDiff} />
       {showMissionRecoveryPanel && (
         <Suspense fallback={null}>
@@ -109,14 +117,15 @@ export function OpportunityCard({
             opportunity={opportunity}
             actionFeedback={missionRecoveryActionFeedback}
             busyActionKey={recoveringMissionActionKey}
-            limit={3}
+            limit={isDense ? 1 : 3}
+            compact={isDense}
             onRecoverMission={onRecoverMission}
             onOpenMission={onOpenMission}
           />
         </Suspense>
       )}
-      <OpportunityTimelineBlock entries={opportunity.recentActionTimeline} />
-      {opportunity.playbook && (
+      {!isDense && <OpportunityTimelineBlock entries={opportunity.recentActionTimeline} limit={3} />}
+      {!isDense && opportunity.playbook && (
         <div className="op-card-detail">
           <div><ArrowRight size={12} /> {opportunity.playbook.nextStep}</div>
         </div>
@@ -126,6 +135,8 @@ export function OpportunityCard({
           type="button"
           className="secondary-btn"
           data-opportunity-action="details"
+          onFocus={preloadOpportunityDetailDrawer}
+          onMouseEnter={preloadOpportunityDetailDrawer}
           onClick={() => onOpenOpportunity(opportunity)}
         >
           详情 / 编辑

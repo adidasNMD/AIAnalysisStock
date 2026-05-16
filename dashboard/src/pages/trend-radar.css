@@ -720,6 +720,16 @@
   font-size: 0.74rem;
 }
 
+.raw-status-pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.86;
+}
+
 .raw-status-pill.accepted {
   color: #86efac;
   border-color: rgba(16, 185, 129, 0.25);
@@ -743,28 +753,17 @@
 }
 
 .raw-title-link {
-  display: inline-flex;
-  align-items: flex-start;
-  gap: 6px;
+  display: -webkit-box;
   max-width: 100%;
   color: #e5e7eb;
   text-decoration: none;
   line-height: 1.42;
-}
-
-.raw-title-link span,
-.raw-title-link.is-static {
-  display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
   white-space: normal;
-}
-
-.raw-title-link svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  opacity: 0.58;
+  word-break: break-word;
 }
 
 .raw-title-link:hover {
@@ -776,27 +775,16 @@
 }
 
 .raw-source-pill {
-  display: inline-flex;
+  display: inline-block;
   max-width: 100%;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
   padding: 5px 9px;
   border-radius: 6px;
   font-size: 0.75rem;
   line-height: 1.25;
-}
-
-.raw-source-pill span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.raw-source-pill small {
-  font-size: 0.62rem;
-  font-family: var(--font-mono);
-  opacity: 0.7;
 }
 
 .raw-source-pill.rss {

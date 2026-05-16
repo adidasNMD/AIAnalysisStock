@@ -49,6 +49,7 @@ const T4_CRON_EXPRESSION = T4_INTERVAL_MS === 15 * 60 * 1000
 const trendCooldown = new Map<string, number>();
 
 let isShuttingDown = false;
+const workerShutdownController = new AbortController();
 const SHOULD_START_API = process.env.OPENCLAW_ENABLE_API !== 'false';
 const API_PORT = Number(process.env.OPENCLAW_API_PORT || process.env.PORT || 3000);
 const SHOULD_BOOTSTRAP_WORKER = process.env.OPENCLAW_WORKER_BOOTSTRAP === '1' || require.main === module;
@@ -60,6 +61,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
 async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
+  requestWorkerShutdown(`Worker shutdown requested by ${signal}`);
 
   logger.info(`[Shutdown] Received ${signal}, draining...`);
 
@@ -87,6 +89,32 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   process.exit(0);
+}
+
+export function getWorkerShutdownSignal(): AbortSignal {
+  return workerShutdownController.signal;
+}
+
+export function requestWorkerShutdown(reason = 'Worker shutdown requested'): void {
+  if (!workerShutdownController.signal.aborted) {
+    workerShutdownController.abort(new Error(reason));
+  }
+}
+
+function workerSendOptions() {
+  return { signal: getWorkerShutdownSignal() };
+}
+
+async function sendDuringWorkerLifecycle(send: () => Promise<void>): Promise<void> {
+  try {
+    await send();
+  } catch (error: unknown) {
+    if (getWorkerShutdownSignal().aborted) {
+      logger.info('[Shutdown] Skipped notification while worker is shutting down');
+      return;
+    }
+    throw error;
+  }
 }
 
 if (SHOULD_BOOTSTRAP_WORKER) {
@@ -469,11 +497,15 @@ if (SHOULD_BOOTSTRAP_WORKER && T1_ENABLED) {
 
     for (const t of targets) {
       try {
-        const alerts = await scanTicker(t.symbol, {
-          breakAboveSMA: [20, 250],
-          breakBelowSMA: [20],
-          volumeSurgeMultiple: 2.0,
-        });
+        const alerts = await scanTicker(
+          t.symbol,
+          {
+            breakAboveSMA: [20, 250],
+            breakBelowSMA: [20],
+            volumeSurgeMultiple: 2.0,
+          },
+          workerSendOptions(),
+        );
         for (const alert of alerts) {
           if (shouldAlert(alert.symbol)) {
             allAlerts.push(alert);
@@ -486,13 +518,18 @@ if (SHOULD_BOOTSTRAP_WORKER && T1_ENABLED) {
     }
 
     if (allAlerts.length > 0) {
-      await sendAlertBatch(allAlerts.map(a => ({
-        symbol: a.symbol,
-        details: a.details,
-        severity: a.severity,
-      })));
+      await sendDuringWorkerLifecycle(() => sendAlertBatch(
+        allAlerts.map(a => ({
+          symbol: a.symbol,
+          details: a.details,
+          severity: a.severity,
+        })),
+        workerSendOptions(),
+      ));
+      if (isShuttingDown) return;
       const critical = allAlerts.filter(a => a.severity === 'critical');
       for (const a of critical) {
+        if (isShuttingDown) return;
         await createQueuedMission({
           query: `T1 异动: ${a.details}`,
           depth: 'quick',
@@ -525,10 +562,12 @@ if (SHOULD_BOOTSTRAP_WORKER) {
       rssAlerts.forEach(a => {
         msg += `📌 *[${a.source}]* ${a.title}\n   关键词: ${a.matchedKeywords.join(', ')}\n\n`;
       });
-      await sendMessage(msg);
+      await sendDuringWorkerLifecycle(() => sendMessage(msg, workerSendOptions()));
+      if (isShuttingDown) return;
 
       // 高优先级事件自动触发分析
       for (const alert of rssAlerts) {
+        if (isShuttingDown) return;
         if (alert.matchedKeywords.length >= 2) {
           logger.info(`[Sentinel] 🧠 高命中率事件排队分析: ${alert.title}`);
           // T2 事件驱动使用 'standard' 深度
@@ -557,7 +596,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
       filings.forEach(f => {
         msg += `📌 *[${f.formType}]* ${f.companyName} — ${f.filedAt}\n   ${f.url}\n\n`;
       });
-      await sendMessage(msg);
+      await sendDuringWorkerLifecycle(() => sendMessage(msg, workerSendOptions()));
     }
   }
   });
@@ -575,7 +614,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
   let snapshot = '📊 *每日 Watchlist 技术面快照*\n\n';
   for (const ticker of watchlist.tickers) {
     try {
-      const tech = await generateTechSnapshot(ticker.symbol);
+      const tech = await generateTechSnapshot(ticker.symbol, workerSendOptions());
       snapshot += `${tech}\n`;
     } catch (e: unknown) {
       snapshot += `[${ticker.symbol}] 数据获取失败\n`;
@@ -616,7 +655,7 @@ if (SHOULD_BOOTSTRAP_WORKER) {
   }
 
   try {
-    const { messages, antiSellGuards } = await lifecycleEngine.evaluateAllActiveNarratives();
+    const { messages, antiSellGuards } = await lifecycleEngine.evaluateAllActiveNarratives(workerSendOptions());
     if (messages.length > 0) {
       snapshot += `\n## 🛡️ 叙事生命周期干预引擎 (防卖飞/逃顶)\n\n`;
       messages.forEach(m => snapshot += `> ${m}\n\n`);
@@ -626,7 +665,11 @@ if (SHOULD_BOOTSTRAP_WORKER) {
         const tickerMatch = msg.match(/龙头\s+(\$?[A-Z]{1,5})/);
         if (tickerMatch) {
           const ticker = tickerMatch[1]!.replace('$', '');
-          await sendStopLossAlert(ticker, `叙事生命周期引擎警告:\n${msg}`);
+          await sendDuringWorkerLifecycle(() => sendStopLossAlert(
+            ticker,
+            `叙事生命周期引擎警告:\n${msg}`,
+            workerSendOptions(),
+          ));
         }
       }
     }
@@ -642,16 +685,18 @@ if (SHOULD_BOOTSTRAP_WORKER) {
   try {
     const { checkSMACross } = await import('./tools/market-data.js');
     for (const leader of getLeaderTickers()) {
-      const smaResults = await checkSMACross(leader, [50]);
+      const smaResults = await checkSMACross(leader, [50], workerSendOptions());
       const sma50 = smaResults.find((r: any) => r.period === 50);
       if (sma50 && sma50.position === 'below') {
         const dropPercent = ((sma50.sma - sma50.price) / sma50.sma) * 100;
         if (dropPercent >= 5) {
-          await sendStopLossAlert(leader,
+          await sendDuringWorkerLifecycle(() => sendStopLossAlert(
+            leader,
             `🔴 [板块止损红线] 龙头 ${leader} 放量跌破 50日均线 ${dropPercent.toFixed(1)}%!\n` +
-            `当前: $${sma50.price} | SMA50: $${sma50.sma}\n` +
-            `画像纪律: 板块全线防御减仓！`
-          );
+              `当前: $${sma50.price} | SMA50: $${sma50.sma}\n` +
+              `画像纪律: 板块全线防御减仓！`,
+            workerSendOptions(),
+          ));
         }
       }
     }
@@ -660,11 +705,13 @@ if (SHOULD_BOOTSTRAP_WORKER) {
     logger.error(`[Sentinel] Leader SMA50 check failed: ${msg}`);
   }
 
-  await sendReportSummary('Watchlist 盘前扫描', snapshot);
+  await sendDuringWorkerLifecycle(() => sendReportSummary('Watchlist 盘前扫描', snapshot, workerSendOptions()));
+  if (isShuttingDown) return;
 
   // 对每个赛道下发一次深度扫查任务
   const sectors = [...new Set(watchlist.tickers.map(t => t.sector))];
   for (const sector of sectors) {
+    if (isShuttingDown) return;
     const sectorTickers = watchlist.tickers.filter(t => t.sector === sector);
     const narrative = sectorTickers[0]?.narrative || sector;
     logger.info(`[Sentinel] 🧠 赛道每日深度分析排队: ${sector} — ${narrative}`);
@@ -696,7 +743,8 @@ if (SHOULD_BOOTSTRAP_WORKER) {
     
     // 推送趋势概览到 Telegram
     const telegramMsg = trendRadar.formatForTelegram(analysis);
-    await sendMessage(telegramMsg);
+    await sendDuringWorkerLifecycle(() => sendMessage(telegramMsg, workerSendOptions()));
+    if (isShuttingDown) return;
 
     // 新版：如果趋势报告中提及了大量 ticker，自动排队触发分析
     if (analysis.mentionedTickers && analysis.mentionedTickers.length >= 5) {
@@ -736,7 +784,7 @@ if (SHOULD_BOOTSTRAP_WORKER && process.argv.includes('--run-now')) {
     logger.info(`[Sentinel] 📊 技术面快照:`);
     for (const ticker of watchlist.tickers) {
       try {
-        const tech = await generateTechSnapshot(ticker.symbol);
+        const tech = await generateTechSnapshot(ticker.symbol, workerSendOptions());
         logger.info(`  ${tech}`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -758,7 +806,7 @@ if (SHOULD_BOOTSTRAP_WORKER && process.argv.includes('--run-now')) {
     logger.info(`\n[Sentinel] 🔍 价量异动扫描:`);
     for (const ticker of watchlist.tickers) {
       try {
-        const alerts = await scanTicker(ticker.symbol, ticker.alerts);
+        const alerts = await scanTicker(ticker.symbol, ticker.alerts, workerSendOptions());
         if (alerts.length > 0) {
           alerts.forEach(a => logger.info(`  ⚡ ${a.details}`));
         } else {

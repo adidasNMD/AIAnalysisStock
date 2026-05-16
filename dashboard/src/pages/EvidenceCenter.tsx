@@ -4,11 +4,18 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type {
   OpportunityFieldEvidenceIndexItem,
   OpportunityFieldEvidenceKind,
+  OpportunityFieldEvidenceRepairAction,
   OpportunityFieldEvidenceStatus,
   OpportunitySourceProvenanceConfidence,
 } from '../api';
 import { updateOpportunityFieldEvidenceBulkStatus } from '../api';
+import { useOpportunityFieldEvidenceRepairPlanQuery } from '../queries/diagnostics-queries';
 import { useOpportunityFieldEvidencePageQuery } from '../queries/evidence-queries';
+import {
+  evidenceRepairSearchSeed,
+  isManualFieldEvidenceRepair,
+  registryDraftUrl,
+} from '../utils/field-evidence-repair';
 import './evidence-center.css';
 
 type EvidenceSelectValue<T extends string> = T | 'all';
@@ -39,6 +46,13 @@ function evidenceSelectParam<T extends string>(
   allowed: readonly T[],
 ): EvidenceSelectValue<T> {
   return value && allowed.includes(value as T) ? value as T : 'all';
+}
+
+function repairActionTitle(action: OpportunityFieldEvidenceRepairAction) {
+  if (action.issueCode === 'missing_field') return 'Missing field metadata';
+  if (action.issueCode === 'orphan_canonical') return 'Orphan canonical row';
+  if (action.issueCode === 'status_mismatch') return 'Status mismatch';
+  return 'Missing canonical row';
 }
 
 export function EvidenceCenter() {
@@ -75,7 +89,17 @@ export function EvidenceCenter() {
     kind,
   }), [confidence, cursor, field, kind, q, source, status]);
   const { data, error, loading, refresh } = useOpportunityFieldEvidencePageQuery(request);
+  const {
+    data: repairPlan,
+    loading: repairPlanLoading,
+    refresh: refreshRepairPlan,
+  } = useOpportunityFieldEvidenceRepairPlanQuery();
   const items = useMemo(() => data?.items || [], [data]);
+  const repairActions = useMemo(() => (
+    (repairPlan?.sampledActions || [])
+      .filter(isManualFieldEvidenceRepair)
+      .slice(0, 4)
+  ), [repairPlan]);
   const pageInfo = data?.pageInfo;
   const metrics = useMemo(() => {
     const fields = new Set(items.map((item) => item.field));
@@ -161,6 +185,16 @@ export function EvidenceCenter() {
       });
       return next;
     });
+  };
+
+  const applyRepairFilter = (action: OpportunityFieldEvidenceRepairAction) => {
+    const seed = evidenceRepairSearchSeed(action);
+    setQ(seed.q || '');
+    setField(seed.field || '');
+    if (seed.status) setStatus(seed.status);
+    resetPaging();
+    setBulkFeedback(`Filtered repair issue ${action.evidenceId}.`);
+    setBulkError(null);
   };
 
   const runBulkStatusAction = async (action: 'invalidate' | 'restore') => {
@@ -327,6 +361,71 @@ export function EvidenceCenter() {
       </section>
 
       {error && <div className="evidence-error" data-evidence-error>{error}</div>}
+
+      {repairPlan && repairActions.length > 0 && (
+        <section className="evidence-repair-panel" data-evidence-repair-panel>
+          <div className="evidence-repair-head">
+            <div>
+              <span>Repair suggestions</span>
+              <strong>
+                {repairPlan.manualReviewActions} manual review
+                {repairPlan.blockedActions ? ` · ${repairPlan.blockedActions} blocked` : ''}
+              </strong>
+            </div>
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => void refreshRepairPlan()}
+              disabled={repairPlanLoading}
+              data-evidence-repair-refresh
+            >
+              <RefreshCw size={13} className={repairPlanLoading ? 'spin' : undefined} />
+              Refresh
+            </button>
+          </div>
+          <div className="evidence-repair-list">
+            {repairActions.map((action) => (
+              <article
+                key={`${action.issueCode}:${action.evidenceId}`}
+                className={`evidence-repair-row ${action.issueCode}`}
+                data-evidence-repair-action={action.evidenceId}
+                data-evidence-repair-code={action.issueCode}
+              >
+                <div className="evidence-repair-copy">
+                  <strong>{repairActionTitle(action)}</strong>
+                  <p>{action.reason}</p>
+                  <div className="evidence-repair-tags">
+                    <span>{action.safety}</span>
+                    <span>{action.evidenceId}</span>
+                    {action.opportunityId && <span>{action.opportunityId}</span>}
+                    {action.field && <span>{action.field}</span>}
+                  </div>
+                </div>
+                <div className="evidence-repair-actions">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => applyRepairFilter(action)}
+                    data-evidence-repair-inspect={action.evidenceId}
+                  >
+                    <FileSearch size={12} />
+                    Inspect
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => navigate(registryDraftUrl(action))}
+                    data-evidence-repair-registry-draft={action.evidenceId}
+                  >
+                    <ExternalLink size={12} />
+                    Registry Draft
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="evidence-bulk-bar" data-evidence-bulk-bar>
         <label className="evidence-bulk-select-all">

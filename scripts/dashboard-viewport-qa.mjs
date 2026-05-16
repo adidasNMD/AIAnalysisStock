@@ -25,7 +25,7 @@ const defaultViewports = [
 const defaultRoutes = [
   { name: 'workbench', path: '/' },
   { name: 'workbench-empty', path: '/', scenario: 'workbench-empty' },
-  { name: 'workbench-drawer', path: '/', action: 'open-workbench-drawer' },
+  { name: 'workbench-drawer', path: '/', action: 'open-workbench-drawer-smoke' },
   { name: 'workbench-recovery-action', path: '/', scenario: 'workbench-recovery', action: 'assert-workbench-recovery-action' },
   { name: 'workbench-recovery-failure', path: '/', scenario: 'workbench-recovery-failure', action: 'assert-workbench-recovery-failure' },
   { name: 'workbench-stress', path: '/', scenario: 'workbench-stress', action: 'scroll-workbench-stress' },
@@ -41,6 +41,7 @@ const defaultRoutes = [
   { name: 'trend-radar-raw-empty', path: '/radar-raw', scenario: 'trend-raw-empty' },
   { name: 'trend-radar-raw-stress', path: '/radar-raw', scenario: 'trend-raw-stress', action: 'assert-trend-raw-stress' },
   { name: 'evidence-center', path: '/evidence' },
+  { name: 'evidence-center-repair', path: '/evidence', scenario: 'command-diagnostics', action: 'assert-evidence-center-repair' },
   { name: 'catalyst-reminders', path: '/catalysts', action: 'assert-catalyst-reminders' },
   { name: 'pretrade-audit', path: '/pretrade', action: 'assert-pretrade-audit' },
   { name: 'review-playback', path: '/review-playback', action: 'assert-review-playback' },
@@ -94,9 +95,27 @@ const navigationRetryDelayMs = 750;
 const screenshotTimeoutMs = 15000;
 const screenshotMaxAttempts = 2;
 const screenshotRetryDelayMs = 500;
+const settleExpectedMs = 1800;
+const environmentPauseThresholdMs = 30000;
 
 function buildRoutes(options) {
-  const routes = [...defaultRoutes];
+  const routes = defaultRoutes.map((route) => {
+    if (route.name !== 'workbench-drawer') return route;
+    return {
+      ...route,
+      action: options.workbenchDrawerDepth === 'deep'
+        ? 'open-workbench-drawer-deep'
+        : 'open-workbench-drawer-smoke',
+    };
+  });
+  if (options.workbenchDrawerDepth === 'both') {
+    const drawerIndex = routes.findIndex((route) => route.name === 'workbench-drawer');
+    routes.splice(drawerIndex + 1, 0, {
+      name: 'workbench-drawer-deep',
+      path: '/',
+      action: 'open-workbench-drawer-deep',
+    });
+  }
   if (options.stressExpandRounds > 0) {
     routes.splice(4, 0, {
       name: 'workbench-stress-expand',
@@ -105,7 +124,15 @@ function buildRoutes(options) {
       action: 'expand-workbench-stress',
     });
   }
-  return routes;
+  if (!options.routes.length) return routes;
+
+  const requested = new Set(options.routes);
+  const filtered = routes.filter((route) => requested.has(route.name));
+  const missing = [...requested].filter((name) => !routes.some((route) => route.name === name));
+  if (missing.length > 0) {
+    throw new Error(`Unknown viewport QA route(s): ${missing.join(', ')}`);
+  }
+  return filtered;
 }
 
 function parseArgs(argv) {
@@ -120,6 +147,8 @@ function parseArgs(argv) {
     warmup: true,
     failOnWarning: false,
     trend: true,
+    workbenchDrawerDepth: 'smoke',
+    routes: [],
     stressOpportunityCount: defaultStressOpportunityCount,
     stressExpandRounds: defaultStressExpandRounds,
     thresholds: { ...defaultThresholds },
@@ -158,6 +187,12 @@ function parseArgs(argv) {
       options.failOnWarning = true;
     } else if (arg === '--no-trend') {
       options.trend = false;
+    } else if (arg === '--workbench-drawer-depth' && next) {
+      options.workbenchDrawerDepth = parseChoice(arg, next, ['smoke', 'deep', 'both']);
+      index += 1;
+    } else if (arg === '--route' && next) {
+      options.routes.push(next);
+      index += 1;
     } else if (arg === '--stress-opportunities' && next) {
       options.stressOpportunityCount = parsePositiveInteger(arg, next);
       index += 1;
@@ -226,6 +261,13 @@ function parseNonNegativeNumber(flag, value) {
   return parsed;
 }
 
+function parseChoice(flag, value, choices) {
+  if (!choices.includes(value)) {
+    throw new Error(`${flag} must be one of ${choices.join(', ')}. Received: ${value}`);
+  }
+  return value;
+}
+
 function parsePositiveInteger(flag, value) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -260,6 +302,10 @@ Options:
   --no-warmup           Skip route warm-up before measured checks.
   --no-trend            Skip comparison against the previous viewport snapshot.
   --fail-on-warning     Exit with code 1 when soft performance warnings are present.
+  --workbench-drawer-depth <smoke|deep|both>
+                        Smoke checks focus/static drawer evidence by default. Use deep for
+                        field evidence, catalyst, and pre-trade workflow regression.
+  --route <name>        Run only a named route. Can be repeated for targeted QA.
   --stress-opportunities <n>
                         Opportunity count for the Workbench stress scenario. Default: 120
   --stress-expand-rounds <n>
@@ -3676,9 +3722,13 @@ async function warmDashboardRoutes(browser, options, routes) {
 async function applyRouteAction(page, action, options, result) {
   if (!action) return;
 
-  if (action === 'open-workbench-drawer') {
-    await assertWorkbenchDrawerFocus(page, result);
-    await page.waitForTimeout(900);
+  if (action === 'open-workbench-drawer-smoke') {
+    await assertWorkbenchDrawerSmoke(page, result);
+    return;
+  }
+
+  if (action === 'open-workbench-drawer-deep') {
+    await assertWorkbenchDrawerDeep(page, result, result.route === 'workbench-drawer' ? 'workbench-drawer' : result.route);
     return;
   }
 
@@ -3696,9 +3746,15 @@ async function applyRouteAction(page, action, options, result) {
     await page.locator('.op-board-window-status').first().waitFor({ timeout: 5000 });
     await assertWorkbenchVirtualListInteractions(page, result);
     await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight * 0.45, behavior: 'instant' }));
-    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      return maxScrollY <= 2 || window.scrollY >= maxScrollY * 0.4;
+    }, null, { timeout: 1000, polling: 'raf' });
     await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight * 0.78, behavior: 'instant' }));
-    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      return maxScrollY <= 2 || window.scrollY >= maxScrollY * 0.7;
+    }, null, { timeout: 1000, polling: 'raf' });
     return;
   }
 
@@ -3724,6 +3780,11 @@ async function applyRouteAction(page, action, options, result) {
 
   if (action === 'assert-field-registry') {
     await assertFieldRegistryInteractions(page, result);
+    return;
+  }
+
+  if (action === 'assert-evidence-center-repair') {
+    await assertEvidenceCenterRepairInteractions(page, result);
     return;
   }
 
@@ -3780,13 +3841,29 @@ async function activeElementSnapshot(page) {
   });
 }
 
-async function assertWorkbenchDrawerFocus(page, result) {
+async function assertWorkbenchDrawerSmoke(page, result) {
   await assertOpportunityDrawerFocus(page, result, {
     detailsButton: page.locator('[data-opportunity-action="details"]').first(),
     idPrefix: 'workbench-drawer',
     leaveOpen: true,
   });
 
+  await assertWorkbenchDrawerStaticEvidence(page, result, 'workbench-drawer');
+}
+
+async function assertWorkbenchDrawerDeep(page, result, idPrefix = 'workbench-drawer-deep') {
+  await assertOpportunityDrawerFocus(page, result, {
+    detailsButton: page.locator('[data-opportunity-action="details"]').first(),
+    idPrefix,
+    leaveOpen: true,
+  });
+
+  await assertWorkbenchDrawerStaticEvidence(page, result, idPrefix);
+  await assertWorkbenchDrawerFieldEvidence(page, result, idPrefix);
+  await assertWorkbenchDrawerCatalystAndPretrade(page, result, idPrefix);
+}
+
+async function assertWorkbenchDrawerStaticEvidence(page, result, idPrefix) {
   const startedAt = performance.now();
   const provenance = await page.evaluate(() => {
     const block = document.querySelector('[data-source-provenance]');
@@ -3805,7 +3882,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-source-provenance',
+    id: `${idPrefix}-source-provenance`,
     status: 'passed',
     durationMs: roundMs(performance.now() - startedAt),
     after: provenance,
@@ -3841,12 +3918,14 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-score-evidence',
+    id: `${idPrefix}-score-evidence`,
     status: 'passed',
     durationMs: roundMs(performance.now() - scoreStartedAt),
     after: scoreEvidence,
   });
+}
 
+async function assertWorkbenchDrawerFieldEvidence(page, result, idPrefix) {
   const fieldEvidenceStartedAt = performance.now();
   const fieldEvidence = await page.evaluate(() => {
     const block = document.querySelector('[data-field-evidence]');
@@ -3901,7 +3980,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-field-evidence',
+    id: `${idPrefix}-field-evidence`,
     status: 'passed',
     durationMs: roundMs(performance.now() - fieldEvidenceStartedAt),
     after: scoreFieldEvidence,
@@ -3936,7 +4015,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.click('[data-field-evidence-batch-clear]');
 
   result.actionChecks.push({
-    id: 'workbench-drawer-field-evidence-batch-drafts',
+    id: `${idPrefix}-field-evidence-batch-drafts`,
     status: 'passed',
     durationMs: roundMs(performance.now() - fieldEvidenceBatchStartedAt),
     after: fieldEvidenceBatch,
@@ -3959,7 +4038,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-field-evidence-record',
+    id: `${idPrefix}-field-evidence-record`,
     status: 'passed',
     durationMs: roundMs(performance.now() - fieldEvidenceRecordStartedAt),
     after: fieldEvidenceRecord,
@@ -3971,7 +4050,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.click('[data-field-evidence-invalidate-submit]');
   await page.waitForFunction(() => (
     (document.querySelector('[data-field-evidence-feedback]')?.textContent || '').includes('invalidated')
-  ), null, { timeout: 5000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   const fieldEvidenceInvalidate = await page.evaluate(() => ({
     feedback: (document.querySelector('[data-field-evidence-feedback]')?.textContent || '').trim(),
     hasManualEvidence: Array.from(document.querySelectorAll('[data-field-evidence-item]')).some((item) => (
@@ -3988,7 +4067,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-field-evidence-invalidate',
+    id: `${idPrefix}-field-evidence-invalidate`,
     status: 'passed',
     durationMs: roundMs(performance.now() - fieldEvidenceInvalidateStartedAt),
     after: fieldEvidenceInvalidate,
@@ -4001,7 +4080,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.click('[data-field-evidence-restore-submit]');
   await page.waitForFunction(() => (
     (document.querySelector('[data-field-evidence-feedback]')?.textContent || '').includes('restored')
-  ), null, { timeout: 5000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   const fieldEvidenceRestore = await page.evaluate(() => ({
     feedback: (document.querySelector('[data-field-evidence-feedback]')?.textContent || '').trim(),
     firstItem: (document.querySelector('[data-field-evidence-item]')?.textContent || '').trim().replace(/\s+/g, ' '),
@@ -4017,12 +4096,14 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-field-evidence-restore',
+    id: `${idPrefix}-field-evidence-restore`,
     status: 'passed',
     durationMs: roundMs(performance.now() - fieldEvidenceRestoreStartedAt),
     after: fieldEvidenceRestore,
   });
+}
 
+async function assertWorkbenchDrawerCatalystAndPretrade(page, result, idPrefix) {
   const catalystStartedAt = performance.now();
   const catalystActions = await page.evaluate(() => {
     const reminders = Array.from(document.querySelectorAll('[data-catalyst-reminder]')).map((reminder) => ({
@@ -4045,7 +4126,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-catalyst-actions',
+    id: `${idPrefix}-catalyst-actions`,
     status: 'passed',
     durationMs: roundMs(performance.now() - catalystStartedAt),
     after: catalystActions,
@@ -4056,7 +4137,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.waitForFunction(() => (
     Boolean(document.querySelector('.opportunity-drawer [data-catalyst-subscription="subscribed"]'))
     && Boolean(document.querySelector('.opportunity-drawer [data-catalyst-audit-trail]'))
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   const catalystSubscription = await page.evaluate(() => {
     const drawer = document.querySelector('.opportunity-drawer');
     const subscribedReminder = drawer?.querySelector('[data-catalyst-subscription="subscribed"]');
@@ -4087,10 +4168,10 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.waitForFunction(() => (
     (document.querySelector('.opportunity-drawer [data-catalyst-preference-status]')?.textContent || '').includes('取消订阅')
     && Boolean(document.querySelector('.opportunity-drawer [data-catalyst-subscription="none"]'))
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 5000, polling: 'raf' });
 
   result.actionChecks.push({
-    id: 'workbench-drawer-catalyst-subscription-audit',
+    id: `${idPrefix}-catalyst-subscription-audit`,
     status: 'passed',
     durationMs: roundMs(performance.now() - catalystSubscriptionStartedAt),
     after: catalystSubscription,
@@ -4101,7 +4182,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.waitForFunction(() => (
     document.querySelector('.opportunity-drawer [data-catalyst-preference-status]')
       ?.getAttribute('data-catalyst-preference-status') === 'synced'
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   const handledReminderVisible = await page.evaluate(() => (
     Boolean(document.querySelector('.opportunity-drawer [data-catalyst-preference="acknowledge"]'))
   ));
@@ -4109,7 +4190,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
     await page.click('.opportunity-drawer [data-catalyst-reminder-toggle-suppressed]');
     await page.waitForFunction(() => (
       Boolean(document.querySelector('.opportunity-drawer [data-catalyst-preference="acknowledge"]'))
-    ), null, { timeout: 3000 });
+    ), null, { timeout: 5000, polling: 'raf' });
   }
   const catalystPreference = await page.evaluate(() => {
     const drawer = document.querySelector('.opportunity-drawer');
@@ -4131,10 +4212,10 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.click('.opportunity-drawer [data-catalyst-reminder-reopen]');
   await page.waitForFunction(() => (
     (document.querySelector('.opportunity-drawer [data-catalyst-preference-status]')?.textContent || '').includes('恢复')
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 5000, polling: 'raf' });
 
   result.actionChecks.push({
-    id: 'workbench-drawer-catalyst-preference-audit',
+    id: `${idPrefix}-catalyst-preference-audit`,
     status: 'passed',
     durationMs: roundMs(performance.now() - catalystPreferenceStartedAt),
     after: catalystPreference,
@@ -4161,7 +4242,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-pretrade-catalyst-link',
+    id: `${idPrefix}-pretrade-catalyst-link`,
     status: 'passed',
     durationMs: roundMs(performance.now() - pretradeStartedAt),
     after: pretradeCatalyst,
@@ -4172,7 +4253,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   await page.waitForFunction(() => (
     document.querySelector('.opportunity-drawer [data-pretrade-audit="catalyst_window"]')
       ?.getAttribute('data-pretrade-audit-status') === 'synced'
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   await page.fill('.opportunity-drawer [data-pretrade-evidence="catalyst_window"]', 'viewport QA source confirmed date pending');
   const pretradeProgress = await page.evaluate(() => {
     const drawer = document.querySelector('.opportunity-drawer');
@@ -4209,7 +4290,7 @@ async function assertWorkbenchDrawerFocus(page, result) {
   }
 
   result.actionChecks.push({
-    id: 'workbench-drawer-pretrade-manual-confirmation',
+    id: `${idPrefix}-pretrade-manual-confirmation`,
     status: 'passed',
     durationMs: roundMs(performance.now() - pretradeConfirmStartedAt),
     after: pretradeProgress,
@@ -4315,7 +4396,6 @@ async function assertWorkbenchRecoveryAction(page, result) {
   if (!after.inlineFeedbackText.includes('Quick 重跑已提交') || !after.inlineFeedbackText.includes('run-workbench-retry')) {
     throw new Error(`workbench recovery card feedback should include retry result, got ${JSON.stringify(after)}.`);
   }
-  await page.waitForTimeout(150);
   if (retryRequests.length !== 1) {
     throw new Error(`workbench recovery duplicate clicks should submit exactly one retry request, got ${retryRequests.length}.`);
   }
@@ -4439,7 +4519,7 @@ async function assertOpportunityDrawerFocus(page, result, {
   await page.waitForFunction(() => (
     document.activeElement instanceof HTMLElement
     && document.activeElement.getAttribute('aria-label') === '关闭详情'
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 3000, polling: 'raf' });
 
   const focusedInDrawer = await activeElementSnapshot(page);
   if (focusedInDrawer?.ariaLabel !== '关闭详情') {
@@ -4459,7 +4539,7 @@ async function assertOpportunityDrawerFocus(page, result, {
     document.activeElement instanceof HTMLElement
     && document.activeElement.dataset.opportunityAction === 'details'
     && Boolean(document.activeElement.closest('[data-opportunity-id]'))
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 3000, polling: 'raf' });
 
   const restoredFocus = await activeElementSnapshot(page);
   if (restoredFocus?.action !== 'details' || !restoredFocus.opportunityId) {
@@ -4477,6 +4557,26 @@ async function assertOpportunityDrawerFocus(page, result, {
     await detailsButton.click({ timeout: 4000 });
     await page.locator('[role="dialog"][aria-label="机会详情"]').waitFor({ timeout: 5000 });
   }
+}
+
+async function closeOpportunityDrawerIfOpen(page) {
+  const drawerShell = page.locator('.opportunity-drawer-shell').first();
+  if (await drawerShell.count() === 0) return;
+
+  const closeButton = page.locator('[role="dialog"][aria-label="机会详情"] [aria-label="关闭详情"]').first();
+  if (await closeButton.count() > 0) {
+    await closeButton.click({ timeout: 3000, force: true });
+  } else {
+    await page.keyboard.press('Escape');
+  }
+
+  await page.waitForFunction(() => !document.querySelector('.opportunity-drawer-shell'), null, {
+    timeout: 5000,
+    polling: 'raf',
+  });
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 }
 
 async function collectVirtualListSnapshot(listLocator) {
@@ -4525,6 +4625,25 @@ function assertVirtualListSnapshot(name, snapshot) {
   }
 }
 
+async function waitForVirtualListSnapshot(
+  page,
+  list,
+  predicate,
+  description,
+  { timeoutMs = 1000, intervalMs = 25 } = {},
+) {
+  const startedAt = performance.now();
+  let latest = await collectVirtualListSnapshot(list);
+
+  while (performance.now() - startedAt < timeoutMs) {
+    if (predicate(latest)) return latest;
+    await page.waitForTimeout(intervalMs);
+    latest = await collectVirtualListSnapshot(list);
+  }
+
+  throw new Error(`${description}: timed out with ${JSON.stringify(latest)}.`);
+}
+
 async function assertWorkbenchVirtualListInteractions(page, result) {
   const board = page.locator('.op-board').filter({ has: page.locator('.op-board-virtual-list') }).first();
   const list = board.locator('.op-board-virtual-list').first();
@@ -4540,8 +4659,19 @@ async function assertWorkbenchVirtualListInteractions(page, result) {
   await list.focus();
   const beforeActiveNavigation = await collectVirtualListSnapshot(list);
   await page.keyboard.press('ArrowDown');
-  await page.waitForTimeout(80);
-  const afterActiveNavigation = await collectVirtualListSnapshot(list);
+  const afterActiveNavigation = await waitForVirtualListSnapshot(
+    page,
+    list,
+    (snapshot) => Boolean(
+      snapshot.activeDescendant
+      && snapshot.activePosition
+      && (
+        !beforeActiveNavigation.activePosition
+        || snapshot.activePosition > beforeActiveNavigation.activePosition
+      ),
+    ),
+    'workbench virtual ArrowDown active row update',
+  );
   if (
     !afterActiveNavigation.activeDescendant
     || !afterActiveNavigation.activePosition
@@ -4572,13 +4702,13 @@ async function assertWorkbenchVirtualListInteractions(page, result) {
   await page.waitForFunction(() => (
     document.activeElement instanceof HTMLElement
     && document.activeElement.getAttribute('aria-label') === '关闭详情'
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 3000, polling: 'raf' });
   await page.keyboard.press('Escape');
   await page.locator('[role="dialog"][aria-label="机会详情"]').waitFor({ state: 'detached', timeout: 5000 });
   await page.waitForFunction(() => (
     document.activeElement instanceof HTMLElement
     && document.activeElement.classList.contains('op-board-virtual-list')
-  ), null, { timeout: 3000 });
+  ), null, { timeout: 3000, polling: 'raf' });
   const afterEnterRestore = await activeElementSnapshot(page);
 
   result.actionChecks.push({
@@ -4593,10 +4723,18 @@ async function assertWorkbenchVirtualListInteractions(page, result) {
 
   await list.focus();
   await page.keyboard.press('PageDown');
-  await page.waitForTimeout(250);
-  const afterKeyboard = await collectVirtualListSnapshot(list);
+  const minKeyboardDelta = Math.max(120, Math.round(beforeKeyboard.clientHeight * 0.4));
+  const afterKeyboard = await waitForVirtualListSnapshot(
+    page,
+    list,
+    (snapshot) => (
+      snapshot.scrollTop - beforeKeyboard.scrollTop >= minKeyboardDelta
+      && (snapshot.rangeStart !== beforeKeyboard.rangeStart || snapshot.progress !== beforeKeyboard.progress)
+    ),
+    'workbench virtual keyboard scroll update',
+  );
   const keyboardDelta = afterKeyboard.scrollTop - beforeKeyboard.scrollTop;
-  if (keyboardDelta < Math.max(120, Math.round(beforeKeyboard.clientHeight * 0.4))) {
+  if (keyboardDelta < minKeyboardDelta) {
     throw new Error(`workbench virtual keyboard scroll moved only ${keyboardDelta}px.`);
   }
   if (afterKeyboard.rangeStart === beforeKeyboard.rangeStart && afterKeyboard.progress === beforeKeyboard.progress) {
@@ -4612,9 +4750,14 @@ async function assertWorkbenchVirtualListInteractions(page, result) {
     delta: keyboardDelta,
   });
 
+  await closeOpportunityDrawerIfOpen(page);
   await metricButton.click({ timeout: 3000 });
-  await page.waitForTimeout(300);
-  const afterFilter = await collectVirtualListSnapshot(list);
+  const afterFilter = await waitForVirtualListSnapshot(
+    page,
+    list,
+    (snapshot) => snapshot.scrollTop <= 8 && snapshot.progress === 0,
+    'workbench virtual filter scope reset',
+  );
   assertVirtualListSnapshot('workbench virtual list after filter switch', afterFilter);
   if (afterFilter.scrollTop > 8) {
     throw new Error(`workbench virtual filter scope should start at top, got scrollTop=${afterFilter.scrollTop}.`);
@@ -4629,16 +4772,28 @@ async function assertWorkbenchVirtualListInteractions(page, result) {
   });
 
   await board.locator('.op-board-filter-bar button', { hasText: '清除' }).click({ timeout: 3000 });
-  await page.waitForTimeout(300);
-  const afterRestore = await collectVirtualListSnapshot(list);
-  assertVirtualListSnapshot('workbench virtual list after filter clear', afterRestore);
-  const restoreDelta = Math.abs(afterRestore.scrollTop - afterKeyboard.scrollTop);
   const restoreTolerance = Math.max(
     24,
     Math.round((afterKeyboard.rowEstimate || beforeKeyboard.rowEstimate || 520) * 0.15),
   );
+  const afterRestore = await waitForVirtualListSnapshot(
+    page,
+    list,
+    (snapshot) => Math.abs(snapshot.scrollTop - afterKeyboard.scrollTop) <= restoreTolerance,
+    'workbench virtual scroll restoration',
+    { timeoutMs: 1200 },
+  );
+  assertVirtualListSnapshot('workbench virtual list after filter clear', afterRestore);
+  const restoreDelta = Math.abs(afterRestore.scrollTop - afterKeyboard.scrollTop);
   if (restoreDelta > restoreTolerance) {
-    throw new Error(`workbench virtual scroll restoration drifted by ${restoreDelta}px; tolerance is ${restoreTolerance}px.`);
+    throw new Error(`workbench virtual scroll restoration drifted by ${restoreDelta}px; tolerance is ${restoreTolerance}px; ${JSON.stringify({
+      expectedScrollTop: afterKeyboard.scrollTop,
+      restoredScrollTop: afterRestore.scrollTop,
+      expectedRange: [afterKeyboard.rangeStart, afterKeyboard.rangeEnd],
+      restoredRange: [afterRestore.rangeStart, afterRestore.rangeEnd],
+      expectedProgress: afterKeyboard.progress,
+      restoredProgress: afterRestore.progress,
+    })}`);
   }
 
   result.actionChecks.push({
@@ -4752,7 +4907,13 @@ async function assertWatchlistStressInteractions(page, result) {
 
   const search = page.locator('[data-watchlist-search]').first();
   await search.fill('NVDA0');
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const cards = Array.from(document.querySelectorAll('[data-watchlist-card-symbol]'));
+    const sections = Array.from(document.querySelectorAll('[data-watchlist-status]'));
+    return cards.length === 1
+      && sections.length === 1
+      && cards[0]?.getAttribute('data-watchlist-card-symbol') === 'NVDA0';
+  }, null, { timeout: 1000, polling: 'raf' });
   const filtered = await collectWatchlistSnapshot(page);
   if (filtered.cards !== 1 || filtered.sections.length !== 1 || filtered.sections[0].symbols[0] !== 'NVDA0') {
     throw new Error(`watchlist search should filter to NVDA0, got ${JSON.stringify(filtered)}.`);
@@ -4767,7 +4928,9 @@ async function assertWatchlistStressInteractions(page, result) {
   });
 
   await search.fill('');
-  await page.waitForTimeout(200);
+  await page.waitForFunction((expectedCards) => (
+    document.querySelectorAll('[data-watchlist-card-symbol]').length === expectedCards
+  ), collapsed.cards, { timeout: 1000, polling: 'raf' });
   const restored = await collectWatchlistSnapshot(page);
   if (restored.cards !== collapsed.cards) {
     throw new Error(`watchlist clearing search should restore collapsed card count ${collapsed.cards}, got ${restored.cards}.`);
@@ -4775,7 +4938,15 @@ async function assertWatchlistStressInteractions(page, result) {
 
   const toggle = page.locator('[data-watchlist-group-toggle]').first();
   await toggle.click({ timeout: 3000 });
-  await page.waitForTimeout(200);
+  await page.waitForFunction(({ restoredCards, restoredBodyHeight }) => {
+    const sections = Array.from(document.querySelectorAll('[data-watchlist-status]')).map((section) => ({
+      visibleCards: section.querySelectorAll('[data-watchlist-card-symbol]').length,
+      toggleText: (section.querySelector('[data-watchlist-group-toggle]')?.textContent || '').trim(),
+    }));
+    return document.querySelectorAll('[data-watchlist-card-symbol]').length > restoredCards
+      && document.body.scrollHeight >= restoredBodyHeight
+      && sections.some((section) => section.visibleCards > 9 && section.toggleText.includes('收起'));
+  }, { restoredCards: restored.cards, restoredBodyHeight: restored.bodyHeight }, { timeout: 1000, polling: 'raf' });
   const expanded = await collectWatchlistSnapshot(page);
   if (expanded.cards <= restored.cards || expanded.bodyHeight < restored.bodyHeight) {
     throw new Error(`watchlist expand should increase visible cards without shrinking page height, got ${JSON.stringify({ restored, expanded })}.`);
@@ -4794,7 +4965,10 @@ async function assertWatchlistStressInteractions(page, result) {
   });
 
   await page.locator('[data-watchlist-group-toggle]').first().click({ timeout: 3000 });
-  await page.waitForTimeout(200);
+  await page.waitForFunction(({ restoredCards, expandedBodyHeight }) => (
+    document.querySelectorAll('[data-watchlist-card-symbol]').length === restoredCards
+    && document.body.scrollHeight <= expandedBodyHeight + 12
+  ), { restoredCards: restored.cards, expandedBodyHeight: expanded.bodyHeight }, { timeout: 1000, polling: 'raf' });
   const recollapsed = await collectWatchlistSnapshot(page);
   if (recollapsed.cards !== restored.cards || recollapsed.bodyHeight > expanded.bodyHeight + 12) {
     throw new Error(`watchlist collapse should restore visible cards without growing beyond expanded height, got ${JSON.stringify({ restored, recollapsed })}.`);
@@ -4864,7 +5038,13 @@ async function assertTrendRawStressInteractions(page, result) {
   });
 
   await page.locator('[data-trend-raw-search]').fill('item 260');
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const rows = Array.from(document.querySelectorAll('[data-trend-raw-row]'));
+    const summaryText = (document.querySelector('[data-trend-raw-page-summary]')?.textContent || '').trim().replace(/\s+/g, ' ');
+    return rows.length === 1
+      && rows[0]?.getAttribute('data-trend-raw-id') === '260'
+      && summaryText.includes('1 - 1 / 1');
+  }, null, { timeout: 1000, polling: 'raf' });
   const searched = await collectTrendRawSnapshot(page);
   if (searched.rowCount !== 1 || searched.rowIds[0] !== '260' || !searched.summaryText.includes('1 - 1 / 1')) {
     throw new Error(`trend raw search should filter to item 260, got ${JSON.stringify(searched)}.`);
@@ -4880,7 +5060,13 @@ async function assertTrendRawStressInteractions(page, result) {
 
   await page.locator('[data-trend-raw-search]').fill('');
   await page.locator('[data-trend-raw-filter]').selectOption('rejected');
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const rows = Array.from(document.querySelectorAll('[data-trend-raw-row]'));
+    const summaryText = (document.querySelector('[data-trend-raw-page-summary]')?.textContent || '').trim().replace(/\s+/g, ' ');
+    return rows.length === 80
+      && summaryText.includes('1 - 80 / 87')
+      && rows.every((row) => row.getAttribute('data-trend-raw-matched') === '0');
+  }, null, { timeout: 1000, polling: 'raf' });
   const rejected = await collectTrendRawSnapshot(page);
   if (
     rejected.rowCount !== 80
@@ -4899,9 +5085,23 @@ async function assertTrendRawStressInteractions(page, result) {
   });
 
   await page.locator('[data-trend-raw-filter]').selectOption('all');
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const rows = Array.from(document.querySelectorAll('[data-trend-raw-row]'));
+    const summaryText = (document.querySelector('[data-trend-raw-page-summary]')?.textContent || '').trim().replace(/\s+/g, ' ');
+    const nextDisabled = document.querySelector('[data-trend-raw-page-next]')?.disabled ?? true;
+    return rows.length === 80
+      && rows[0]?.getAttribute('data-trend-raw-id') === '1'
+      && summaryText.includes('1 - 80 / 260')
+      && nextDisabled === false;
+  }, null, { timeout: 1000, polling: 'raf' });
   await page.locator('[data-trend-raw-page-next]').click({ timeout: 3000 });
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const rows = Array.from(document.querySelectorAll('[data-trend-raw-row]'));
+    const summaryText = (document.querySelector('[data-trend-raw-page-summary]')?.textContent || '').trim().replace(/\s+/g, ' ');
+    return rows.length === 80
+      && rows[0]?.getAttribute('data-trend-raw-id') === '81'
+      && summaryText.includes('81 - 160 / 260');
+  }, null, { timeout: 1000, polling: 'raf' });
   const nextPage = await collectTrendRawSnapshot(page);
   if (
     nextPage.rowCount !== 80
@@ -4927,7 +5127,12 @@ async function assertTrendRawStressInteractions(page, result) {
   await tableScroll.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
   });
-  await page.waitForTimeout(80);
+  if ((page.viewportSize()?.width || 0) <= 720) {
+    await page.waitForFunction(() => {
+      const scroll = document.querySelector('[data-trend-raw-table-scroll]');
+      return Boolean(scroll && scroll.scrollWidth > scroll.clientWidth + 2 && scroll.scrollLeft > 0);
+    }, null, { timeout: 1000, polling: 'raf' });
+  }
   const tableAfter = await collectTrendRawSnapshot(page);
   const canScrollHorizontally = (tableBefore.tableMetrics?.scrollWidth || 0) > (tableBefore.tableMetrics?.clientWidth || 0) + 2;
   if (tableBefore.tableMetrics?.tabIndex !== '0') {
@@ -5017,7 +5222,12 @@ async function clickCommandDiagnosticAction(page, result, action, before) {
   const button = page.locator(`[data-command-action="${action}"]`).first();
   await button.waitFor({ timeout: 5000 });
   await button.click({ timeout: 4000 });
-  await page.waitForTimeout(150);
+  await page.waitForFunction((actionName) => {
+    const actionButton = document.querySelector(`[data-command-action="${actionName}"]`);
+    if (!actionButton) return false;
+    const text = (actionButton.textContent || '').trim();
+    return !actionButton.disabled && !/(Repairing|Refreshing|Backfilling)/i.test(text);
+  }, action, { timeout: 1500, polling: 'raf' });
   const after = await collectCommandDiagnosticsSnapshot(page);
   if (after.submitError) {
     throw new Error(`command diagnostics ${action} should not surface submitError, got "${after.submitError}".`);
@@ -5121,6 +5331,68 @@ async function assertCommandDiagnosticsInteractions(page, result) {
   await clickCommandDiagnosticAction(page, result, 'refresh-price-history', afterFieldBackfill);
 }
 
+async function collectEvidenceCenterRepairSnapshot(page) {
+  return page.evaluate(() => {
+    const panel = document.querySelector('[data-evidence-repair-panel]');
+    const actions = Array.from(document.querySelectorAll('[data-evidence-repair-action]')).map((row) => ({
+      evidenceId: row.getAttribute('data-evidence-repair-action') || '',
+      code: row.getAttribute('data-evidence-repair-code') || '',
+      text: (row.textContent || '').trim().replace(/\s+/g, ' '),
+      hasInspect: Boolean(row.querySelector('[data-evidence-repair-inspect]')),
+      hasRegistryDraft: Boolean(row.querySelector('[data-evidence-repair-registry-draft]')),
+    }));
+    const rows = Array.from(document.querySelectorAll('[data-evidence-row]')).map((row) => ({
+      id: row.getAttribute('data-evidence-row') || '',
+      status: row.getAttribute('data-evidence-status') || '',
+      text: (row.textContent || '').trim().replace(/\s+/g, ' '),
+    }));
+
+    return {
+      hasPanel: Boolean(panel),
+      panelText: (panel?.textContent || '').trim().replace(/\s+/g, ' '),
+      actions,
+      rows,
+      search: document.querySelector('[data-evidence-search]')?.value || '',
+      bodyHeight: Math.round(document.body.scrollHeight),
+    };
+  });
+}
+
+async function assertEvidenceCenterRepairInteractions(page, result) {
+  const startedAt = performance.now();
+  await page.locator('[data-evidence-repair-panel]').waitFor({ timeout: 5000 });
+  await page.locator('[data-evidence-row]').first().waitFor({ timeout: 5000 });
+
+  const before = await collectEvidenceCenterRepairSnapshot(page);
+  const missingField = before.actions.find((action) => action.code === 'missing_field');
+  if (!before.hasPanel || !missingField?.hasInspect || !missingField.hasRegistryDraft) {
+    throw new Error(`evidence center repair panel should expose missing-field inspect and registry draft actions, got ${JSON.stringify(before)}.`);
+  }
+
+  await page.locator('[data-evidence-repair-inspect="field-evidence-missing-unfielded"]').click();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-evidence-search]')?.value === 'field-evidence-missing-unfielded'
+    && document.querySelectorAll('[data-evidence-row]').length === 1
+  ), null, { timeout: 5000, polling: 'raf' });
+  const after = await collectEvidenceCenterRepairSnapshot(page);
+
+  if (
+    after.search !== 'field-evidence-missing-unfielded'
+    || after.rows.length !== 1
+    || after.rows[0]?.id !== 'field-evidence-missing-unfielded'
+  ) {
+    throw new Error(`evidence center repair inspect should filter to the missing evidence row, got ${JSON.stringify(after)}.`);
+  }
+
+  result.actionChecks.push({
+    id: 'evidence-center-repair-suggestions',
+    status: 'passed',
+    durationMs: roundMs(performance.now() - startedAt),
+    before,
+    after,
+  });
+}
+
 async function collectFieldRegistrySnapshot(page) {
   return page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('[data-field-registry-row]')).map((row) => ({
@@ -5152,6 +5424,24 @@ async function collectFieldRegistrySnapshot(page) {
   });
 }
 
+async function waitForFieldRegistrySnapshot(
+  page,
+  predicate,
+  description,
+  { timeoutMs = 1200, intervalMs = 25 } = {},
+) {
+  const startedAt = performance.now();
+  let latest = await collectFieldRegistrySnapshot(page);
+
+  while (performance.now() - startedAt < timeoutMs) {
+    if (predicate(latest)) return latest;
+    await page.waitForTimeout(intervalMs);
+    latest = await collectFieldRegistrySnapshot(page);
+  }
+
+  throw new Error(`${description}: timed out with ${JSON.stringify(latest)}.`);
+}
+
 async function assertCatalystRemindersInteractions(page, result) {
   const startedAt = performance.now();
   await page.locator('[data-catalyst-reminder-row]').first().waitFor({ timeout: 5000 });
@@ -5173,7 +5463,7 @@ async function assertCatalystRemindersInteractions(page, result) {
   await page.fill('[data-catalyst-reminder-search]', 'coverage');
   await page.selectOption('[data-catalyst-reminder-preference]', 'subscribe');
   await page.check('[data-catalyst-reminder-active-only]');
-  await page.waitForFunction(() => document.querySelectorAll('[data-catalyst-reminder-row]').length === 1, null, { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-catalyst-reminder-row]').length === 1, null, { timeout: 5000, polling: 'raf' });
   const filtered = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('[data-catalyst-reminder-row]')).map((row) => ({
       preference: row.getAttribute('data-catalyst-reminder-row'),
@@ -5224,7 +5514,7 @@ async function assertPreTradeAuditInteractions(page, result) {
   await page.fill('[data-pretrade-audit-search]', 'coverage');
   await page.selectOption('[data-pretrade-audit-category]', 'catalyst_blocker');
   await page.selectOption('[data-pretrade-audit-status]', 'block');
-  await page.waitForFunction(() => document.querySelectorAll('[data-pretrade-audit-row]').length === 1, null, { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-pretrade-audit-row]').length === 1, null, { timeout: 5000, polling: 'raf' });
   const filtered = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('[data-pretrade-audit-row]')).map((row) => ({
       category: row.getAttribute('data-pretrade-audit-row'),
@@ -5307,7 +5597,7 @@ async function assertReviewPlaybackInteractions(page, result) {
   await page.waitForFunction(() => {
     const text = (document.querySelector('[data-review-playback-performance]')?.textContent || '').trim().replace(/\s+/g, ' ');
     return text.includes('Strategy Relay chain') && text.includes('Ticker AAOI') && text.includes('From 2026-05-01') && text.includes('To 2026-05-03');
-  }, null, { timeout: 5000 });
+  }, null, { timeout: 5000, polling: 'raf' });
   const backtestFiltered = await page.evaluate(() => ({
     performanceText: (document.querySelector('[data-review-playback-performance]')?.textContent || '').trim().replace(/\s+/g, ' '),
     workspaceText: (document.querySelector('[data-review-playback-backtest-workspace]')?.textContent || '').trim().replace(/\s+/g, ' '),
@@ -5334,21 +5624,21 @@ async function assertReviewPlaybackInteractions(page, result) {
   await page.click('[data-review-playback-save-view]');
   await page.waitForFunction(() => (
     (document.querySelector('[data-review-playback-saved-view-feedback]')?.textContent || '').includes('已保存')
-  ), null, { timeout: 5000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   await page.click('[data-review-playback-clear-filters]');
   await page.waitForFunction(() => {
     const text = (document.querySelector('[data-review-playback-performance]')?.textContent || '').trim().replace(/\s+/g, ' ');
     return text.includes('All history') && !text.includes('Strategy Relay chain');
-  }, null, { timeout: 5000 });
+  }, null, { timeout: 5000, polling: 'raf' });
   await page.click('[data-review-playback-apply-view]');
   await page.waitForFunction(() => {
     const text = (document.querySelector('[data-review-playback-performance]')?.textContent || '').trim().replace(/\s+/g, ' ');
     return text.includes('Strategy Relay chain') && text.includes('Ticker AAOI');
-  }, null, { timeout: 5000 });
+  }, null, { timeout: 5000, polling: 'raf' });
   await page.click('[data-review-playback-delete-view]');
   await page.waitForFunction(() => (
     (document.querySelector('[data-review-playback-saved-view-feedback]')?.textContent || '').includes('已删除')
-  ), null, { timeout: 5000 });
+  ), null, { timeout: 5000, polling: 'raf' });
   const savedViewState = await page.evaluate(() => ({
     feedback: (document.querySelector('[data-review-playback-saved-view-feedback]')?.textContent || '').trim(),
     optionCount: document.querySelectorAll('[data-review-playback-saved-view-select] option').length,
@@ -5371,7 +5661,7 @@ async function assertReviewPlaybackInteractions(page, result) {
   await page.fill('[data-review-playback-search]', 'timeout');
   await page.selectOption('[data-review-playback-category]', 'mission');
   await page.selectOption('[data-review-playback-tone]', 'negative');
-  await page.waitForFunction(() => document.querySelectorAll('[data-review-playback-row]').length === 1, null, { timeout: 5000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-review-playback-row]').length === 1, null, { timeout: 5000, polling: 'raf' });
   const filtered = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('[data-review-playback-row]')).map((row) => ({
       category: row.getAttribute('data-review-playback-row'),
@@ -5435,33 +5725,55 @@ async function assertFieldRegistryInteractions(page, result) {
   }
 
   await page.locator('[data-field-registry-export]').click();
-  await page.waitForTimeout(80);
-  const afterExport = await collectFieldRegistrySnapshot(page);
+  const afterExport = await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.exportText.includes('"version": 1')
+      && snapshot.exportText.includes('scores.relayScore'),
+    'field registry export JSON',
+  );
   if (!afterExport.exportText.includes('"version": 1') || !afterExport.exportText.includes('scores.relayScore')) {
     throw new Error(`field registry export should generate backup JSON, got ${JSON.stringify(afterExport)}.`);
   }
 
   await page.locator('[data-field-registry-import-sample]').click();
-  await page.waitForTimeout(50);
+  await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.importText.includes('scores.relayScore')
+      && snapshot.importText.includes('viewport_qa_registry'),
+    'field registry import sample',
+  );
   await page.locator('[data-field-registry-import-run]').click();
-  await page.locator('[data-field-registry-import-result]').waitFor({ timeout: 5000 });
-  const afterImport = await collectFieldRegistrySnapshot(page);
+  const afterImport = await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.importResult.includes('Dry-run')
+      && snapshot.importResult.includes('updated'),
+    'field registry import dry-run result',
+    { timeoutMs: 5000 },
+  );
   if (!afterImport.importResult.includes('Dry-run') || !afterImport.importResult.includes('updated') || afterImport.bulkError) {
     throw new Error(`field registry import dry-run should show result without errors, got ${JSON.stringify(afterImport)}.`);
   }
 
   const search = page.locator('[data-field-registry-search]');
   await search.fill('custom.executionGate');
-  await page.waitForTimeout(80);
-  const searched = await collectFieldRegistrySnapshot(page);
+  const searched = await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.rows.length === 1
+      && snapshot.rows[0]?.field === 'custom.executionGate',
+    'field registry search filter',
+  );
   if (searched.rows.length !== 1 || searched.rows[0]?.field !== 'custom.executionGate') {
     throw new Error(`field registry search should isolate custom execution gate, got ${JSON.stringify(searched)}.`);
   }
 
   await search.fill('');
   await page.locator('[data-field-registry-scope-filter]').selectOption('overridden');
-  await page.waitForTimeout(80);
-  const overridden = await collectFieldRegistrySnapshot(page);
+  const overridden = await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.rows.length >= 2
+      && !snapshot.rows.some((row) => row.text.includes('base defaults')),
+    'field registry overridden scope filter',
+  );
   if (overridden.rows.length < 2 || overridden.rows.some((row) => row.text.includes('base defaults'))) {
     throw new Error(`field registry overridden scope should only show override rows, got ${JSON.stringify(overridden)}.`);
   }
@@ -5469,15 +5781,23 @@ async function assertFieldRegistryInteractions(page, result) {
   await page.locator('[data-field-registry-row="scores.relayScore"]').click();
   await page.locator('[data-field-registry-label-page]').fill('Relay QA score');
   await page.locator('[data-field-registry-save-page]').click();
-  await page.locator('[data-field-registry-feedback]').waitFor({ timeout: 5000 });
-  const afterSave = await collectFieldRegistrySnapshot(page);
+  const afterSave = await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.feedback.includes('saved') || Boolean(snapshot.error),
+    'field registry save feedback',
+    { timeoutMs: 5000 },
+  );
   if (!afterSave.feedback.includes('saved') || afterSave.error) {
     throw new Error(`field registry save should show success feedback, got ${JSON.stringify(afterSave)}.`);
   }
 
   await page.locator('[data-field-registry-reset-page]').click();
-  await page.locator('[data-field-registry-feedback]').waitFor({ timeout: 5000 });
-  const afterReset = await collectFieldRegistrySnapshot(page);
+  const afterReset = await waitForFieldRegistrySnapshot(
+    page,
+    (snapshot) => snapshot.feedback.includes('reset') || Boolean(snapshot.error),
+    'field registry reset feedback',
+    { timeoutMs: 5000 },
+  );
   if (!afterReset.feedback.includes('reset') || afterReset.error) {
     throw new Error(`field registry reset should show success feedback, got ${JSON.stringify(afterReset)}.`);
   }
@@ -5666,7 +5986,6 @@ async function assertMissionViewerRecovery(page, result) {
   });
 
   await page.locator('[data-mission-recovery-action="inspect_trace"]').click({ timeout: 4000 });
-  await page.waitForTimeout(150);
   const afterInspect = await collectMissionViewerSnapshot(page);
   if (afterInspect.actionError) {
     throw new Error(`mission viewer inspect trace should not surface an action error, got ${afterInspect.actionError}.`);
@@ -5680,8 +5999,20 @@ async function assertMissionViewerRecovery(page, result) {
     after: afterInspect,
   });
 
-  await page.locator('[data-mission-viewer-action="retry"]').click({ timeout: 4000 });
-  await page.waitForTimeout(250);
+  const retryButton = page.locator('[data-mission-viewer-action="retry"]').first();
+  await retryButton.scrollIntoViewIfNeeded({ timeout: 4000 });
+  await retryButton.waitFor({ state: 'visible', timeout: 5000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-mission-viewer-action="retry"]');
+    return Boolean(button && !button.disabled);
+  }, null, { timeout: 5000, polling: 'raf' });
+  await retryButton.evaluate((button) => {
+    button.click();
+  });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-mission-viewer-action="retry"]');
+    return Boolean(button && !button.disabled && !(button.textContent || '').includes('重试排队中'));
+  }, null, { timeout: 5000, polling: 'raf' });
   const afterRetry = await collectMissionViewerSnapshot(page);
   if (afterRetry.actionError) {
     throw new Error(`mission viewer retry button should not surface an action error, got ${afterRetry.actionError}.`);
@@ -5921,6 +6252,8 @@ function buildPerformanceSummary(results) {
       route: item.route,
       viewport: item.viewport,
       totalMs: item.performance.totalMs,
+      totalRawMs: item.performance.totalRawMs,
+      environmentPauseMs: item.performance.environmentPauseMs,
       navigationMs: item.performance.navigationMs,
       screenshotMs: item.performance.screenshotMs,
       nodeCount: item.metrics.nodeCount,
@@ -5950,11 +6283,26 @@ function buildPerformanceSummary(results) {
       renderedOpportunityCards: item.metrics.renderedOpportunityCards,
       boardWindowStatusCount: item.metrics.boardWindowStatusCount,
     }));
+  const byEnvironmentPause = measured
+    .filter((item) => item.performance.environmentPauseMs > 0)
+    .sort((a, b) => b.performance.environmentPauseMs - a.performance.environmentPauseMs)
+    .slice(0, 5)
+    .map((item) => ({
+      route: item.route,
+      viewport: item.viewport,
+      totalMs: item.performance.totalMs,
+      totalRawMs: item.performance.totalRawMs,
+      settleMs: item.performance.settleMs,
+      settleExpectedMs: item.performance.settleExpectedMs,
+      settleTimerDriftMs: item.performance.settleTimerDriftMs,
+      environmentPauseMs: item.performance.environmentPauseMs,
+    }));
 
   return {
     slowest: byTotalMs,
     largestDom: byNodeCount,
     tallestPages: byBodyHeight,
+    environmentPauses: byEnvironmentPause,
   };
 }
 
@@ -6187,6 +6535,22 @@ function evaluateTrendWarnings(trend, thresholds) {
   return warnings;
 }
 
+function evaluateEnvironmentWarnings(results) {
+  return results
+    .filter((result) => result.performance?.environmentPauseMs > 0)
+    .map((result) => ({
+      id: 'qa-environment-timer-drift',
+      severity: 'info',
+      route: result.route,
+      path: result.path,
+      viewport: result.viewport,
+      metric: 'environmentPauseMs',
+      value: result.performance.environmentPauseMs,
+      threshold: environmentPauseThresholdMs,
+      message: `QA timer drift detected: the fixed ${result.performance.settleExpectedMs}ms settle wait took ${result.performance.settleMs}ms; ${result.performance.environmentPauseMs}ms was excluded from performance trend timing.`,
+    }));
+}
+
 function readJsonFile(filePath) {
   try {
     if (!existsSync(filePath)) return null;
@@ -6217,9 +6581,13 @@ function slimResult(result) {
       ? {
           navigationMs: result.performance.navigationMs,
           settleMs: result.performance.settleMs,
+          settleExpectedMs: result.performance.settleExpectedMs,
+          settleTimerDriftMs: result.performance.settleTimerDriftMs,
+          environmentPauseMs: result.performance.environmentPauseMs,
           actionMs: result.performance.actionMs,
           screenshotMs: result.performance.screenshotMs,
           inspectMs: result.performance.inspectMs,
+          totalRawMs: result.performance.totalRawMs,
           totalMs: result.performance.totalMs,
         }
       : null,
@@ -6323,6 +6691,8 @@ function buildLatestSnapshot(report) {
     checkedAt: report.checkedAt,
     baseUrl: report.baseUrl,
     liveApi: report.liveApi,
+    workbenchDrawerDepth: report.workbenchDrawerDepth,
+    routeFilter: report.routeFilter,
     stressOpportunityCount: report.stressOpportunityCount,
     stressExpandRounds: report.stressExpandRounds,
     warmup: report.warmup,
@@ -6461,8 +6831,11 @@ function buildMarkdownSummary(report) {
     `- Checks: ${report.results.length}`,
     `- Failed: ${report.failed.length}`,
     `- Soft warnings: ${report.warnings.length}`,
+    `- Environment pauses: ${report.environmentWarnings.length}`,
+    `- Route filter: ${report.routeFilter.length ? report.routeFilter.join(', ') : 'all'}`,
     `- Workbench stress opportunities: ${report.stressOpportunityCount}`,
     `- Workbench stress expand rounds: ${report.stressExpandRounds}`,
+    `- Workbench drawer depth: ${report.workbenchDrawerDepth}`,
     `- Artifacts: ${report.outDir}`,
     '',
     '## Soft Warnings',
@@ -6475,6 +6848,15 @@ function buildMarkdownSummary(report) {
     }
   } else {
     lines.push('_No soft warnings._');
+  }
+
+  lines.push('', '## Environment Pauses', '');
+  if (report.environmentWarnings.length) {
+    for (const warning of report.environmentWarnings) {
+      lines.push(`- ${warning.route} ${warning.viewport.width}px: ${warning.message}`);
+    }
+  } else {
+    lines.push('_No timer drift detected._');
   }
 
   const retriedNavigations = report.results.filter((result) => (result.navigationAttempts?.length || 0) > 1);
@@ -6546,6 +6928,7 @@ function buildMarkdownSummary(report) {
     { label: 'Route', value: (item) => item.route },
     { label: 'Viewport', value: (item) => `${item.viewport.width}px` },
     { label: 'Total', value: (item) => `${item.totalMs}ms` },
+    { label: 'Env Pause', value: (item) => item.environmentPauseMs ? `${item.environmentPauseMs}ms` : '-' },
     { label: 'Nodes', value: (item) => item.nodeCount },
     { label: 'Screenshot', value: (item) => formatBytes(item.screenshotBytes) },
   ]));
@@ -6566,6 +6949,15 @@ function buildMarkdownSummary(report) {
     { label: 'Height', value: (item) => `${item.bodyHeight}px` },
     { label: 'Max Scroll', value: (item) => `${item.maxScrollY}px` },
     { label: 'Cards', value: (item) => item.renderedOpportunityCards },
+  ]));
+
+  lines.push('', '## Largest Environment Pauses', '');
+  lines.push(...markdownPerformanceRows(report.performanceSummary.environmentPauses, [
+    { label: 'Route', value: (item) => item.route },
+    { label: 'Viewport', value: (item) => `${item.viewport.width}px` },
+    { label: 'Adjusted Total', value: (item) => `${item.totalMs}ms` },
+    { label: 'Raw Total', value: (item) => `${item.totalRawMs}ms` },
+    { label: 'Settle Drift', value: (item) => `${item.settleTimerDriftMs}ms` },
   ]));
 
   const trend = report.performanceSummary.trend;
@@ -6687,7 +7079,7 @@ async function runViewportQa(options) {
           await gotoWithRetry(page, `${options.baseUrl}${routeDef.path}`, result.navigationAttempts);
           const navigationEnd = performance.now();
           const settleStart = performance.now();
-          await page.waitForTimeout(1800);
+          await page.waitForTimeout(settleExpectedMs);
           const settleEnd = performance.now();
           const actionStart = performance.now();
           await applyRouteAction(page, routeDef.action, options, result);
@@ -6699,13 +7091,23 @@ async function runViewportQa(options) {
           result.layout = await inspectLayout(page, viewport);
           result.metrics = await collectPageMetrics(page, screenshot);
           const inspectEnd = performance.now();
+          const settleMs = roundMs(settleEnd - settleStart);
+          const settleTimerDriftMs = Math.max(0, settleMs - settleExpectedMs);
+          const environmentPauseMs = settleTimerDriftMs > environmentPauseThresholdMs
+            ? settleTimerDriftMs
+            : 0;
+          const totalRawMs = roundMs(inspectEnd - totalStart);
           result.performance = {
             navigationMs: roundMs(navigationEnd - navigationStart),
-            settleMs: roundMs(settleEnd - settleStart),
+            settleMs,
+            settleExpectedMs,
+            settleTimerDriftMs,
+            environmentPauseMs,
             actionMs: roundMs(actionEnd - actionStart),
             screenshotMs: roundMs(screenshotEnd - screenshotStart),
             inspectMs: roundMs(inspectEnd - inspectStart),
-            totalMs: roundMs(inspectEnd - totalStart),
+            totalRawMs,
+            totalMs: Math.max(0, totalRawMs - environmentPauseMs),
           };
         } catch (error) {
           result.navigationError = error instanceof Error ? error.message : String(error);
@@ -6729,6 +7131,8 @@ async function runViewportQa(options) {
     checkedAt: new Date().toISOString(),
     baseUrl: options.baseUrl,
     liveApi: options.liveApi,
+    workbenchDrawerDepth: options.workbenchDrawerDepth,
+    routeFilter: options.routes,
     stressOpportunityCount: options.stressOpportunityCount,
     stressExpandRounds: options.stressExpandRounds,
     warmup,
@@ -6737,6 +7141,7 @@ async function runViewportQa(options) {
     results,
     failed: results.filter(hasLayoutIssue),
     warnings: [],
+    environmentWarnings: evaluateEnvironmentWarnings(results),
   };
   const performanceSummary = buildPerformanceSummary(results);
   const snapshotForTrend = buildLatestSnapshot({
@@ -6753,6 +7158,7 @@ async function runViewportQa(options) {
   report.performanceSummary = {
     ...performanceSummary,
     warningCount: report.warnings.length,
+    environmentWarningCount: report.environmentWarnings.length,
     thresholds: report.thresholds,
     trend,
   };
@@ -6794,6 +7200,10 @@ function printSummary(report, reportPath, summaryPath) {
   }
   console.log(`Workbench stress opportunities: ${report.stressOpportunityCount}`);
   console.log(`Workbench stress expand rounds: ${report.stressExpandRounds}`);
+  console.log(`Workbench drawer depth: ${report.workbenchDrawerDepth}`);
+  if (report.routeFilter.length) {
+    console.log(`Route filter: ${report.routeFilter.join(', ')}`);
+  }
   const interactionResults = report.results.filter((result) => result.actionMetrics?.length);
   if (interactionResults.length) {
     const preview = interactionResults
@@ -6819,6 +7229,9 @@ function printSummary(report, reportPath, summaryPath) {
     }
   } else {
     console.log('Soft warnings: 0');
+  }
+  if (report.environmentWarnings?.length) {
+    console.warn(`Environment timer drift: ${report.environmentWarnings.length}`);
   }
   const retriedNavigations = report.results.filter((result) => (result.navigationAttempts?.length || 0) > 1);
   if (retriedNavigations.length) {

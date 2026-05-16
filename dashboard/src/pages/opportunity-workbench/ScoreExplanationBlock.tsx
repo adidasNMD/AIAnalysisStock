@@ -5,6 +5,8 @@ import { buildScoreExplanation, type ScoreExplanationFactor } from './score-expl
 type ScoreExplanationBlockProps = {
   opportunity: OpportunitySummary;
   compact?: boolean;
+  factorLimit?: number;
+  summaryOnly?: boolean;
 };
 
 function factorToneLabel(factor: ScoreExplanationFactor) {
@@ -26,14 +28,26 @@ function contributionLabel(factor: ScoreExplanationFactor) {
   return 'Watch factor';
 }
 
-export function ScoreExplanationBlock({ opportunity, compact = false }: ScoreExplanationBlockProps) {
+function calibrationLabel(stance: ReturnType<typeof buildScoreExplanation>['calibration']['stance']) {
+  if (stance === 'leading') return 'Leading';
+  if (stance === 'fragile') return 'Fragile';
+  return 'Balanced';
+}
+
+export function ScoreExplanationBlock({
+  opportunity,
+  compact = false,
+  factorLimit,
+  summaryOnly = false,
+}: ScoreExplanationBlockProps) {
   const explanation = buildScoreExplanation(opportunity);
+  const compactFactorLimit = Math.max(1, factorLimit ?? 3);
   const visibleFactors = compact
     ? [
         ...explanation.factors.filter((factor) => factor.tone === 'risk'),
         ...explanation.factors.filter((factor) => factor.tone === 'strong'),
         ...explanation.factors.filter((factor) => factor.tone === 'watch'),
-      ].slice(0, 3)
+      ].slice(0, compactFactorLimit)
     : explanation.factors;
 
   return (
@@ -48,11 +62,40 @@ export function ScoreExplanationBlock({ opportunity, compact = false }: ScoreExp
         </span>
       </div>
       {!compact && (
-        <div className="score-explanation-summary">
-          <Info size={13} />
-          {explanation.summary}
+      <div className="score-explanation-summary">
+        <Info size={13} />
+        {explanation.summary}
+      </div>
+      )}
+      {!compact && (
+        <div
+          className={`score-calibration ${explanation.calibration.stance}`}
+          data-score-calibration={explanation.calibration.stance}
+        >
+          <div>
+            <span>Calibration</span>
+            <strong>{calibrationLabel(explanation.calibration.stance)}</strong>
+          </div>
+          <div>
+            <span>Net</span>
+            <strong>{explanation.calibration.netWeight >= 0 ? '+' : ''}{explanation.calibration.netWeight}</strong>
+          </div>
+          <div>
+            <span>Drivers / risks</span>
+            <strong>{explanation.calibration.positiveWeight}/{explanation.calibration.riskWeight}</strong>
+          </div>
+          <div>
+            <span>Evidence</span>
+            <strong>
+              {explanation.calibration.evidenceBackedFactors}/{explanation.calibration.totalFactors}
+              {' · '}
+              {explanation.calibration.evidenceCoveragePct}%
+            </strong>
+          </div>
+          <p>{explanation.calibration.detail}</p>
         </div>
       )}
+      {!summaryOnly && (
       <div className="score-explanation-factors">
         {visibleFactors.map((factor) => (
           <div
@@ -90,6 +133,7 @@ export function ScoreExplanationBlock({ opportunity, compact = false }: ScoreExp
           </div>
         ))}
       </div>
+      )}
     </section>
   );
 }

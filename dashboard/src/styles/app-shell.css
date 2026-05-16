@@ -134,10 +134,13 @@
 
   .spa-root {
     flex-direction: column;
-    height: auto;
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .sidebar {
+    flex: 0 0 auto;
     width: 100%;
     min-width: 100%;
   }
@@ -148,7 +151,10 @@
   }
 
   .main-content {
-    overflow: visible;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .page {

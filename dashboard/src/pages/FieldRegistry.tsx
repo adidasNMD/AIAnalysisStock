@@ -190,6 +190,7 @@ export function FieldRegistry() {
   const selectedEntry = useMemo(() => (
     registryItems.find((entry) => entry.field === selectedField) || registryItems[0]
   ), [registryItems, selectedField]);
+  const selectedEntryField = selectedEntry?.field || '';
   const { data: auditHistory, loading: auditLoading, refresh: refreshAudit } = useOpportunityFieldRegistryAuditQuery(
     selectedEntry?.field,
     8,
@@ -232,9 +233,12 @@ export function FieldRegistry() {
     setSelectedKind(selectedEntry.kind);
     setConfidence(selectedEntry.confidence);
     setNote(selectedEntry.note || '');
+  }, [selectedEntry]);
+
+  useEffect(() => {
     setFeedback(null);
     setLocalError(null);
-  }, [selectedEntry]);
+  }, [selectedEntryField]);
 
   const filteredRegistry = useMemo(() => (
     registryItems.filter((entry) => {
@@ -279,9 +283,7 @@ export function FieldRegistry() {
         ...(note.trim() ? { note: note.trim() } : {}),
         updatedBy: 'dashboard',
       });
-      await refresh();
-      await refreshAudit();
-      await refreshReport();
+      await Promise.all([refresh(), refreshAudit(), refreshReport()]);
       setFeedback('Registry override saved.');
     } catch (saveError) {
       setLocalError(saveError instanceof Error ? saveError.message : '保存 registry override 失败。');
@@ -297,9 +299,7 @@ export function FieldRegistry() {
     setLocalError(null);
     try {
       await deleteOpportunityFieldRegistry(selectedEntry.field);
-      await refresh();
-      await refreshAudit();
-      await refreshReport();
+      await Promise.all([refresh(), refreshAudit(), refreshReport()]);
       setFeedback('Registry override reset.');
     } catch (resetError) {
       setLocalError(resetError instanceof Error ? resetError.message : '重置 registry override 失败。');
@@ -352,9 +352,7 @@ export function FieldRegistry() {
       });
       setBulkResult(result);
       if (!result.dryRun) {
-        await refresh();
-        await refreshAudit();
-        await refreshReport();
+        await Promise.all([refresh(), refreshAudit(), refreshReport()]);
       }
       setFeedback(result.dryRun ? 'Registry import dry-run completed.' : 'Registry import applied.');
     } catch (importError) {

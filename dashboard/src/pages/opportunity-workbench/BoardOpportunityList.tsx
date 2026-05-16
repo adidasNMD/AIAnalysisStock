@@ -48,6 +48,32 @@ function isInteractiveKeyTarget(target: EventTarget | null) {
     && Boolean(target.closest('button, a, input, select, textarea, [contenteditable="true"]'));
 }
 
+function buildVirtualScrollMemoryKey(scrollKey: string) {
+  return scrollKey;
+}
+
+function rememberVirtualScroll(
+  memoryKey: string,
+  scrollTop: number,
+) {
+  const safeScrollTop = Math.max(0, scrollTop);
+  virtualScrollMemory.set(memoryKey, safeScrollTop);
+}
+
+function restoreVirtualScrollTop(
+  memoryKey: string,
+  items: OpportunitySummary[],
+  viewportHeight: number,
+  itemEstimate: number,
+) {
+  return clampBoardListScrollTop(
+    items.length,
+    viewportHeight,
+    virtualScrollMemory.get(memoryKey) || 0,
+    itemEstimate,
+  );
+}
+
 export function BoardOpportunityList({
   scrollKey,
   allItemCount,
@@ -66,6 +92,7 @@ export function BoardOpportunityList({
 }: BoardOpportunityListProps) {
   const virtualListRef = useRef<HTMLDivElement | null>(null);
   const virtualItemsRef = useRef<HTMLDivElement | null>(null);
+  const restoringVirtualScrollRef = useRef(false);
   const [virtualViewport, setVirtualViewport] = useState({
     scrollTop: 0,
     viewportHeight: BOARD_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
@@ -134,20 +161,26 @@ export function BoardOpportunityList({
 
   useEffect(() => {
     const node = virtualListRef.current;
-    if (!node || !windowState.isWindowed) return;
+    if (!node || !windowState.isWindowed) return undefined;
     const viewportHeight = node.clientHeight || BOARD_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT;
-    const scrollTop = clampBoardListScrollTop(
-      items.length,
-      viewportHeight,
-      virtualScrollMemory.get(scrollKey) || 0,
-      itemEstimate,
-    );
+    const memoryKey = buildVirtualScrollMemoryKey(scrollKey);
+    const scrollTop = restoreVirtualScrollTop(memoryKey, items, viewportHeight, itemEstimate);
+    restoringVirtualScrollRef.current = true;
     setVirtualViewport({
       scrollTop,
       viewportHeight,
     });
+    setActiveRowState({
+      scrollKey,
+      index: activeIndexFromBoardListScroll(items.length, scrollTop, itemEstimate),
+    });
     node.scrollTop = scrollTop;
-  }, [itemEstimate, items.length, scrollKey, windowState.isWindowed]);
+    const frame = window.requestAnimationFrame(() => {
+      restoringVirtualScrollRef.current = false;
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [itemEstimate, items, items.length, scrollKey, windowState.isWindowed]);
 
   useEffect(() => {
     const node = virtualListRef.current;
@@ -155,9 +188,12 @@ export function BoardOpportunityList({
 
     const updateViewport = () => {
       const viewportHeight = node.clientHeight || BOARD_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT;
+      const memoryKey = buildVirtualScrollMemoryKey(scrollKey);
       const scrollTop = clampBoardListScrollTop(items.length, viewportHeight, node.scrollTop, itemEstimate);
       if (node.scrollTop !== scrollTop) node.scrollTop = scrollTop;
-      virtualScrollMemory.set(scrollKey, scrollTop);
+      if (!restoringVirtualScrollRef.current) {
+        rememberVirtualScroll(memoryKey, scrollTop);
+      }
       setVirtualViewport({
         scrollTop,
         viewportHeight,
@@ -169,7 +205,7 @@ export function BoardOpportunityList({
     observer.observe(node);
 
     return () => observer.disconnect();
-  }, [itemEstimate, items.length, scrollKey, windowState.isWindowed]);
+  }, [itemEstimate, items, items.length, scrollKey, windowState.isWindowed]);
 
   useEffect(() => {
     const listNode = virtualListRef.current;
@@ -194,10 +230,11 @@ export function BoardOpportunityList({
       if (nextEstimate === itemEstimate) return;
 
       const viewportHeight = listNode.clientHeight || BOARD_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT;
+      const memoryKey = buildVirtualScrollMemoryKey(scrollKey);
       const anchoredScrollTop = clampBoardListScrollTop(
         items.length,
         viewportHeight,
-        Math.round((listNode.scrollTop / itemEstimate) * nextEstimate),
+        listNode.scrollTop,
         nextEstimate,
       );
 
@@ -206,7 +243,7 @@ export function BoardOpportunityList({
 
       if (Math.abs(listNode.scrollTop - anchoredScrollTop) > 1) {
         listNode.scrollTop = anchoredScrollTop;
-        virtualScrollMemory.set(scrollKey, anchoredScrollTop);
+        rememberVirtualScroll(memoryKey, anchoredScrollTop);
         setVirtualViewport({
           scrollTop: anchoredScrollTop,
           viewportHeight,
@@ -217,6 +254,7 @@ export function BoardOpportunityList({
     return () => window.cancelAnimationFrame(frame);
   }, [
     itemEstimate,
+    items,
     items.length,
     scrollKey,
     virtualWindow.endIndex,
@@ -230,9 +268,12 @@ export function BoardOpportunityList({
     setVirtualViewport((current) => {
       const nextScrollTop = Math.max(0, node.scrollTop);
       const nextViewportHeight = node.clientHeight || BOARD_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT;
+      const memoryKey = buildVirtualScrollMemoryKey(scrollKey);
       const clampedScrollTop = clampBoardListScrollTop(items.length, nextViewportHeight, nextScrollTop, itemEstimate);
       if (node.scrollTop !== clampedScrollTop) node.scrollTop = clampedScrollTop;
-      virtualScrollMemory.set(scrollKey, clampedScrollTop);
+      if (!restoringVirtualScrollRef.current) {
+        rememberVirtualScroll(memoryKey, clampedScrollTop);
+      }
       if (
         current.scrollTop === clampedScrollTop
         && current.viewportHeight === nextViewportHeight
@@ -244,20 +285,21 @@ export function BoardOpportunityList({
         viewportHeight: nextViewportHeight,
       };
     });
-  }, [itemEstimate, items.length, scrollKey]);
+  }, [itemEstimate, items, scrollKey]);
 
   const scrollVirtualListTo = useCallback((nextScrollTop: number) => {
     const node = virtualListRef.current;
     if (!node) return;
     const viewportHeight = node.clientHeight || BOARD_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT;
+    const memoryKey = buildVirtualScrollMemoryKey(scrollKey);
     const scrollTop = clampBoardListScrollTop(items.length, viewportHeight, nextScrollTop, itemEstimate);
     node.scrollTop = scrollTop;
-    virtualScrollMemory.set(scrollKey, scrollTop);
+    rememberVirtualScroll(memoryKey, scrollTop);
     setVirtualViewport({
       scrollTop,
       viewportHeight,
     });
-  }, [itemEstimate, items.length, scrollKey]);
+  }, [itemEstimate, items, scrollKey]);
 
   const focusVirtualIndex = useCallback((nextIndex: number) => {
     const node = virtualListRef.current;
@@ -398,6 +440,7 @@ export function BoardOpportunityList({
               >
                 <OpportunityCard
                   opportunity={opportunity}
+                  density="dense"
                   activeMetricKey={activeMetricKey}
                   rank={virtualWindow.startIndex + index}
                   liveNow={liveNow}

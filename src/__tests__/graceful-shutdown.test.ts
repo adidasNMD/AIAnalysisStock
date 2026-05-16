@@ -109,4 +109,16 @@ describe('worker shouldAlert and cooldown', () => {
     expect(alertCooldown.has('OLD')).toBe(false);
     expect(alertCooldown.has('RECENT')).toBe(true);
   });
+
+  it('exposes a shutdown AbortSignal for non-mission worker tasks', async () => {
+    const { getWorkerShutdownSignal, requestWorkerShutdown } = await import('../worker.js');
+    const signal = getWorkerShutdownSignal();
+
+    expect(signal.aborted).toBe(false);
+    requestWorkerShutdown('test shutdown');
+
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBeInstanceOf(Error);
+    expect((signal.reason as Error).message).toBe('test shutdown');
+  });
 });

@@ -80,6 +80,7 @@ import {
   missionRecoveryFeedbackExpiresAt,
   missionRecoveryDiagnosis,
   missionRecoveryFailureAdvice,
+  prioritizeMissionRecoveryActions,
   recoveryActionGuidance,
   recoverySummary,
   recoveryTickers,
@@ -681,10 +682,10 @@ describe('opportunity workbench board list windowing', () => {
     const first = buildBoardListVirtualWindow(120, 0, 640);
     expect(first).toEqual({
       startIndex: 0,
-      endIndex: 3,
-      renderedCount: 3,
+      endIndex: 2,
+      renderedCount: 2,
       offsetTop: 0,
-      offsetBottom: (120 - 3) * BOARD_LIST_VIRTUAL_ITEM_ESTIMATE,
+      offsetBottom: (120 - 2) * BOARD_LIST_VIRTUAL_ITEM_ESTIMATE,
       totalHeight: 120 * BOARD_LIST_VIRTUAL_ITEM_ESTIMATE,
     });
 
@@ -694,8 +695,8 @@ describe('opportunity workbench board list windowing', () => {
       640,
     );
     expect(scrolled.startIndex).toBe(5 - BOARD_LIST_VIRTUAL_OVERSCAN);
-    expect(scrolled.endIndex).toBe(8);
-    expect(scrolled.renderedCount).toBe(4);
+    expect(scrolled.endIndex).toBe(7);
+    expect(scrolled.renderedCount).toBe(2);
     expect(scrolled.offsetTop).toBe((5 - BOARD_LIST_VIRTUAL_OVERSCAN) * BOARD_LIST_VIRTUAL_ITEM_ESTIMATE);
   });
 
@@ -714,9 +715,9 @@ describe('opportunity workbench board list windowing', () => {
     expect(refineBoardListItemEstimate(520, 640)).toBe(640);
 
     const measured = buildBoardListVirtualWindow(120, 640 * 5, 640, 640);
-    expect(measured.startIndex).toBe(4);
-    expect(measured.endIndex).toBe(7);
-    expect(measured.offsetTop).toBe(4 * 640);
+    expect(measured.startIndex).toBe(5);
+    expect(measured.endIndex).toBe(6);
+    expect(measured.offsetTop).toBe(5 * 640);
     expect(clampBoardListScrollTop(10, 640, 99999, 640)).toBe((10 * 640) - 640);
   });
 
@@ -1048,10 +1049,45 @@ describe('opportunity workbench mission recovery', () => {
       label: '运行中断恢复',
       primaryActionId: 'retry_same',
     });
+    expect(buildMissionRecoveryMeta(stale)).toContainEqual(
+      expect.objectContaining({ label: 'failure', value: '心跳恢复', tone: 'warning' }),
+    );
     expect(missionRecoveryDiagnosis(validation)).toMatchObject({
       label: '输入或结构问题',
       primaryActionId: 'review_recovery',
     });
+  });
+
+  it('keeps the recommended recovery action visible when compact panels limit actions', () => {
+    const failed = makeOpportunity({
+      latestMission: {
+        id: 'mission-1',
+        query: 'bad payload',
+        status: 'failed',
+        updatedAt: iso(60),
+      },
+      latestRun: {
+        id: 'run-1',
+        missionId: 'mission-1',
+        status: 'failed',
+        stage: 'dispatch',
+        attempt: 1,
+        createdAt: iso(120),
+        failureCode: 'validation_failed',
+      },
+    });
+    const diagnosis = missionRecoveryDiagnosis(failed);
+    const prioritized = prioritizeMissionRecoveryActions(
+      buildMissionRecoveryActions(failed),
+      diagnosis?.primaryActionId,
+    );
+
+    expect(diagnosis?.primaryActionId).toBe('review_recovery');
+    expect(prioritized.map((action) => action.id).slice(0, 3)).toEqual([
+      'review_recovery',
+      'retry_same',
+      'retry_quick',
+    ]);
   });
 
   it('nudges failed deep retries back to quick validation first', () => {
@@ -1664,6 +1700,16 @@ describe('opportunity workbench score explanation', () => {
       value: 'confirmed',
       contribution: expect.objectContaining({ direction: 'positive', weight: 18 }),
     });
+    expect(explanation.calibration).toMatchObject({
+      stance: 'leading',
+      positiveWeight: 110,
+      riskWeight: 0,
+      watchWeight: 22,
+      netWeight: 110,
+      totalFactors: 7,
+      evidenceCoveragePct: 71,
+    });
+    expect(explanation.summary).toContain('Net +110');
   });
 
   it('surfaces degraded status and failed mission as risk factors', () => {
@@ -1687,6 +1733,99 @@ describe('opportunity workbench score explanation', () => {
       tone: 'risk',
       contribution: expect.objectContaining({ direction: 'negative', weight: 24 }),
     });
+    expect(explanation.calibration).toMatchObject({
+      stance: 'fragile',
+      riskWeight: expect.any(Number),
+    });
+    expect(explanation.calibration.riskWeight).toBeGreaterThan(explanation.calibration.positiveWeight);
+  });
+
+  it('aligns score explanation with inbox ranking reasons', () => {
+    const explanation = buildScoreExplanation(makeInboxItem({
+      type: 'relay_chain',
+      status: 'ready',
+      inboxScore: 112,
+      recommendedAction: 'analyze',
+      inboxSummary: 'Relay ready',
+      inboxReasons: [
+        {
+          code: 'relay_ready',
+          label: '传导链可操作',
+          detail: 'Confirmed leader to bottleneck chain',
+          priority: 92,
+        },
+        {
+          code: 'catalyst_due',
+          label: '催化临近',
+          detail: 'Earnings in 5 days',
+          priority: 84,
+        },
+      ],
+      scores: {
+        purityScore: 72,
+        scarcityScore: 68,
+        tradeabilityScore: 76,
+        relayScore: 88,
+        catalystScore: 79,
+        policyScore: 48,
+      },
+      heatProfile: {
+        temperature: 'hot',
+        bottleneckTickers: ['MU'],
+        laggardTickers: ['SNDK'],
+        junkTickers: [],
+        breadthScore: 82,
+        validationStatus: 'confirmed',
+        validationSummary: 'Relay confirmed by breadth.',
+      },
+    }));
+
+    expect(explanation.factors.find((factor) => factor.id === 'ranking_signal')).toMatchObject({
+      tone: 'strong',
+      value: 112,
+      detail: 'Inbox recommends analyze · 传导链可操作: Confirmed leader to bottleneck chain',
+      contribution: expect.objectContaining({ direction: 'positive', weight: 20 }),
+      evidence: [
+        expect.objectContaining({
+          id: 'inbox:relay_ready',
+          source: 'opportunity_inbox',
+          confidence: 'confirmed',
+          value: 92,
+        }),
+        expect.objectContaining({
+          id: 'inbox:catalyst_due',
+          source: 'opportunity_inbox',
+          confidence: 'confirmed',
+          value: 84,
+        }),
+      ],
+    });
+    expect(explanation.calibration.positiveWeight).toBeGreaterThanOrEqual(20);
+    expect(explanation.calibration.confirmedEvidenceFactors).toBeGreaterThanOrEqual(1);
+  });
+
+  it('treats review inbox ranking signals as risk drag', () => {
+    const explanation = buildScoreExplanation(makeInboxItem({
+      status: 'degraded',
+      inboxScore: 101,
+      recommendedAction: 'review',
+      inboxSummary: 'Review required',
+      inboxReasons: [
+        {
+          code: 'degraded',
+          label: '需要复核',
+          detail: 'Leader broke below validation line',
+          priority: 96,
+        },
+      ],
+    }));
+
+    expect(explanation.factors.find((factor) => factor.id === 'ranking_signal')).toMatchObject({
+      tone: 'risk',
+      value: 101,
+      contribution: expect.objectContaining({ direction: 'negative', weight: 20 }),
+    });
+    expect(explanation.calibration.riskWeight).toBeGreaterThanOrEqual(20);
   });
 
   it('attaches evidence refs to score factors from source provenance and profiles', () => {
@@ -1875,6 +2014,11 @@ describe('opportunity workbench score explanation', () => {
     expect(explanation.factors.find((factor) => factor.id === 'mission')?.evidence).toEqual([
       expect.objectContaining({ source: 'opportunity_action', value: 'fully_enriched' }),
     ]);
+    expect(explanation.calibration).toMatchObject({
+      stance: 'leading',
+      confirmedEvidenceFactors: 3,
+    });
+    expect(explanation.calibration.evidenceBackedFactors).toBeGreaterThanOrEqual(5);
   });
 });
 
@@ -2421,6 +2565,115 @@ describe('opportunity workbench source provenance inspection', () => {
         expect.objectContaining({ value: '2026-05-01', adopted: true, sources: ['424B4'] }),
         expect.objectContaining({ value: '2026-05-02', adopted: false, sources: ['manual'] }),
       ],
+    });
+  });
+
+  it('includes field-evidence-only fields in source provenance inspection', () => {
+    const inspection = buildSourceProvenanceInspection(makeOpportunity({
+      sourceProvenance: {
+        total: 1,
+        confirmed: 1,
+        inferred: 0,
+        placeholder: 0,
+        unknown: 0,
+        sources: ['mission'],
+        items: [
+          {
+            id: 'mission:latest',
+            kind: 'mission',
+            field: 'latestMission',
+            label: 'Latest mission',
+            source: 'mission',
+            confidence: 'confirmed',
+            value: 'fully_enriched',
+          },
+        ],
+      },
+      fieldEvidence: {
+        total: 2,
+        fields: 2,
+        sources: ['manual_review', 'mission'],
+        items: [
+          {
+            id: 'manual:policy',
+            kind: 'source',
+            field: 'policyStatus',
+            label: 'Policy status',
+            source: 'manual_review',
+            confidence: 'confirmed',
+            value: 'approved',
+          },
+          {
+            id: 'mission:latest',
+            kind: 'mission',
+            field: 'latestMission',
+            label: 'Latest mission',
+            source: 'mission',
+            confidence: 'confirmed',
+            value: 'fully_enriched',
+          },
+        ],
+      },
+    }));
+
+    expect(inspection).toMatchObject({
+      totalFields: 2,
+      confirmedFields: 2,
+      conflictFields: 0,
+      missingFields: 0,
+      weakFields: 0,
+    });
+    expect(inspection?.rows.map((row) => [row.field, row.status])).toEqual([
+      ['latestMission', 'confirmed'],
+      ['policyStatus', 'confirmed'],
+    ]);
+    expect(inspection?.rows.find((row) => row.field === 'policyStatus')).toMatchObject({
+      label: 'Policy status',
+      sourceCount: 1,
+      confidence: 'confirmed',
+      adoptedValue: 'approved',
+      valueGroups: [
+        expect.objectContaining({
+          value: 'approved',
+          adopted: true,
+          sources: ['manual_review'],
+        }),
+      ],
+    });
+  });
+
+  it('can build source provenance inspection from field evidence without provenance rows', () => {
+    const inspection = buildSourceProvenanceInspection(makeOpportunity({
+      fieldEvidence: {
+        total: 1,
+        fields: 1,
+        sources: ['manual_review'],
+        items: [
+          {
+            id: 'manual:trade',
+            kind: 'source',
+            field: 'scores.tradeabilityScore',
+            label: 'Tradeability score',
+            source: 'manual_review',
+            confidence: 'inferred',
+            value: '72',
+          },
+        ],
+      },
+    }));
+
+    expect(inspection).toMatchObject({
+      totalFields: 1,
+      confirmedFields: 0,
+      weakFields: 1,
+      missingFields: 0,
+      conflictFields: 0,
+    });
+    expect(inspection?.rows[0]).toMatchObject({
+      field: 'scores.tradeabilityScore',
+      label: 'Tradeability score',
+      status: 'weak',
+      reviewHint: 'Confirm this source with filing, mission output, or manual evidence.',
     });
   });
 });

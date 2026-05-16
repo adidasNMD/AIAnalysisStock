@@ -13,6 +13,8 @@ import {
 type PreTradeChecklistBlockProps = {
   opportunity: OpportunitySummary;
   compact?: boolean;
+  itemLimit?: number;
+  summaryOnly?: boolean;
   onAuditRecorded?: (audit: PreTradeConfirmationAudit) => void;
 };
 
@@ -39,6 +41,8 @@ function auditLabel(state?: PreTradeAuditState): string {
 export function PreTradeChecklistBlock({
   opportunity,
   compact = false,
+  itemLimit,
+  summaryOnly = false,
   onAuditRecorded,
 }: PreTradeChecklistBlockProps) {
   const [progress, setProgress] = useState(() => readPreTradeProgress());
@@ -47,8 +51,9 @@ export function PreTradeChecklistBlock({
   const progressSummary = useMemo(() => (
     summarizePreTradeProgress(checklist.items, progress, opportunity.id)
   ), [checklist.items, opportunity.id, progress]);
+  const compactItemLimit = Math.max(1, itemLimit ?? 3);
   const visibleItems = compact
-    ? checklist.items.filter((item) => item.status !== 'pass').slice(0, 3)
+    ? checklist.items.filter((item) => item.status !== 'pass').slice(0, compactItemLimit)
     : checklist.items;
 
   const updateItemProgress = (item: PreTradeChecklistItem, patch: Parameters<typeof updatePreTradeProgress>[3]) => {
@@ -125,6 +130,7 @@ export function PreTradeChecklistBlock({
           </div>
         </>
       )}
+      {!summaryOnly && (
       <div className="pretrade-items">
         {visibleItems.length === 0 ? (
           <div className="pretrade-item pass">
@@ -201,6 +207,7 @@ export function PreTradeChecklistBlock({
           );
         })}
       </div>
+      )}
     </section>
   );
 }

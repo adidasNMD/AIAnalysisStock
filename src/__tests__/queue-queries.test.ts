@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskQueueResponse } from '../../dashboard/src/api';
 import {
+  buildQueueRecoveryIssues,
   emptyQueueResponse,
   isQueueTaskStale,
   recoverableQueueTasks,
@@ -46,5 +47,58 @@ describe('queue query helpers', () => {
     };
 
     expect(recoverableQueueTasks(queue).map((item) => item.id)).toEqual(['failed', 'canceled']);
+  });
+
+  it('builds prioritized recovery issues for stale, failed, and canceled tasks', () => {
+    const queue: TaskQueueResponse = {
+      summary: '',
+      tasks: [
+        task({
+          id: 'canceled',
+          status: 'canceled',
+          createdAt: 2_000,
+          failureCode: 'canceled',
+        }),
+        task({
+          id: 'failed',
+          status: 'failed',
+          createdAt: 3_000,
+          failureCode: 'upstream_unavailable',
+        }),
+        task({
+          id: 'stale',
+          status: 'running',
+          createdAt: 1_000,
+          startedAt: 2_000,
+          heartbeatAt: 6_000,
+        }),
+      ],
+    };
+
+    const issues = buildQueueRecoveryIssues(queue, 10_000, 1_000);
+
+    expect(issues.map((issue) => issue.id)).toEqual([
+      'stale:stale',
+      'failed:failed',
+      'canceled:canceled',
+    ]);
+    expect(issues[0]).toMatchObject({
+      kind: 'stale',
+      tone: 'danger',
+      action: 'recover_stale',
+      actionLabel: '恢复卡住任务',
+      ageLabel: '4s',
+    });
+    expect(issues[1]).toMatchObject({
+      kind: 'failed',
+      failureLabel: '上游不可用',
+      tone: 'danger',
+      action: 'recover_task',
+    });
+    expect(issues[2]).toMatchObject({
+      kind: 'canceled',
+      failureLabel: '已取消',
+      tone: 'info',
+    });
   });
 });

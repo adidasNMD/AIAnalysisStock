@@ -17,21 +17,21 @@ import {
 } from '../api';
 import type {
   DiagnosticsResult,
-  ImportOpportunityFieldRegistryItem,
   MissionSummary,
-  OpportunityFieldEvidenceRepairAction,
   TaskQueueResponse,
 } from '../api';
 import { useAgentStream } from '../hooks/useAgentStream';
 import { useCommandCenterDiagnostics } from '../queries/diagnostics-queries';
-import { useMissionListQuery } from '../queries/mission-queries';
+import { buildMissionRecoveryAuditView, useMissionListQuery } from '../queries/mission-queries';
 import {
+  buildQueueRecoveryIssues,
   DEFAULT_STALE_TASK_THRESHOLD_MS,
   isQueueTaskStale,
   recoverableQueueTasks,
   useQueueQuery,
 } from '../queries/queue-queries';
 import { getFailureCodeInfo } from '../utils/recovery';
+import { evidenceRepairSearchUrl, registryDraftUrl } from '../utils/field-evidence-repair';
 import '../styles/workflow-shared.css';
 import './command-center.css';
 
@@ -62,43 +62,6 @@ function missionDiffBadge(diff?: MissionSummary['latestDiff']) {
     : { label: 'STABLE', tone: 'stable' as const };
 }
 
-function evidenceRepairSearchUrl(action: OpportunityFieldEvidenceRepairAction) {
-  const params = new URLSearchParams();
-  if (action.evidenceId) params.set('q', action.evidenceId);
-  if (action.field) params.set('field', action.field);
-  if (action.canonicalStatus) params.set('status', action.canonicalStatus);
-  return `/evidence?${params.toString()}`;
-}
-
-function registryDraftField(action: OpportunityFieldEvidenceRepairAction) {
-  const fallback = action.evidenceId || action.opportunityId || 'manual-field';
-  const compact = fallback
-    .replace(/[^a-zA-Z0-9]+/g, '.')
-    .replace(/^\.+|\.+$/g, '')
-    .slice(0, 48);
-  return `custom.${compact || 'manualField'}`;
-}
-
-function registryDraftUrl(action: OpportunityFieldEvidenceRepairAction) {
-  const item: ImportOpportunityFieldRegistryItem = {
-    field: action.field || registryDraftField(action),
-    label: action.field || 'Recovered evidence field',
-    kind: 'source',
-    source: 'manual_event_repair',
-    confidence: 'unknown',
-    note: [
-      `Diagnostic draft for ${action.issueCode}.`,
-      action.evidenceId ? `Evidence: ${action.evidenceId}.` : '',
-      action.opportunityId ? `Opportunity: ${action.opportunityId}.` : '',
-      action.reason,
-    ].filter(Boolean).join(' '),
-  };
-  const params = new URLSearchParams({
-    importDraft: JSON.stringify({ items: [item] }),
-  });
-  return `/field-registry?${params.toString()}`;
-}
-
 export function CommandCenter() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<'explore' | 'analyze'>('explore');
@@ -117,10 +80,11 @@ export function CommandCenter() {
   const [refreshingArtifactIntegrity, setRefreshingArtifactIntegrity] = useState(false);
   const [retryingMissionId, setRetryingMissionId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const { logs, isConnected } = useAgentStream(80);
   const { data: queue, refresh: refreshQueue } = useQueueQuery();
-  const { data: recentMissions } = useMissionListQuery(8);
+  const { data: recentMissions, refresh: refreshRecentMissions } = useMissionListQuery(8);
   const {
     health: { data: health },
     services: { data: diagnostics },
@@ -140,6 +104,7 @@ export function CommandCenter() {
   );
   const staleRunningTasks = (queue?.tasks || []).filter(isTaskStale);
   const recoverableTasks = recoverableQueueTasks(queue);
+  const queueRecoveryIssues = buildQueueRecoveryIssues(queue, currentTime, DEFAULT_STALE_TASK_THRESHOLD_MS);
   const liveMissions = (recentMissions || []).filter((mission) => ['queued', 'main_running', 'ta_running'].includes(mission.status));
   const attentionMissions = (recentMissions || []).filter((mission) => ['failed', 'canceled', 'main_only'].includes(mission.status));
   const readyMissions = (recentMissions || []).filter((mission) => mission.status === 'fully_enriched');
@@ -184,6 +149,7 @@ export function CommandCenter() {
     try {
       const mission = await createMission(mode, query, undefined, depth);
       void refreshQueue();
+      void refreshRecentMissions();
       setQuery('');
       navigate(`/missions/${mission.missionId}`);
     } catch (error) {
@@ -196,6 +162,7 @@ export function CommandCenter() {
     if (cancelingTaskId) return;
     setCancelingTaskId(taskId);
     setSubmitError(null);
+    setRecoveryNotice(null);
     try {
       const canceled = await cancelMission(taskId);
       if (!canceled) {
@@ -213,9 +180,16 @@ export function CommandCenter() {
     if (retryingMissionId) return;
     setRetryingMissionId(missionId);
     setSubmitError(null);
+    setRecoveryNotice(null);
     try {
-      await retryMission(missionId, depth);
+      const result = await retryMission(missionId, depth);
       void refreshQueue();
+      void refreshRecentMissions();
+      if (result.recoveryAudit) {
+        setRecoveryNotice(result.recoveryAudit.reusedExistingRetry
+          ? `Mission ${missionId} 已复用现有恢复任务。`
+          : `Mission ${missionId} 已创建新的恢复任务。`);
+      }
       navigate(`/missions/${missionId}`);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : '任务重试失败');
@@ -227,9 +201,20 @@ export function CommandCenter() {
     if (recoveringTaskId) return;
     setRecoveringTaskId(taskId);
     setSubmitError(null);
+    setRecoveryNotice(null);
     try {
       const recovered = await recoverQueueTask(taskId);
       void refreshQueue();
+      void refreshRecentMissions();
+      const recoveryAudit = buildMissionRecoveryAuditView(recovered.recoveryAudit);
+      const recoveryAuditDetail = recoveryAudit
+        ? ` ${recoveryAudit.label}${recoveryAudit.meta.length > 0 ? `（${recoveryAudit.meta.map((meta) => meta.label).join(' · ')}）` : ''}`
+        : '';
+      setRecoveryNotice(
+        recovered.missionId
+          ? `Mission ${recovered.missionId}${recovered.runId ? ` / Run ${recovered.runId}` : ''} 已恢复入队。${recoveryAuditDetail}`
+          : `Task ${recovered.taskId || taskId} 已恢复入队。`,
+      );
       if (recovered.missionId) {
         navigate(`/missions/${recovered.missionId}`);
       }
@@ -243,13 +228,19 @@ export function CommandCenter() {
     if (recoveringStale) return;
     setRecoveringStale(true);
     setSubmitError(null);
+    setRecoveryNotice(null);
     try {
       const result = await recoverStaleQueueTasks(DEFAULT_STALE_TASK_THRESHOLD_MS);
       void refreshQueue();
+      if (result.totalRecovered > 0) {
+        void refreshRecentMissions();
+      }
       if (result.totalRecovered === 0) {
         setSubmitError(result.skippedActiveTaskIds.length > 0
           ? '检测到本进程仍在执行的任务，暂不自动恢复'
           : '没有需要恢复的卡住任务');
+      } else {
+        setRecoveryNotice(`已恢复 ${result.totalRecovered} 个卡住任务，重排 ${result.requeuedRuns} 个 Mission run。`);
       }
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : '卡住任务恢复失败');
@@ -764,6 +755,7 @@ export function CommandCenter() {
             missionInbox.map((mission) => {
               const badge = missionStatusBadge(mission.status);
               const diffBadge = missionDiffBadge(mission.latestDiff);
+              const recoveryAudit = buildMissionRecoveryAuditView(mission.latestRecoveryEvent);
               return (
                 <div
                   key={mission.id}
@@ -815,6 +807,26 @@ export function CommandCenter() {
                       >
                         查看对比
                       </button>
+                    </div>
+                  )}
+                  {recoveryAudit && (
+                    <div
+                      className="tc-recovery-audit"
+                      data-command-mission-recovery-audit={recoveryAudit.action}
+                    >
+                      <span className={`diff-chip ${recoveryAudit.tone}`}>
+                        {recoveryAudit.label}
+                      </span>
+                      {recoveryAudit.meta.map((meta) => (
+                        <span
+                          key={`${mission.id}_${recoveryAudit.action}_${meta.key}`}
+                          className={meta.key === 'cost' && meta.tone
+                            ? `tc-recovery-cost ${meta.tone}`
+                            : 'tc-recovery-copy'}
+                        >
+                          {meta.label}
+                        </span>
+                      ))}
                     </div>
                   )}
                   {mission.openclawTickers.length > 0 && (
@@ -871,12 +883,74 @@ export function CommandCenter() {
       <div className="queue-section">
         <h3>任务队列</h3>
         <div className="queue-stats">{queue?.summary || '加载中...'}</div>
-        {staleRunningTasks.length > 0 && (
-          <div className="queue-recovery-banner">
-            <span>{staleRunningTasks.length} 个运行任务心跳超时</span>
-            <button type="button" onClick={handleRecoverStaleTasks} disabled={recoveringStale}>
-              {recoveringStale ? '恢复中...' : '恢复卡住任务'}
-            </button>
+        {recoveryNotice && (
+          <div className="queue-recovery-feedback success" role="status">
+            <span>{recoveryNotice}</span>
+          </div>
+        )}
+        {queueRecoveryIssues.length > 0 && (
+          <div className="queue-recovery-diagnostic" data-command-queue-recovery>
+            <div className="queue-recovery-diagnostic-header">
+              <div>
+                <span>恢复诊断</span>
+                <strong>{queueRecoveryIssues.length} 个任务需要处理</strong>
+              </div>
+              {staleRunningTasks.length > 0 && (
+                <button type="button" onClick={handleRecoverStaleTasks} disabled={recoveringStale}>
+                  <RefreshCw size={12} className={recoveringStale ? 'spin' : undefined} />
+                  {recoveringStale ? '恢复中...' : '批量恢复卡住任务'}
+                </button>
+              )}
+            </div>
+            <div className="queue-recovery-issue-list">
+              {queueRecoveryIssues.slice(0, 4).map((issue) => (
+                <div
+                  key={issue.id}
+                  className={`queue-recovery-issue ${issue.tone}`}
+                  data-command-queue-recovery-issue={issue.kind}
+                >
+                  <div className="queue-recovery-issue-main">
+                    <div className="queue-recovery-issue-title">
+                      <span>{issue.label}</span>
+                      {issue.failureLabel && <em>{issue.failureLabel}</em>}
+                      {issue.ageLabel && <em>{issue.ageLabel}</em>}
+                    </div>
+                    <strong>{issue.task.query}</strong>
+                    <p>{issue.detail}</p>
+                  </div>
+                  <div className="queue-recovery-issue-actions">
+                    {issue.task.missionId && (
+                      <button type="button" className="secondary-btn tiny" onClick={() => navigate(`/missions/${issue.task.missionId}`)}>
+                        查看任务
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary-btn tiny recommended"
+                      onClick={() => {
+                        if (issue.action === 'recover_stale') {
+                          void handleRecoverStaleTasks();
+                        } else {
+                          void handleRecoverTask(issue.task.id);
+                        }
+                      }}
+                      disabled={issue.action === 'recover_stale' ? recoveringStale : recoveringTaskId === issue.task.id}
+                      data-command-queue-recovery-action={issue.action}
+                    >
+                      <RefreshCw
+                        size={12}
+                        className={(issue.action === 'recover_stale' ? recoveringStale : recoveringTaskId === issue.task.id) ? 'spin' : undefined}
+                      />
+                      {issue.action === 'recover_stale' && recoveringStale
+                        ? '恢复中...'
+                        : issue.action === 'recover_task' && recoveringTaskId === issue.task.id
+                          ? '恢复中...'
+                          : issue.actionLabel}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         {queue?.tasks.filter(t => t.status === 'pending').slice(0, 5).map(task => (

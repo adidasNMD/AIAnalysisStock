@@ -4,6 +4,7 @@ import { firecrawlTool } from '../../tools/firecrawl';
 import { redditTool } from '../../tools/reddit';
 import { fetchGoogleNewsRSS } from '../../tools/google-news';
 import { RawSignal } from '../../models/types';
+import { isCanceledError } from '../../utils/error-classification';
 
 interface AgentRequestOptions {
   signal?: AbortSignal;
@@ -11,12 +12,8 @@ interface AgentRequestOptions {
 
 function throwIfCanceled(signal?: AbortSignal) {
   if (signal?.aborted) {
-    throw new Error('Canceled by user');
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
   }
-}
-
-function isCanceledError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Canceled by user';
 }
 
 /**

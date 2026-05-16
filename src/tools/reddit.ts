@@ -17,8 +17,28 @@ interface RequestOptions {
 
 function throwIfCanceled(signal?: AbortSignal) {
   if (signal?.aborted) {
-    throw new Error('Canceled by user');
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
   }
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfCanceled(signal);
+  let onAbort: (() => void) | undefined;
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(resolve, ms);
+    onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
+  }).finally(() => {
+    if (onAbort) {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  });
 }
 
 // 预设的金融相关 subreddit 列表
@@ -155,14 +175,7 @@ export async function scanMultipleSubreddits(
       const posts = await fetchHotPosts(sub, limit, options);
       allPosts.push(...posts);
       // 小延迟避免触发 Reddit 速率限制
-      await new Promise<void>((resolve, reject) => {
-        const timeoutId = setTimeout(resolve, 500);
-        const onAbort = () => {
-          clearTimeout(timeoutId);
-          reject(new Error('Canceled by user'));
-        };
-        options.signal?.addEventListener('abort', onAbort, { once: true });
-      });
+      await abortableDelay(500, options.signal);
     } catch (e: any) {
       throwIfCanceled(options.signal);
       console.error(`[Reddit] Failed to scan r/${sub}: ${e.message}`);

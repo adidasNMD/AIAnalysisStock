@@ -1,4 +1,5 @@
 import { AutonomousAgent } from '../core/agent';
+import { isCanceledError } from '../../utils/error-classification';
 
 interface AgentRequestOptions {
   signal?: AbortSignal;
@@ -6,12 +7,8 @@ interface AgentRequestOptions {
 
 function throwIfCanceled(signal?: AbortSignal) {
   if (signal?.aborted) {
-    throw new Error('Canceled by user');
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
   }
-}
-
-function isCanceledError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'Canceled by user';
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -21,7 +18,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
     const timeoutId = setTimeout(resolve, ms);
     onAbort = () => {
       clearTimeout(timeoutId);
-      reject(new Error('Canceled by user'));
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
   }).finally(() => {

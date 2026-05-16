@@ -96,7 +96,7 @@ interface RetryMissionApiInput {
   idempotencyKey?: string;
 }
 
-function recoveryCostHintForDepth(depth: MissionInput['depth'] | undefined, fallbackLabel = '沿用原深度'): MissionRecoveryCostHint {
+export function recoveryCostHintForDepth(depth: MissionInput['depth'] | undefined, fallbackLabel = '沿用原深度'): MissionRecoveryCostHint {
   if (depth === 'quick') {
     return {
       tier: 'low',

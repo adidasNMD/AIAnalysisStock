@@ -5,6 +5,11 @@ describe('execution error classification', () => {
   it('identifies user cancellation without treating every AbortError as canceled', () => {
     expect(classifyExecutionFailure(new Error('Canceled by user'))).toBe('canceled');
     expect(isCanceledError(new Error('Canceled by user'))).toBe(true);
+    expect(classifyExecutionFailure(new Error('Worker shutdown requested by SIGTERM'))).toBe('canceled');
+
+    const canceled = new Error('operation stopped by abort controller');
+    canceled.name = 'CanceledError';
+    expect(isCanceledError(canceled)).toBe(true);
 
     const timeout = new Error('The operation was aborted');
     timeout.name = 'AbortError';

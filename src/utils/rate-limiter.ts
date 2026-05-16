@@ -9,14 +9,42 @@ export class RateLimiter {
     this.lastRefill = Date.now();
   }
 
-  async acquire(): Promise<void> {
+  async acquire(signal?: AbortSignal): Promise<void> {
+    this.throwIfCanceled(signal);
     this.refill();
     if (this.tokens <= 0) {
       const waitMs = (1 / this.refillRatePerSecond) * 1000;
-      await new Promise(r => setTimeout(r, waitMs));
+      await this.delay(waitMs, signal);
       this.refill();
     }
+    this.throwIfCanceled(signal);
     this.tokens--;
+  }
+
+  private throwIfCanceled(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+    }
+  }
+
+  private delay(ms: number, signal?: AbortSignal): Promise<void> {
+    this.throwIfCanceled(signal);
+    let onAbort: (() => void) | undefined;
+    return new Promise<void>((resolve, reject) => {
+      const timeoutId = setTimeout(resolve, ms);
+      onAbort = () => {
+        clearTimeout(timeoutId);
+        reject(signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+      }
+    }).finally(() => {
+      if (onAbort) {
+        signal?.removeEventListener('abort', onAbort);
+      }
+    });
   }
 
   private refill() {

@@ -3,7 +3,28 @@ import { sendStopLossAlert } from '../utils/telegram';
 import { logger } from '../utils/logger';
 import type { ConsensusResult, DecisionTrailEntry, TickerConsensus, UnifiedMission } from './types';
 
-export async function triggerConsensusAlerts(consensus: TickerConsensus[]): Promise<void> {
+interface ConsensusAlertOptions {
+  signal?: AbortSignal | undefined;
+}
+
+interface ConsensusOptions {
+  signal?: AbortSignal | undefined;
+}
+
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getCancelReason(signal);
+  }
+}
+
+export async function triggerConsensusAlerts(
+  consensus: TickerConsensus[],
+  options: ConsensusAlertOptions = {},
+): Promise<void> {
   const alertEnabled = process.env.AUTO_ALERT_ENABLED !== 'false';
   if (!alertEnabled) return;
 
@@ -14,13 +35,17 @@ export async function triggerConsensusAlerts(consensus: TickerConsensus[]): Prom
     ].filter(Boolean).join('\n');
 
     if (c.agreement === 'disagree') {
-      await sendStopLossAlert(c.ticker,
-        `⚠️ 双大脑冲突\nOpenClaw: ${c.openclawVerdict}\nTradingAgents: ${c.taVerdict}\n${reasoningBlock}\n建议: 暂不操作，等待共识\n${c.vetoReason || ''}`
+      await sendStopLossAlert(
+        c.ticker,
+        `⚠️ 双大脑冲突\nOpenClaw: ${c.openclawVerdict}\nTradingAgents: ${c.taVerdict}\n${reasoningBlock}\n建议: 暂不操作，等待共识\n${c.vetoReason || ''}`,
+        options,
       );
     }
     if (c.vetoed) {
-      await sendStopLossAlert(c.ticker,
-        `🚫 SMA250 否决\n${c.vetoReason}\n${reasoningBlock}\n建议: 右侧趋势未确认，禁止建仓`
+      await sendStopLossAlert(
+        c.ticker,
+        `🚫 SMA250 否决\n${c.vetoReason}\n${reasoningBlock}\n建议: 右侧趋势未确认，禁止建仓`,
+        options,
       );
     }
   }
@@ -132,11 +157,16 @@ export function buildDecisionTrail(mission: UnifiedMission): DecisionTrailEntry[
   });
 }
 
-export async function computeConsensus(mission: UnifiedMission): Promise<ConsensusResult[]> {
+export async function computeConsensus(
+  mission: UnifiedMission,
+  options: ConsensusOptions = {},
+): Promise<ConsensusResult[]> {
+  throwIfCanceled(options.signal);
   const tickers = mission.openclawTickers;
   if (!tickers.length) return [];
 
   const tickerConsensusResults = await Promise.all(tickers.map(async ticker => {
+    throwIfCanceled(options.signal);
     let ocVerdict: TickerConsensus['openclawVerdict'] = null;
     let structuredBullCase: string | undefined;
     let structuredBearCase: string | undefined;
@@ -208,6 +238,7 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
     }
 
     if (agreement === 'disagree') {
+      throwIfCanceled(options.signal);
       vetoReason = `双大脑冲突: OpenClaw=${ocVerdict} vs TradingAgents=${taVerdict}，强制 HOLD`;
       logger.warn(`[Consensus] ⚠️ ${vetoReason}`);
     }
@@ -219,7 +250,9 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
       && (ocVerdict === 'BUY' || taVerdict === 'BUY')
     ) {
       try {
-        const smaResults = await checkSMACross(ticker, [250]);
+        throwIfCanceled(options.signal);
+        const smaResults = await checkSMACross(ticker, [250], options);
+        throwIfCanceled(options.signal);
         const sma250 = smaResults.find(r => r.period === 250);
         if (sma250?.position === 'below') {
           vetoed = true;
@@ -228,6 +261,7 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
           logger.warn(`[Consensus] 🚫 SMA250 否决: ${vetoReason}`);
         }
       } catch (e: unknown) {
+        throwIfCanceled(options.signal);
         const msg = e instanceof Error ? e.message : String(e);
         logger.warn(`[Consensus] SMA250 检查失败 ${ticker}: ${msg}，跳过否决`);
       }
@@ -249,6 +283,7 @@ export async function computeConsensus(mission: UnifiedMission): Promise<Consens
     return consensus;
   }));
 
+  throwIfCanceled(options.signal);
   mission.consensus = tickerConsensusResults;
 
   return tickerConsensusResults.map(tc => mapToConsensusResult(tc));

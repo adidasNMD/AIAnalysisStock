@@ -1,4 +1,3 @@
-import { Sparkles } from 'lucide-react';
 import type { OpportunityActionTimelineEntry } from '../../api';
 import {
   timelineDecisionLabel,
@@ -9,14 +8,16 @@ import {
 
 type OpportunityTimelineBlockProps = {
   entries?: OpportunityActionTimelineEntry[];
+  limit?: number;
 };
 
-export function OpportunityTimelineBlock({ entries = [] }: OpportunityTimelineBlockProps) {
+export function OpportunityTimelineBlock({ entries = [], limit = 3 }: OpportunityTimelineBlockProps) {
   if (entries.length === 0) return null;
+  const safeLimit = Math.max(1, limit);
 
   return (
     <div className="op-timeline-list">
-      {entries.slice(0, 3).map((entry) => (
+      {entries.slice(0, safeLimit).map((entry) => (
         <div key={entry.id} className="op-timeline-entry">
           <div className="op-timeline-top">
             <div className="op-timeline-chips">
@@ -32,7 +33,6 @@ export function OpportunityTimelineBlock({ entries = [] }: OpportunityTimelineBl
           <div className="op-timeline-detail">{entry.detail}</div>
           {entry.reasonSummary && (
             <div className="op-timeline-reason">
-              <Sparkles size={12} />
               {entry.reasonSummary}
             </div>
           )}

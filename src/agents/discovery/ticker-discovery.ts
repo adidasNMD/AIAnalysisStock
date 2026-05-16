@@ -23,6 +23,16 @@ function loadInvestorProfile(): string {
   return '';
 }
 
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+  }
+}
+
 /**
  * 从文本中提取 ticker 代码
  */
@@ -79,13 +89,15 @@ export class TickerDiscoveryEngine {
     trendName: string,
     trendDescription?: string,
     existingTickers?: string[],
+    options: AgentRequestOptions = {},
   ): Promise<{ tickers: DiscoveredTicker[]; supplyChainLogic: string; rejectedTickers?: RejectedTicker[] }> {
+    throwIfCanceled(options.signal);
     console.log(`\n[TickerDiscovery] 🔍 开始从趋势中发现标的: "${trendName}"`);
 
     // 多源数据采集
     const [redditTickers, newsContext] = await Promise.all([
-      this.collectRedditTickers(trendName),
-      this.collectNewsContext(trendName),
+      this.collectRedditTickers(trendName, options),
+      this.collectNewsContext(trendName, options),
     ]);
 
     // LLM 纯文本产业链推导
@@ -129,8 +141,13 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     userPrompt += `\n请进行完整的产业链推导，三类赛道都要覆盖。`;
 
+    throwIfCanceled(options.signal);
     console.log(`[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...`);
-    const analysisReport = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
+    const analysisReport = await generateTextCompletion(systemPrompt, userPrompt, {
+      streamToConsole: true,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    throwIfCanceled(options.signal);
 
     // 从文本中提取 ticker
     const extractedTickers = extractTickersFromText(analysisReport);
@@ -144,7 +161,9 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     for (const symbol of extractedTickers) {
       try {
-        const quote = await getQuote(symbol);
+        throwIfCanceled(options.signal);
+        const quote = await getQuote(symbol, options);
+        throwIfCanceled(options.signal);
         if (!quote || quote.price <= 0) {
           console.log(`[TickerDiscovery] ⚠️ 跳过无效标的: ${symbol}`);
           rejectedTickers.push({ symbol, reason: 'invalid' });
@@ -178,6 +197,7 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
           risks: [],
         });
       } catch (e: any) {
+        throwIfCanceled(options.signal);
         console.log(`[TickerDiscovery] ⚠️ 跳过无效标的: ${symbol} (${e.message})`);
         rejectedTickers.push({ symbol, reason: 'error' });
       }
@@ -192,21 +212,33 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
     return { tickers: validatedTickers, supplyChainLogic: analysisReport.substring(0, 500), rejectedTickers };
   }
 
-  private async collectRedditTickers(trendName: string): Promise<Map<string, number>> {
+  private async collectRedditTickers(
+    trendName: string,
+    options: AgentRequestOptions = {},
+  ): Promise<Map<string, number>> {
     try {
-      const posts = await searchPosts(trendName, undefined, 20);
+      throwIfCanceled(options.signal);
+      const posts = await searchPosts(trendName, undefined, 20, options);
+      throwIfCanceled(options.signal);
       return extractTickersFromPosts(posts);
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[TickerDiscovery] Reddit 搜索失败: ${e.message}`);
       return new Map();
     }
   }
 
-  private async collectNewsContext(trendName: string): Promise<string> {
+  private async collectNewsContext(
+    trendName: string,
+    options: AgentRequestOptions = {},
+  ): Promise<string> {
     try {
-      const items = await fetchGoogleNewsRSS(trendName, 'en', 8);
+      throwIfCanceled(options.signal);
+      const items = await fetchGoogleNewsRSS(trendName, 'en', 8, options);
+      throwIfCanceled(options.signal);
       return items.map(item => `[${item.source}] ${item.title}`).join('\n');
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[TickerDiscovery] Google News 搜索失败: ${e.message}`);
       return '';
     }

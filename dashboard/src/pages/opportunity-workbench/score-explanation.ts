@@ -1,4 +1,4 @@
-import type { OpportunitySummary } from '../../api';
+import type { OpportunityInboxItem, OpportunitySummary } from '../../api';
 import { buildPreTradeChecklist } from './pretrade';
 import { isRecoverableMissionStatus } from './recovery-status';
 
@@ -8,6 +8,22 @@ export type ScoreContributionDirection = 'positive' | 'negative' | 'neutral';
 export type ScoreContribution = {
   direction: ScoreContributionDirection;
   weight: number;
+};
+
+export type ScoreCalibrationStance = 'leading' | 'balanced' | 'fragile';
+
+export type ScoreCalibration = {
+  stance: ScoreCalibrationStance;
+  positiveWeight: number;
+  riskWeight: number;
+  watchWeight: number;
+  netWeight: number;
+  totalFactors: number;
+  evidenceBackedFactors: number;
+  confirmedEvidenceFactors: number;
+  evidenceCoveragePct: number;
+  headline: string;
+  detail: string;
 };
 
 export type ScoreEvidenceRef = {
@@ -36,6 +52,7 @@ export type ScoreExplanation = {
   primaryValue: number;
   primaryTone: ScoreExplanationTone;
   readinessLabel: string;
+  calibration: ScoreCalibration;
   factors: ScoreExplanationFactor[];
 };
 
@@ -47,6 +64,7 @@ function scoreTone(value: number, strong = 75, watch = 55): ScoreExplanationTone
 
 const FACTOR_CONTRIBUTION_WEIGHTS: Record<string, number> = {
   primary: 30,
+  ranking_signal: 20,
   pretrade: 22,
   mission: 18,
   tradeability: 18,
@@ -100,6 +118,66 @@ function attachContributions(factors: ScoreExplanationFactor[]): ScoreExplanatio
     ...factor,
     contribution: factor.contribution || contributionForFactor(factor),
   }));
+}
+
+type OpportunityWithInboxSignals = OpportunitySummary & Partial<Pick<
+  OpportunityInboxItem,
+  'inboxScore' | 'recommendedAction' | 'inboxReasons' | 'actionDecision' | 'actionLabel' | 'actionDetail'
+>>;
+
+function buildScoreCalibration(factors: ScoreExplanationFactor[]): ScoreCalibration {
+  const totals = factors.reduce((acc, factor) => {
+    const weight = factor.contribution?.weight || 0;
+    if (factor.contribution?.direction === 'positive') acc.positiveWeight += weight;
+    else if (factor.contribution?.direction === 'negative') acc.riskWeight += weight;
+    else acc.watchWeight += weight;
+
+    if ((factor.evidence?.length || 0) > 0) acc.evidenceBackedFactors += 1;
+    if ((factor.evidence || []).some((item) => item.confidence === 'confirmed')) {
+      acc.confirmedEvidenceFactors += 1;
+    }
+    return acc;
+  }, {
+    positiveWeight: 0,
+    riskWeight: 0,
+    watchWeight: 0,
+    evidenceBackedFactors: 0,
+    confirmedEvidenceFactors: 0,
+  });
+  const totalFactors = factors.length;
+  const evidenceCoveragePct = totalFactors > 0
+    ? Math.round((totals.evidenceBackedFactors / totalFactors) * 100)
+    : 0;
+  const netWeight = totals.positiveWeight - totals.riskWeight;
+  const stance: ScoreCalibrationStance = totals.riskWeight > totals.positiveWeight || netWeight < 0
+    ? 'fragile'
+    : netWeight >= 35 && evidenceCoveragePct >= 50
+      ? 'leading'
+      : 'balanced';
+  const headline = stance === 'leading'
+    ? `Net +${netWeight} with ${evidenceCoveragePct}% evidence coverage`
+    : stance === 'fragile'
+      ? `Risk drag ${totals.riskWeight} vs driver ${totals.positiveWeight}`
+      : `Net +${netWeight} with ${totals.watchWeight} watch weight`;
+  const detail = [
+    `${totals.positiveWeight} positive driver weight`,
+    `${totals.riskWeight} risk drag`,
+    `${totals.confirmedEvidenceFactors}/${totalFactors} factors have confirmed evidence`,
+  ].join(' · ');
+
+  return {
+    stance,
+    positiveWeight: totals.positiveWeight,
+    riskWeight: totals.riskWeight,
+    watchWeight: totals.watchWeight,
+    netWeight,
+    totalFactors,
+    evidenceBackedFactors: totals.evidenceBackedFactors,
+    confirmedEvidenceFactors: totals.confirmedEvidenceFactors,
+    evidenceCoveragePct,
+    headline,
+    detail,
+  };
 }
 
 function compactEvidenceText(value?: string | number | null): string | undefined {
@@ -276,6 +354,48 @@ function missionFactor(opportunity: OpportunitySummary): ScoreExplanationFactor 
     value: mission.status,
     detail: '任务还不是完整终态，排序会保守处理。',
     evidence: missionEvidence,
+  };
+}
+
+function rankingSignalFactor(opportunity: OpportunitySummary): ScoreExplanationFactor | null {
+  const signals = opportunity as OpportunityWithInboxSignals;
+  const reasons = Array.isArray(signals.inboxReasons) ? signals.inboxReasons : [];
+  const hasScore = typeof signals.inboxScore === 'number' && Number.isFinite(signals.inboxScore);
+  if (!hasScore && !signals.recommendedAction && reasons.length === 0 && !signals.actionDecision) return null;
+
+  const recommendedAction = signals.recommendedAction || (
+    signals.actionDecision === 'degrade' || signals.actionDecision === 'review'
+      ? 'review'
+      : signals.actionDecision === 'act' || signals.actionDecision === 'upgrade'
+        ? 'analyze'
+        : 'monitor'
+  );
+  const topReason = reasons[0];
+  const tone: ScoreExplanationTone = recommendedAction === 'review'
+    ? 'risk'
+    : recommendedAction === 'analyze' && (signals.inboxScore || 0) >= 70
+      ? 'strong'
+      : 'watch';
+  const evidence = reasons.slice(0, 3).map((reason) => ({
+    id: `inbox:${reason.code}`,
+    label: reason.label,
+    source: 'opportunity_inbox',
+    confidence: reason.priority >= 80 ? 'confirmed' : reason.priority >= 55 ? 'inferred' : 'unknown',
+    value: reason.priority,
+    ...(reason.detail ? { note: reason.detail } : {}),
+  }));
+
+  return {
+    id: 'ranking_signal',
+    label: 'Ranking signal',
+    tone,
+    ...(hasScore ? { value: signals.inboxScore } : { value: recommendedAction }),
+    detail: [
+      `Inbox recommends ${recommendedAction}`,
+      topReason ? `${topReason.label}: ${topReason.detail || topReason.priority}` : signals.actionLabel,
+      signals.actionDetail,
+    ].filter(Boolean).join(' · '),
+    evidence,
   };
 }
 
@@ -526,6 +646,7 @@ function typeFactors(opportunity: OpportunitySummary): ScoreExplanationFactor[] 
 export function buildScoreExplanation(opportunity: OpportunitySummary): ScoreExplanation {
   const primary = primaryMetric(opportunity);
   const primaryTone = scoreTone(primary.value);
+  const rankingFactor = rankingSignalFactor(opportunity);
   const factors: ScoreExplanationFactor[] = [
     {
       id: 'primary',
@@ -553,6 +674,7 @@ export function buildScoreExplanation(opportunity: OpportunitySummary): ScoreExp
               metricEvidence('primary_tradeability_score', 'Tradeability score', opportunity.scores.tradeabilityScore, opportunity.primaryTicker),
             ),
     },
+    ...(rankingFactor ? [rankingFactor] : []),
     preTradeFactor(opportunity),
     missionFactor(opportunity),
     {
@@ -571,6 +693,7 @@ export function buildScoreExplanation(opportunity: OpportunitySummary): ScoreExp
     ...movementFactors(opportunity),
   ];
   const factorsWithContributions = attachContributions(factors);
+  const calibration = buildScoreCalibration(factorsWithContributions);
   const riskCount = factorsWithContributions.filter((factor) => factor.tone === 'risk').length;
   const strongCount = factorsWithContributions.filter((factor) => factor.tone === 'strong').length;
   const readiness = buildPreTradeChecklist(opportunity);
@@ -578,12 +701,13 @@ export function buildScoreExplanation(opportunity: OpportunitySummary): ScoreExp
   return {
     headline: `${primary.label} ${primary.value}`,
     summary: riskCount > 0
-      ? `${riskCount} 个风险因子压制评分，先处理 ${factorsWithContributions.find((factor) => factor.tone === 'risk')?.label || 'risk'}。`
-      : `${strongCount} 个强因子支撑排序，pre-trade 当前为 ${readiness.label}。`,
+      ? `${riskCount} 个风险因子压制评分，先处理 ${factorsWithContributions.find((factor) => factor.tone === 'risk')?.label || 'risk'}；${calibration.headline}。`
+      : `${strongCount} 个强因子支撑排序，pre-trade 当前为 ${readiness.label}；${calibration.headline}。`,
     primaryLabel: primary.label,
     primaryValue: primary.value,
     primaryTone,
     readinessLabel: readiness.label,
+    calibration,
     factors: factorsWithContributions,
   };
 }

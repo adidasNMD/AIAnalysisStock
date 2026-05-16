@@ -1,4 +1,5 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, History, RotateCcw } from 'lucide-react';
+import { preloadOpportunityDetailDrawer } from './detail-drawer-loader';
 import type { StrategyReviewDigest, StrategyReviewEntry } from './review-digest';
 
 type StrategyReviewPanelProps = {
@@ -81,6 +82,8 @@ export function StrategyReviewPanel({
                   type="button"
                   className="secondary-btn tiny"
                   data-opportunity-action="details"
+                  onFocus={preloadOpportunityDetailDrawer}
+                  onMouseEnter={preloadOpportunityDetailDrawer}
                   onClick={() => onOpenOpportunity(entry.opportunity)}
                 >
                   详情 <ArrowRight size={12} />

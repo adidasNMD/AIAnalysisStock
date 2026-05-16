@@ -46,6 +46,8 @@ type ActionInboxProps = {
   onOpenMission: (missionId: string) => void;
 };
 
+const MAX_RENDERED_INBOX_ITEMS_PER_LANE = 2;
+
 export function ActionInbox({
   liveInbox,
   inboxLanes,
@@ -106,6 +108,8 @@ export function ActionInbox({
           const meta = inboxLaneMeta(lane);
           const laneView = inboxLanes[lane];
           const items = laneView.items;
+          const visibleItems = items.slice(0, MAX_RENDERED_INBOX_ITEMS_PER_LANE);
+          const hiddenCount = Math.max(0, items.length - visibleItems.length);
           const insight = laneInsights[lane];
           const liveSignal = laneLiveSignals[lane];
           const laneActionPreview = laneActionPreviews[lane];
@@ -169,7 +173,8 @@ export function ActionInbox({
                 {items.length === 0 ? (
                   <div className="today-empty">{meta.empty}</div>
                 ) : (
-                  items.map((item, index) => (
+                  <>
+                    {visibleItems.map((item, index) => (
                     <InboxOpportunityCard
                       key={item.id}
                       item={item}
@@ -184,7 +189,14 @@ export function ActionInbox({
                       onRecoverMission={onRecoverMission}
                       onOpenMission={onOpenMission}
                     />
-                  ))
+                    ))}
+                    {hiddenCount > 0 && (
+                      <div className="today-feed-overflow" data-inbox-overflow={lane}>
+                        <strong>+{hiddenCount}</strong>
+                        <span>more in {meta.label}</span>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </section>
