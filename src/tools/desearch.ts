@@ -11,10 +11,10 @@ export const desearchTool: AgentTool<{ query: string, limit?: number }> = {
     query: z.string().describe('The strict search query. Can include cashtags like "$NVDA" or boolean operators like "NVIDIA options"'),
     limit: z.number().optional().describe('Number of tweets to fetch, default is 15')
   }),
-  execute: async (args) => {
+  execute: async (args, options) => {
     console.log(`\n[Tool Exec] 🔧 LLM invoked Desearch Tool: Searching X for "${args.query}"`);
     const collector = new DesearchCollector(process.env.DESEARCH_API_KEY || '');
-    const signals = await collector.fetchRecentTweets(args.query, args.limit || 15);
+    const signals = await collector.fetchRecentTweets(args.query, args.limit || 15, options);
     
     if (!signals.length) {
       return "No results found on X/Twitter. The narrative might be dead or the query too strict.";

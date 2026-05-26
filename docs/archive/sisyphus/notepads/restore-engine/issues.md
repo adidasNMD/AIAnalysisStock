@@ -1,0 +1,2 @@
+- Blocker: TypeScript compilation across monorepo shows many unrelated errors in dashboard/vendor codebase; cannot verify compile in current environment. Assumed isolated changes are compatible with existing typings.
+- Action: CI should run full TS build; confirm if isolated compile is sufficient for acceptance.

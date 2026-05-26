@@ -3,32 +3,246 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentSwarmOrchestrator } from './workflows/swarm-pipeline';
 import { scanTicker, AlertSignal, generateTechSnapshot } from './tools/market-data';
-import { sendAlertBatch, sendStopLossAlert, sendEntrySignal, sendReportSummary, sendMessage } from './utils/telegram';
-import { pollAllFeeds, alertsToContext, RSSAlert } from './tools/rss-monitor';
-import { watchIPO, filingsToContext } from './tools/edgar-monitor';
+import { sendAlertBatch, sendStopLossAlert, sendReportSummary, sendMessage } from './utils/telegram';
+import { pollAllFeeds } from './tools/rss-monitor';
+import { watchIPO } from './tools/edgar-monitor';
 import { TrendRadar } from './agents/trend/trend-radar';
 import { scanAllSectorETFs, generateSectorOverview } from './tools/sector-scanner';
-import { getActiveTickers, promoteTicker, generateDynamicWatchlistOverview, DynamicTicker } from './utils/dynamic-watchlist';
+import { getActiveTickers, generateDynamicWatchlistOverview } from './utils/dynamic-watchlist';
 import { startInteractiveBot } from './agents/telegram/interactive-bot';
 import { MacroContextEngine } from './agents/macro/macro-context';
 import { updatePerformance, formatPerformanceReport } from './utils/performance-tracker';
 import { NarrativeLifecycleEngine } from './agents/lifecycle/engine';
 import { healthMonitor } from './utils/health-monitor';
-import { taskQueue } from './utils/task-queue';
+import { taskQueue, type QueueTask } from './utils/task-queue';
 import { startServer } from './server/app';
-import { dispatchMission } from './workflows/mission-dispatcher';
+import {
+  syncHeatTransferGraphOpportunities,
+  syncNewCodeRadarOpportunities,
+  dispatchMission,
+  createQueuedMission,
+  appendMissionEvent,
+  getMission,
+  markMissionCanceled,
+  markMissionRunRunning,
+  markMissionRunStage,
+  touchMissionRunHeartbeat,
+  completeMissionRun,
+  failMissionRun,
+  cancelMissionRun,
+  requeueMissionRunsForTasks,
+  type MissionInput,
+} from './workflows';
 import { eventBus } from './utils/event-bus';
+import { logger } from './utils/logger';
+import { startModelsConfigWatcher } from './utils/model-config';
+import { getDb } from './db';
+import { T1_SENTINEL_ENABLED_DEFAULT, T1_COOLDOWN_MS, T4_INTERVAL_MS, DEFAULT_LEADER_TICKERS } from './config/constants';
+import { getRuntimeConfig } from './config';
+import { hashMissionInput } from './workflows/mission-identity';
+import { classifyExecutionFailure, getErrorMessage } from './utils/error-classification';
+
+const TREND_COOLDOWN_MS = 30 * 60 * 1000;
+const T4_CRON_EXPRESSION = T4_INTERVAL_MS === 15 * 60 * 1000
+  ? '*/15 * * * *'
+  : `*/${Math.max(1, Math.floor(T4_INTERVAL_MS / 60000))} * * * *`;
+const trendCooldown = new Map<string, number>();
+
+let isShuttingDown = false;
+const workerShutdownController = new AbortController();
+const SHOULD_START_API = process.env.OPENCLAW_ENABLE_API !== 'false';
+const API_PORT = Number(process.env.OPENCLAW_API_PORT || process.env.PORT || 3000);
+const SHOULD_BOOTSTRAP_WORKER = process.env.OPENCLAW_WORKER_BOOTSTRAP === '1' || require.main === module;
+
+if (SHOULD_BOOTSTRAP_WORKER) {
+  startModelsConfigWatcher();
+}
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  requestWorkerShutdown(`Worker shutdown requested by ${signal}`);
+
+  logger.info(`[Shutdown] Received ${signal}, draining...`);
+
+  const maxWait = 30_000;
+  const pollInterval = 1_000;
+  let waited = 0;
+  while (taskQueue.getRunningCount() > 0 && waited < maxWait) {
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+    waited += pollInterval;
+  }
+
+  if (taskQueue.getRunningCount() > 0) {
+    logger.warn(`[Shutdown] Timed out waiting for ${taskQueue.getRunningCount()} tasks to drain`);
+  } else {
+    logger.info(`[Shutdown] All tasks drained`);
+  }
+
+  try {
+    const db = await getDb();
+    await db.close();
+    logger.info(`[Shutdown] Database closed`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Shutdown] Error closing database: ${msg}`);
+  }
+
+  process.exit(0);
+}
+
+export function getWorkerShutdownSignal(): AbortSignal {
+  return workerShutdownController.signal;
+}
+
+export function requestWorkerShutdown(reason = 'Worker shutdown requested'): void {
+  if (!workerShutdownController.signal.aborted) {
+    workerShutdownController.abort(new Error(reason));
+  }
+}
+
+function workerSendOptions() {
+  return { signal: getWorkerShutdownSignal() };
+}
+
+async function sendDuringWorkerLifecycle(send: () => Promise<void>): Promise<void> {
+  try {
+    await send();
+  } catch (error: unknown) {
+    if (getWorkerShutdownSignal().aborted) {
+      logger.info('[Shutdown] Skipped notification while worker is shutting down');
+      return;
+    }
+    throw error;
+  }
+}
+
+if (SHOULD_BOOTSTRAP_WORKER) {
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+}
+
+function simpleHash(str: string): string {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h) + str.charCodeAt(i);
+    h |= 0;
+  }
+  return h.toString();
+}
+
+function getLeaderTickers(): string[] {
+  const runtimeTickers = getRuntimeConfig().leaderTickers;
+  return runtimeTickers.length > 0 ? [...runtimeTickers] : [...DEFAULT_LEADER_TICKERS];
+}
+
+function normalizeRecoverResult(
+  recovered: unknown,
+): { totalRecovered: number; recoveredRunningTaskIds: string[] } {
+  if (typeof recovered === 'number') {
+    return {
+      totalRecovered: recovered,
+      recoveredRunningTaskIds: [],
+    };
+  }
+
+  const totalRecovered = typeof (recovered as { totalRecovered?: unknown } | null)?.totalRecovered === 'number'
+    ? (recovered as { totalRecovered: number }).totalRecovered
+    : 0;
+  const recoveredRunningTaskIds = Array.isArray(
+    (recovered as { recoveredRunningTaskIds?: unknown } | null)?.recoveredRunningTaskIds,
+  )
+    ? (recovered as { recoveredRunningTaskIds: unknown[] }).recoveredRunningTaskIds
+        .filter((taskId): taskId is string => typeof taskId === 'string')
+    : [];
+
+  return {
+    totalRecovered,
+    recoveredRunningTaskIds,
+  };
+}
+
+function inferMissionInputFromTask(task: Pick<QueueTask, 'query' | 'depth' | 'source'>): MissionInput {
+  const normalizedQuery = task.query.trim();
+  const normalizedTicker = normalizedQuery.replace('$', '').toUpperCase();
+  const isTicker = /^\$?[A-Z]{1,5}$/.test(normalizedQuery);
+
+  return {
+    mode: isTicker ? 'analyze' : 'explore',
+    query: task.query,
+    tickers: isTicker ? [normalizedTicker] : [],
+    depth: task.depth,
+    source: task.source,
+  };
+}
+
+function parseMissionInputPayload(payload?: string): MissionInput | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as Partial<MissionInput> | null;
+    if (!parsed || typeof parsed.query !== 'string' || parsed.query.trim().length === 0) {
+      return null;
+    }
+    const mode = parsed.mode === 'analyze' || parsed.mode === 'review' || parsed.mode === 'explore'
+      ? parsed.mode
+      : inferMissionInputFromTask({
+          query: parsed.query,
+          depth: parsed.depth || 'deep',
+          source: parsed.source || 'queued_payload',
+        }).mode;
+    const depth = parsed.depth === 'quick' || parsed.depth === 'standard' || parsed.depth === 'deep'
+      ? parsed.depth
+      : undefined;
+    const tickers = Array.isArray(parsed.tickers)
+      ? parsed.tickers.filter((ticker): ticker is string => typeof ticker === 'string')
+      : [];
+
+    return {
+      mode,
+      query: parsed.query,
+      tickers,
+      ...(depth ? { depth } : {}),
+      ...(typeof parsed.source === 'string' ? { source: parsed.source } : {}),
+      ...(typeof parsed.date === 'string' ? { date: parsed.date } : {}),
+      ...(typeof parsed.opportunityId === 'string' ? { opportunityId: parsed.opportunityId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveMissionInputForTask(task: QueueTask): MissionInput {
+  const inputFromTask = parseMissionInputPayload(task.inputPayload);
+  if (inputFromTask) {
+    if (task.inputHash && hashMissionInput(inputFromTask) !== task.inputHash) {
+      throw new Error('Mission input payload hash mismatch');
+    }
+    return inputFromTask;
+  }
+
+  const mission = task.missionId ? getMission(task.missionId) : null;
+  if (mission?.input?.query) {
+    if (task.inputHash && hashMissionInput(mission.input) !== task.inputHash) {
+      throw new Error('Mission input payload hash mismatch');
+    }
+    return mission.input;
+  }
+
+  return inferMissionInputFromTask(task);
+}
 
 // ==========================================
 // OPENCLAW V4 SENTINEL DAEMON
 // 多级触发哨兵模式 + TrendRadar 趋势雷达 + 实时交互(Interactive Bot)
 // ==========================================
 
-console.log(`\n==================================================================`);
-console.log(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
-console.log(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
-console.log(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
-console.log(`==================================================================\n`);
+if (SHOULD_BOOTSTRAP_WORKER) {
+  logger.info(`\n==================================================================`);
+  logger.info(`⚡ OPENCLAW V4 SENTINEL DAEMON STARTED`);
+  logger.info(`   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot`);
+  logger.info(`   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)`);
+  logger.info(`==================================================================\n`);
+}
 
 const orchestrator = new AgentSwarmOrchestrator();
 const trendRadar = new TrendRadar();
@@ -38,29 +252,62 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
 // ==========================================
 // 初始化系统监控与任务队列
 // ==========================================
-(async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  (async () => {
   // 1. 检测大模型连通性
   await healthMonitor.checkConnectivity();
   // 2. 恢复积压的任务
-  const recovered = await taskQueue.recover();
-  if (recovered > 0) console.log(`[Sentinel] 🔄 恢复了 ${recovered} 个积压任务`);
+  const recovered = normalizeRecoverResult(await taskQueue.recover());
+  if (recovered.recoveredRunningTaskIds.length > 0) {
+    const requeuedRuns = await requeueMissionRunsForTasks(recovered.recoveredRunningTaskIds);
+    logger.info(`[Sentinel] 🔁 已将 ${requeuedRuns} 个 Mission run 重置为 queued`);
+  }
+  if (recovered.totalRecovered > 0) logger.info(`[Sentinel] 🔄 恢复了 ${recovered.totalRecovered} 个积压任务`);
   // 3. 注册队列处理器
   taskQueue.onProcess(async (task) => {
+    const runId = task.runId;
+    const workerLeaseId = `worker:${process.pid}:${task.id}`;
+    const abortController = new AbortController();
+    const unregisterAbortController = taskQueue.registerAbortController(task.id, abortController);
+    const currentRunStage = () => {
+      if (!task.progress) return 'dispatch' as const;
+      return task.progress;
+    };
+    const shouldCancel = async () => {
+      if (abortController.signal.aborted) return true;
+      const currentTask = await taskQueue.getTask(task.id);
+      const canceled = currentTask?.status === 'canceled';
+      if (canceled) {
+        abortController.abort(new Error('Canceled by user'));
+      }
+      return canceled;
+    };
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     try {
+      task.leaseId = workerLeaseId;
+      task.heartbeatAt = Date.now();
+      await taskQueue.attachLease(task.id, workerLeaseId);
+      if (runId) {
+        await markMissionRunRunning(runId, workerLeaseId);
+      }
+      heartbeatTimer = setInterval(() => {
+        void taskQueue.touchHeartbeat(task.id);
+        void shouldCancel().catch((error) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.warn(`[TaskQueue] Cancel poll failed for ${task.id}: ${msg}`);
+        });
+        if (runId) {
+          void touchMissionRunHeartbeat(runId, currentRunStage());
+        }
+      }, 15_000);
+
       // === 使用 Mission Dispatcher 封装 OpenClaw + TA + OpenBB 并行执行 ===
-      const isTicker = /^\$?[A-Z]{1,5}$/.test(task.query.trim());
-      const mode = isTicker ? 'analyze' as const : 'explore' as const;
+      const missionInput = resolveMissionInputForTask(task);
 
       const mission = await dispatchMission(
-        {
-          mode,
-          query: task.query,
-          tickers: isTicker ? [task.query.replace('$', '').toUpperCase()] : [],
-          depth: task.depth,
-          source: task.source,
-        },
+        missionInput,
         // executeOpenClaw 回调: 调用原始 orchestrator
-        async (query: string, depth: string, missionId: string) => {
+        async (query: string, depth: string, missionId: string, signal?: AbortSignal) => {
           const result = await orchestrator.executeMission(
             query,
             depth as any,
@@ -69,40 +316,109 @@ const lifecycleEngine = new NarrativeLifecycleEngine();
               await taskQueue.updateTaskState(task.id, JSON.stringify(state));
             },
             (progress) => {
-              taskQueue.updateProgress(task.id, progress);
+              task.progress = progress;
+              void taskQueue.updateProgress(task.id, progress);
+              if (runId) {
+                void markMissionRunStage(runId, progress);
+              }
+              if (task.missionId) {
+                const currentMission = getMission(task.missionId);
+                if (currentMission) {
+                  appendMissionEvent(task.missionId, currentMission.createdAt, {
+                    type: 'stage',
+                    status: currentMission.status,
+                    phase: progress,
+                    message: `Mission entered ${progress} stage`,
+                    ...(runId ? { meta: { runId } } : {}),
+                  });
+                }
+              }
             },
-            async () => {
-              const tasks = await taskQueue.getAll();
-              const t = tasks.find((tx: any) => tx.id === task.id);
-              return t?.status === 'canceled';
-            },
-            missionId
+            shouldCancel,
+            missionId,
+            runId,
+            signal,
           );
           return typeof result === 'string' ? result : JSON.stringify(result);
-        }
+        },
+        task.missionId,
+        shouldCancel,
+        runId,
+        abortController.signal,
       );
+
+      const latestTask = await taskQueue.getTask(task.id);
+      if (latestTask?.status === 'canceled') {
+        if (task.missionId) {
+          markMissionCanceled(task.missionId, 'Canceled by user');
+        }
+        if (runId) {
+          await cancelMissionRun(runId, 'Canceled by user');
+        }
+        return;
+      }
 
       // 记录 Mission 共识到日志
       if (mission.consensus.length > 0) {
         const consensusSummary = mission.consensus
-          .map(c => `${c.ticker}: OC=${c.openclawVerdict || '-'} TA=${c.taVerdict || '-'} → ${c.agreement}`)
+          .map(c => {
+            const vetoed = 'vetoed' in (c as any) ? Boolean((c as any).vetoed) : false;
+            const vetoReason = 'vetoReason' in (c as any) ? (c as any).vetoReason : '';
+            const vetoNote = vetoed ? ` (vetoed: ${vetoReason ?? ''})` : '';
+            return `${c.ticker}: OC=${c.openclawVerdict ?? '-'} TA=${c.taVerdict ?? '-'} → ${c.agreement}${vetoNote}`;
+          })
           .join(' | ');
         eventBus.emitSystem('info', `📊 双大脑共识: ${consensusSummary}`);
       }
 
+      if (runId) {
+        const degradedFlags = mission.status === 'main_only' ? ['main_only'] : undefined;
+        if (degradedFlags) {
+          task.degradedFlags = JSON.stringify(degradedFlags);
+        } else {
+          delete task.degradedFlags;
+        }
+        await completeMissionRun(runId, degradedFlags);
+      }
+
       healthMonitor.recordSuccess();
-    } catch (e: any) {
-      healthMonitor.recordFailure(e.message);
+    } catch (e: unknown) {
+      const msg = getErrorMessage(e);
+      const failureCode = classifyExecutionFailure(e);
+      const canceled = failureCode === 'canceled';
+      if (task.missionId && canceled) {
+        markMissionCanceled(task.missionId, msg);
+      }
+      if (runId) {
+        if (canceled) {
+          await cancelMissionRun(runId, msg);
+        } else {
+          await failMissionRun(runId, msg, failureCode);
+        }
+      }
+      if (!canceled) {
+        healthMonitor.recordFailure(msg);
+      }
       throw e;
+    } finally {
+      unregisterAbortController();
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+      }
     }
   });
   taskQueue.processNext(); // Trigger processing for recovered tasks
-  // 4. 启动本地 API 供大屏使用
-  startServer(3000);
-})();
+  // 4. 启动本地 API 供大屏使用（daemon-only 入口会显式关闭）
+  if (SHOULD_START_API) {
+    startServer(API_PORT);
+  }
+  })();
+}
 
 // 启动实时交互长轮询机器人
-startInteractiveBot();
+if (SHOULD_BOOTSTRAP_WORKER) {
+  startInteractiveBot();
+}
 
 // 加载 Watchlist
 interface WatchlistTicker {
@@ -110,6 +426,7 @@ interface WatchlistTicker {
   name: string;
   sector: string;
   narrative: string;
+  role?: 'sector_leader' | 'target';
   alerts: {
     breakAboveSMA?: number[];
     breakBelowSMA?: number[];
@@ -130,21 +447,109 @@ interface WatchlistConfig {
 function loadWatchlist(): WatchlistConfig {
   const watchlistPath = path.join(process.cwd(), 'data', 'watchlist.json');
   if (!fs.existsSync(watchlistPath)) {
-    console.error('[Sentinel] ❌ watchlist.json not found!');
+    logger.error('[Sentinel] ❌ watchlist.json not found!');
     return { tickers: [], eventSources: [] };
   }
-  return JSON.parse(fs.readFileSync(watchlistPath, 'utf-8'));
+  const config: WatchlistConfig = JSON.parse(fs.readFileSync(watchlistPath, 'utf-8'));
+  config.tickers = config.tickers.map(t => ({
+    ...t,
+    role: t.role ?? 'target',
+  }));
+  return config;
 }
 
 // ==========================================
-// TRIGGER 1: 价量异常已被用户要求禁用，因为产生过多重复噪声
+// TRIGGER 1: 价量哨兵 (每5分钟) — 含 Cooldown 去重
 // ==========================================
-// cron.schedule('*/5 * * * *', async () => { ... });
+
+// T1 开关
+const T1_ENABLED = process.env.T1_ENABLED ? process.env.T1_ENABLED !== 'false' : T1_SENTINEL_ENABLED_DEFAULT;
+
+// Cooldown 去重
+export const alertCooldown = new Map<string, number>(); // ticker → lastAlertTimestamp
+const COOLDOWN_MS = Number(process.env.T1_COOLDOWN_MS) || T1_COOLDOWN_MS;
+
+export function shouldAlert(ticker: string): boolean {
+  const lastAlert = alertCooldown.get(ticker);
+  if (lastAlert && Date.now() - lastAlert < COOLDOWN_MS) {
+    logger.info(`[T1] ⏳ ${ticker} 在冷却期内，跳过 (${Math.round((Date.now() - lastAlert) / 60000)}min ago)`);
+    return false;
+  }
+  alertCooldown.set(ticker, Date.now());
+  return true;
+}
+
+export function cleanupCooldown() {
+  const expiry = Date.now() - 2 * 60 * 60 * 1000; // 2 小时
+  for (const [ticker, ts] of alertCooldown.entries()) {
+    if (ts < expiry) alertCooldown.delete(ticker);
+  }
+}
+
+if (SHOULD_BOOTSTRAP_WORKER && T1_ENABLED) {
+  cron.schedule('*/5 * * * *', async () => {
+    if (isShuttingDown) return;
+    if (!getRuntimeConfig().t1Enabled) return;
+    cleanupCooldown();
+    const watchlist = loadWatchlist();
+    const targets = watchlist.tickers.filter(t => t.role === 'target');
+    const allAlerts: AlertSignal[] = [];
+
+    for (const t of targets) {
+      try {
+        const alerts = await scanTicker(
+          t.symbol,
+          {
+            breakAboveSMA: [20, 250],
+            breakBelowSMA: [20],
+            volumeSurgeMultiple: 2.0,
+          },
+          workerSendOptions(),
+        );
+        for (const alert of alerts) {
+          if (shouldAlert(alert.symbol)) {
+            allAlerts.push(alert);
+          }
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.error(`[T1] 扫描 ${t.symbol} 失败: ${msg}`);
+      }
+    }
+
+    if (allAlerts.length > 0) {
+      await sendDuringWorkerLifecycle(() => sendAlertBatch(
+        allAlerts.map(a => ({
+          symbol: a.symbol,
+          details: a.details,
+          severity: a.severity,
+        })),
+        workerSendOptions(),
+      ));
+      if (isShuttingDown) return;
+      const critical = allAlerts.filter(a => a.severity === 'critical');
+      for (const a of critical) {
+        if (isShuttingDown) return;
+        await createQueuedMission({
+          query: `T1 异动: ${a.details}`,
+          depth: 'quick',
+          source: 'T1_PriceScan',
+          priority: 80,
+        });
+      }
+    }
+  });
+  logger.info('[Sentinel] ✅ T1 价量哨兵已启用 (每5分钟, cooldown=' + COOLDOWN_MS / 60000 + 'min)');
+} else if (SHOULD_BOOTSTRAP_WORKER) {
+  logger.info('[Sentinel] ⏸️ T1 价量哨兵已禁用 (T1_ENABLED=false)');
+}
 
 // ==========================================
 // TRIGGER 2: 媒体资讯与公告 (每小时的第30分钟触发)
 // ==========================================
-cron.schedule('30 * * * *', async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  cron.schedule('30 * * * *', async () => {
+  if (isShuttingDown) return;
   const watchlist = loadWatchlist();
   
   // RSS 政府公告轮询
@@ -157,14 +562,21 @@ cron.schedule('30 * * * *', async () => {
       rssAlerts.forEach(a => {
         msg += `📌 *[${a.source}]* ${a.title}\n   关键词: ${a.matchedKeywords.join(', ')}\n\n`;
       });
-      await sendMessage(msg);
+      await sendDuringWorkerLifecycle(() => sendMessage(msg, workerSendOptions()));
+      if (isShuttingDown) return;
 
       // 高优先级事件自动触发分析
       for (const alert of rssAlerts) {
+        if (isShuttingDown) return;
         if (alert.matchedKeywords.length >= 2) {
-          console.log(`[Sentinel] 🧠 高命中率事件排队分析: ${alert.title}`);
+          logger.info(`[Sentinel] 🧠 高命中率事件排队分析: ${alert.title}`);
           // T2 事件驱动使用 'standard' 深度
-          await taskQueue.enqueue(alert.title, 'standard', 'T2_RSS_Event', 50);
+          await createQueuedMission({
+            query: alert.title,
+            depth: 'standard',
+            source: 'T2_RSS_Event',
+            priority: 50,
+          });
         }
       }
     }
@@ -178,28 +590,33 @@ cron.schedule('30 * * * *', async () => {
   if (edgarWatchCompanies.length > 0) {
     const filings = await watchIPO(edgarWatchCompanies);
     if (filings.length > 0) {
+      const syncedOpportunities = await syncNewCodeRadarOpportunities(filings);
+      logger.info(`[Sentinel] 🗓️ New Code Radar auto-synced ${syncedOpportunities.length} opportunity cards from EDGAR`);
       let msg = `📄 *SEC EDGAR 新文件* (${filings.length} 份)\n\n`;
       filings.forEach(f => {
         msg += `📌 *[${f.formType}]* ${f.companyName} — ${f.filedAt}\n   ${f.url}\n\n`;
       });
-      await sendMessage(msg);
+      await sendDuringWorkerLifecycle(() => sendMessage(msg, workerSendOptions()));
     }
   }
-});
+  });
+}
 
 // ==========================================
 // TRIGGER 3: 每天 08:30 AM — 全量 Watchlist 日报
 // ==========================================
-cron.schedule('30 08 * * 1-5', async () => {
+if (SHOULD_BOOTSTRAP_WORKER) {
+  cron.schedule('30 08 * * 1-5', async () => {
+  if (isShuttingDown) return;
   const watchlist = loadWatchlist();
-  console.log(`\n[Sentinel] 📊 执行每日全量技术面快照...`);
+  logger.info(`\n[Sentinel] 📊 执行每日全量技术面快照...`);
 
   let snapshot = '📊 *每日 Watchlist 技术面快照*\n\n';
   for (const ticker of watchlist.tickers) {
     try {
-      const tech = await generateTechSnapshot(ticker.symbol);
+      const tech = await generateTechSnapshot(ticker.symbol, workerSendOptions());
       snapshot += `${tech}\n`;
-    } catch (e: any) {
+    } catch (e: unknown) {
       snapshot += `[${ticker.symbol}] 数据获取失败\n`;
     }
   }
@@ -208,8 +625,9 @@ cron.schedule('30 08 * * 1-5', async () => {
   try {
     const sectorSignals = await scanAllSectorETFs();
     snapshot += `\n${generateSectorOverview(sectorSignals)}`;
-  } catch (e: any) {
-    console.error(`[Sentinel] Sector scan failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Sector scan failed: ${msg}`);
   }
 
   // 新增：动态观察池概览
@@ -223,136 +641,216 @@ cron.schedule('30 08 * * 1-5', async () => {
   try {
     const macroAnalysis = await macroEngine.analyze();
     snapshot += `\n${macroEngine.formatForReport(macroAnalysis)}`;
-  } catch (e: any) {
-    console.error(`[Sentinel] Macro analysis failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Macro analysis failed: ${msg}`);
   }
 
   try {
     const perfSummary = await updatePerformance();
     snapshot += `\n${formatPerformanceReport(perfSummary)}`;
-  } catch (e: any) {
-    console.error(`[Sentinel] Performance tracking failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Performance tracking failed: ${msg}`);
   }
 
   try {
-    const { messages } = await lifecycleEngine.evaluateAllActiveNarratives();
+    const { messages, antiSellGuards } = await lifecycleEngine.evaluateAllActiveNarratives(workerSendOptions());
     if (messages.length > 0) {
       snapshot += `\n## 🛡️ 叙事生命周期干预引擎 (防卖飞/逃顶)\n\n`;
       messages.forEach(m => snapshot += `> ${m}\n\n`);
     }
-  } catch (e: any) {
-    console.error(`[Sentinel] Lifecycle evaluation failed: ${e.message}`);
+    for (const msg of messages) {
+      if (msg.includes('STOP_LOSS_TRIGGER')) {
+        const tickerMatch = msg.match(/龙头\s+(\$?[A-Z]{1,5})/);
+        if (tickerMatch) {
+          const ticker = tickerMatch[1]!.replace('$', '');
+          await sendDuringWorkerLifecycle(() => sendStopLossAlert(
+            ticker,
+            `叙事生命周期引擎警告:\n${msg}`,
+            workerSendOptions(),
+          ));
+        }
+      }
+    }
+    if (antiSellGuards && antiSellGuards.length > 0) {
+      snapshot += `\n## 🚦 防卖飞守卫 (Anti-Sell Guards)\n\n`;
+      antiSellGuards.forEach((g: any) => snapshot += `> ${typeof g === 'string' ? g : `${g.ticker}: ${g.reason}`}\n\n`);
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Lifecycle evaluation failed: ${msg}`);
   }
 
-  await sendReportSummary('Watchlist 盘前扫描', snapshot);
+  try {
+    const { checkSMACross } = await import('./tools/market-data.js');
+    for (const leader of getLeaderTickers()) {
+      const smaResults = await checkSMACross(leader, [50], workerSendOptions());
+      const sma50 = smaResults.find((r: any) => r.period === 50);
+      if (sma50 && sma50.position === 'below') {
+        const dropPercent = ((sma50.sma - sma50.price) / sma50.sma) * 100;
+        if (dropPercent >= 5) {
+          await sendDuringWorkerLifecycle(() => sendStopLossAlert(
+            leader,
+            `🔴 [板块止损红线] 龙头 ${leader} 放量跌破 50日均线 ${dropPercent.toFixed(1)}%!\n` +
+              `当前: $${sma50.price} | SMA50: $${sma50.sma}\n` +
+              `画像纪律: 板块全线防御减仓！`,
+            workerSendOptions(),
+          ));
+        }
+      }
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] Leader SMA50 check failed: ${msg}`);
+  }
+
+  await sendDuringWorkerLifecycle(() => sendReportSummary('Watchlist 盘前扫描', snapshot, workerSendOptions()));
+  if (isShuttingDown) return;
 
   // 对每个赛道下发一次深度扫查任务
   const sectors = [...new Set(watchlist.tickers.map(t => t.sector))];
   for (const sector of sectors) {
+    if (isShuttingDown) return;
     const sectorTickers = watchlist.tickers.filter(t => t.sector === sector);
     const narrative = sectorTickers[0]?.narrative || sector;
-    console.log(`[Sentinel] 🧠 赛道每日深度分析排队: ${sector} — ${narrative}`);
+    logger.info(`[Sentinel] 🧠 赛道每日深度分析排队: ${sector} — ${narrative}`);
     // T3 盘前日报使用 'deep' 深度，但不占用最高优先级
-    await taskQueue.enqueue(narrative, 'deep', 'T3_Daily_Sector', 10);
+    await createQueuedMission({
+      query: narrative,
+      depth: 'deep',
+      source: 'T3_Daily_Sector',
+      priority: 10,
+    });
   }
-});
+  });
+}
 
 // ==========================================
 // TRIGGER 4: 趋势雷达媒体扫描 (每小时的整点触发: 寻找新的交易机会)
 // ==========================================
-cron.schedule('0 * * * *', async () => {
-  console.log(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
+if (SHOULD_BOOTSTRAP_WORKER) {
+  cron.schedule(T4_CRON_EXPRESSION, async () => {
+  if (isShuttingDown) return;
+  logger.info(`\n[Sentinel] 📡 启动每小时媒体资讯扫描 (TrendRadar)...`);
   
   try {
     const analysis = await trendRadar.scan();
+    const syncedGraphs = await syncHeatTransferGraphOpportunities(getActiveTickers());
+    if (syncedGraphs.length > 0) {
+      logger.info(`[Sentinel] 🔗 Heat Transfer Graph auto-synced ${syncedGraphs.length} relay opportunities`);
+    }
     
     // 推送趋势概览到 Telegram
     const telegramMsg = trendRadar.formatForTelegram(analysis);
-    await sendMessage(telegramMsg);
+    await sendDuringWorkerLifecycle(() => sendMessage(telegramMsg, workerSendOptions()));
+    if (isShuttingDown) return;
 
     // 新版：如果趋势报告中提及了大量 ticker，自动排队触发分析
     if (analysis.mentionedTickers && analysis.mentionedTickers.length >= 5) {
-      console.log(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，排队标准分析...`);
+      logger.info(`[Sentinel] 🚀 趋势报告发现 ${analysis.mentionedTickers.length} 个标的，排队标准分析...`);
       const topicSummary = analysis.report.substring(0, 200).replace(/\n/g, ' ');
-      // T4 趋势轮换使用 'standard' 深度
-      await taskQueue.enqueue(`趋势雷达洞察 — ${topicSummary}`, 'standard', 'T4_Trend_Radar', 30);
+      const hash = simpleHash(analysis.report);
+      const last = trendCooldown.get(hash);
+      if (!last || Date.now() - last >= TREND_COOLDOWN_MS) {
+        trendCooldown.set(hash, Date.now());
+        await createQueuedMission({
+          query: `趋势雷达洞察 — ${topicSummary}`,
+          depth: 'standard',
+          source: 'T4_Trend_Radar',
+          priority: 30,
+        });
+      } else {
+        logger.info(`[Sentinel] T4 TrendRadar cooldown active for this report. Skipping enqueue.`);
+      }
     }
-  } catch (e: any) {
-    console.error(`[Sentinel] TrendRadar scan failed: ${e.message}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`[Sentinel] TrendRadar scan failed: ${msg}`);
   }
-});
+  });
+}
 
 // ==========================================
 // 手动触发模式
 // ==========================================
-if (process.argv.includes('--run-now')) {
-  console.log(`[Sentinel] '--run-now' detected. Executing immediate Watchlist scan...\n`);
+if (SHOULD_BOOTSTRAP_WORKER && process.argv.includes('--run-now')) {
+  logger.info(`[Sentinel] '--run-now' detected. Executing immediate Watchlist scan...\n`);
 
   (async () => {
     const watchlist = loadWatchlist();
 
     // 先执行一轮技术面快照
-    console.log(`[Sentinel] 📊 技术面快照:`);
+    logger.info(`[Sentinel] 📊 技术面快照:`);
     for (const ticker of watchlist.tickers) {
       try {
-        const tech = await generateTechSnapshot(ticker.symbol);
-        console.log(`  ${tech}`);
-      } catch (e: any) {
-        console.log(`  [${ticker.symbol}] 数据获取失败: ${e.message}`);
+        const tech = await generateTechSnapshot(ticker.symbol, workerSendOptions());
+        logger.info(`  ${tech}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.info(`  [${ticker.symbol}] 数据获取失败: ${msg}`);
       }
     }
 
     // 板块 ETF 概览
-    console.log(`\n[Sentinel] 📊 板块 ETF 概览:`);
+    logger.info(`\n[Sentinel] 📊 板块 ETF 概览:`);
     try {
       const sectorSignals = await scanAllSectorETFs();
-      console.log(generateSectorOverview(sectorSignals));
-    } catch (e: any) {
-      console.log(`  板块扫描失败: ${e.message}`);
+      logger.info(generateSectorOverview(sectorSignals));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.info(`  板块扫描失败: ${msg}`);
     }
 
     // 再执行异动检测
-    console.log(`\n[Sentinel] 🔍 价量异动扫描:`);
+    logger.info(`\n[Sentinel] 🔍 价量异动扫描:`);
     for (const ticker of watchlist.tickers) {
       try {
-        const alerts = await scanTicker(ticker.symbol, ticker.alerts);
+        const alerts = await scanTicker(ticker.symbol, ticker.alerts, workerSendOptions());
         if (alerts.length > 0) {
-          alerts.forEach(a => console.log(`  ⚡ ${a.details}`));
+          alerts.forEach(a => logger.info(`  ⚡ ${a.details}`));
         } else {
-          console.log(`  ✅ ${ticker.symbol}: 无异动`);
+          logger.info(`  ✅ ${ticker.symbol}: 无异动`);
         }
-      } catch (e: any) {
-        console.log(`  ❌ ${ticker.symbol}: 扫描失败 — ${e.message}`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.info(`  ❌ ${ticker.symbol}: 扫描失败 — ${msg}`);
       }
     }
 
     // 动态观察池概览
     const dynamicTickers = getActiveTickers();
     if (dynamicTickers.length > 0) {
-      console.log(`\n[Sentinel] 📋 动态观察池 (${dynamicTickers.length} 只标的):`);
+      logger.info(`\n[Sentinel] 📋 动态观察池 (${dynamicTickers.length} 只标的):`);
       for (const dt of dynamicTickers) {
-        console.log(`  ${dt.status === 'focused' ? '🎯' : '👀'} ${dt.symbol} (${dt.name}) | ${dt.chainLevel} | 评分${dt.multibaggerScore} | 来源: ${dt.discoverySource}`);
+        logger.info(`  ${dt.status === 'focused' ? '🎯' : '👀'} ${dt.symbol} (${dt.name}) | ${dt.chainLevel} | 评分${dt.multibaggerScore} | 来源: ${dt.discoverySource}`);
       }
     } else {
-      console.log(`\n[Sentinel] 📋 动态观察池为空（运行 --trend 触发标的发现）`);
+      logger.info(`\n[Sentinel] 📋 动态观察池为空（运行 --trend 触发标的发现）`);
     }
 
     // TrendRadar 扫描
     if (process.argv.includes('--trend')) {
-      console.log(`\n[Sentinel] 📡 执行 TrendRadar 趋势扫描...`);
+      logger.info(`\n[Sentinel] 📡 执行 TrendRadar 趋势扫描...`);
       try {
         const analysis = await trendRadar.scan();
-        console.log(trendRadar.formatForTelegram(analysis));
-      } catch (e: any) {
-        console.log(`  TrendRadar 扫描失败: ${e.message}`);
+        logger.info(trendRadar.formatForTelegram(analysis));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.info(`  TrendRadar 扫描失败: ${msg}`);
       }
     }
 
     // 可选深度分析
     if (process.argv.includes('--deep')) {
       const query = process.argv[process.argv.indexOf('--deep') + 1] || watchlist.tickers[0]?.narrative || 'AI Infrastructure';
-      console.log(`\n[Sentinel] 🧠 手动触发深度分析: ${query}`);
-      await taskQueue.enqueue(query, 'deep', 'manual', 100);
+      logger.info(`\n[Sentinel] 🧠 手动触发深度分析: ${query}`);
+      await createQueuedMission({
+        query,
+        depth: 'deep',
+        source: 'manual',
+        priority: 100,
+      });
     }
-  })().catch(console.error);
+  })().catch((e: unknown) => logger.error(e instanceof Error ? e.message : String(e)));
 }

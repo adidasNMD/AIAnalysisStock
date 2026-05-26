@@ -1,0 +1,20 @@
+-Notes on Market Cap Gate remediation
+
+- Also implemented veto state propagation for per-ticker consensus (vetoed and vetoReason) and dual-brain veto logic as part of the governance hardening task.
+- Change overview:
+  - Updated src/workflows/mission-dispatcher.ts to extend TickerConsensus with vetoed: boolean and vetoReason: string | null
+  - computeConsensus now computes vetoed/vetoReason per ticker based on: if agreement === 'disagree' -> veto; if openbbVerdict === 'FAIL' -> veto; otherwise not vetoed
+  - dispatchMission emits veto alerts for vetoed tickers via the system info channel
+  - src/worker.ts renders vetoed flags in consensus summary for visibility on dashboards
+- Verification notes: will run TypeScript compile and grep for vetoed/vetoReason usage; ensure dispatch produces veto alerts
+- Outcome plan: ensure veto-driven alerts are surfaced without changing trading logic
+- Implemented a central market-cap gate in src/utils/market-cap-gate.ts with MIN=200M and MAX=50B.
+- Replaced hard-coded bounds in ticker discovery (ticker-discovery.ts) to enforce the gate via isMarketCapWithinGate.
+- Gate-enforcement added in TrendRadar (trend-radar.ts) to filter ticker mentions by market cap using getQuote() and isMarketCapWithinGate.
+- Updated OpenBB verdict logic (openbb-provider.ts) to rely on gate checks instead of hard-coded thresholds; added gate imports.
+- Updated strategist prompt language to reflect new gate bounds ($200M-$50B).
+- Next steps: run TypeScript compile and tests, verify no stray MEGA_CAP_THRESHOLD usage remains, document any edge cases found during verification.
+- Implemented Position Sizing Discipline Guard:
+  - Added src/utils/position-guard.ts with MAX_SINGLE_POSITION_PCT, PROBE_POSITION_PCT and guard helpers.
+  - Integrated into SynthesisAgent workflow: annotate final reports with Position Sizing Guard section and concentration risk notes.
+  - Wired in synthesis.ts to surface gate guidance and a lightweight concentration risk heuristic based on ticker mentions.

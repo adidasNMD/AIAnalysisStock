@@ -1,0 +1,208 @@
+import type {
+  OpportunityInboxItem,
+  OpportunitySuggestedMission,
+  OpportunitySummary,
+} from '../../api';
+import type { OpportunityStreamEvent } from '../../hooks/useAgentStream';
+import {
+  timelineDecisionLabel,
+  type InboxLane,
+  type LaneActionPreview,
+  type LaneLiveSignal,
+  type OpportunityPrimaryAction,
+} from './model';
+import { inboxLaneMeta } from './live';
+import { buildInboxPrimaryAction } from './selectors';
+import { InboxOpportunityCard } from './InboxOpportunityCard';
+import type { MissionRecoveryActionFeedback } from './mission-actions';
+import type { MissionRecoveryAction } from './recovery';
+
+type LanePriorityView = {
+  items: OpportunityInboxItem[];
+  recentEvents: Map<string, OpportunityStreamEvent>;
+};
+
+type LaneInsight = {
+  summary: string;
+  chips: string[];
+  actionSummary: string | null;
+};
+
+type ActionInboxProps = {
+  liveInbox: OpportunityInboxItem[];
+  inboxLanes: Record<InboxLane, LanePriorityView>;
+  laneInsights: Record<InboxLane, LaneInsight>;
+  laneLiveSignals: Record<InboxLane, LaneLiveSignal | null>;
+  laneActionPreviews: Record<InboxLane, LaneActionPreview | null>;
+  focusedLane: InboxLane | null;
+  setLaneRef: (lane: InboxLane, node: HTMLElement | null) => void;
+  executePrimaryAction: (opportunity: OpportunitySummary, action: OpportunityPrimaryAction) => void | Promise<void>;
+  liveNow: number;
+  missionRecoveryActionFeedback?: MissionRecoveryActionFeedback | null;
+  recoveringMissionActionKey?: string | null;
+  onOpenOpportunity: (opportunity: OpportunitySummary) => void;
+  onLaunchOpportunityAnalysis: (opportunity: OpportunitySummary, suggested?: OpportunitySuggestedMission) => void;
+  onRecoverMission: (opportunity: OpportunitySummary, action: MissionRecoveryAction) => void;
+  onOpenMission: (missionId: string) => void;
+};
+
+const MAX_RENDERED_INBOX_ITEMS_PER_LANE = 2;
+
+export function ActionInbox({
+  liveInbox,
+  inboxLanes,
+  laneInsights,
+  laneLiveSignals,
+  laneActionPreviews,
+  focusedLane,
+  setLaneRef,
+  executePrimaryAction,
+  liveNow,
+  missionRecoveryActionFeedback,
+  recoveringMissionActionKey,
+  onOpenOpportunity,
+  onLaunchOpportunityAnalysis,
+  onRecoverMission,
+  onOpenMission,
+}: ActionInboxProps) {
+  return (
+    <div className="today-summary glass-panel">
+      <div className="today-header">
+        <div>
+          <h3>Action Inbox</h3>
+          <p>先按行动泳道分层，再在每条泳道里按催化、传导、退化和 thesis 变化排序。</p>
+          <div className="today-shortcuts">
+            <span className="timeline-chip muted">1 / 2 / 3 跳到泳道</span>
+            <span className="timeline-chip muted">Shift + 1 / 2 / 3 直接执行</span>
+          </div>
+        </div>
+        <div className="today-kpis">
+          <div className="today-kpi">
+            <span>Items</span>
+            <strong>{liveInbox.length || 0}</strong>
+          </div>
+          <div className="today-kpi">
+            <span>Act</span>
+            <strong>{inboxLanes.act.items.length}</strong>
+          </div>
+          <div className="today-kpi">
+            <span>Review</span>
+            <strong>{inboxLanes.review.items.length}</strong>
+          </div>
+          <div className="today-kpi">
+            <span>Monitor</span>
+            <strong>{inboxLanes.monitor.items.length}</strong>
+          </div>
+          <div className="today-kpi">
+            <span>Top</span>
+            <strong>{liveInbox[0]?.inboxScore || 0}</strong>
+          </div>
+          <div className="today-kpi">
+            <span>Priority</span>
+            <strong>{liveInbox[0]?.actionDecision ? timelineDecisionLabel(liveInbox[0].actionDecision) : 'WATCH'}</strong>
+          </div>
+        </div>
+      </div>
+      <div className="today-lanes">
+        {(['act', 'review', 'monitor'] as const).map((lane) => {
+          const meta = inboxLaneMeta(lane);
+          const laneView = inboxLanes[lane];
+          const items = laneView.items;
+          const visibleItems = items.slice(0, MAX_RENDERED_INBOX_ITEMS_PER_LANE);
+          const hiddenCount = Math.max(0, items.length - visibleItems.length);
+          const insight = laneInsights[lane];
+          const liveSignal = laneLiveSignals[lane];
+          const laneActionPreview = laneActionPreviews[lane];
+          const lanePrimaryItem = items[0] || null;
+          const lanePrimaryOpportunity = laneActionPreview?.opportunity || lanePrimaryItem;
+          const lanePrimaryAction = laneActionPreview?.action || (lanePrimaryItem ? buildInboxPrimaryAction(lanePrimaryItem) : null);
+          return (
+            <section
+              key={lane}
+              className={`today-lane ${lane} ${focusedLane === lane ? 'focused' : ''}`}
+              ref={(node) => setLaneRef(lane, node)}
+            >
+              <div className="today-lane-header">
+                <div>
+                  <h4>{meta.label}</h4>
+                  <p>{meta.description}</p>
+                  {liveSignal && (
+                    <div className={`today-lane-live ${liveSignal.state}`}>
+                      <div className="today-lane-live-top">
+                        <span className="live-dot-small" />
+                        <span className="today-lane-live-label">{liveSignal.label}</span>
+                        <span className={`live-state-chip ${liveSignal.state}`}>{liveSignal.stateLabel}</span>
+                        <span className="today-lane-live-age">{liveSignal.ageLabel}</span>
+                      </div>
+                      <div className="today-lane-live-detail">{liveSignal.detail}</div>
+                      <div className="today-lane-live-note">{liveSignal.stateSummary}</div>
+                    </div>
+                  )}
+                  <div className="today-lane-summary">{insight.summary}</div>
+                  {insight.chips.length > 0 && (
+                    <div className="today-lane-chips">
+                      {insight.chips.map((chip) => (
+                        <span key={`${lane}_${chip}`} className="timeline-chip muted">{chip}</span>
+                      ))}
+                    </div>
+                  )}
+                  {lanePrimaryOpportunity && lanePrimaryAction && (
+                    <div className={`today-lane-action ${laneActionPreview?.fresh ? 'fresh' : ''}`}>
+                      {(laneActionPreview?.copy || insight.actionSummary) && (
+                        <div className="today-lane-action-copy">{laneActionPreview?.copy || insight.actionSummary}</div>
+                      )}
+                      <div className="today-lane-action-row">
+                        <button
+                          type="button"
+                          className="secondary-btn tiny"
+                          onClick={() => void executePrimaryAction(lanePrimaryOpportunity, lanePrimaryAction)}
+                        >
+                          {lanePrimaryAction.label}
+                        </button>
+                        <span className="timeline-chip muted">{laneActionPreview?.targetTitle || lanePrimaryOpportunity.title}</span>
+                        {laneActionPreview?.fresh && (
+                          <span className="timeline-chip">LIVE</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <span className={`today-lane-count ${lane}`}>{items.length}</span>
+              </div>
+              <div className="today-feed-list">
+                {items.length === 0 ? (
+                  <div className="today-empty">{meta.empty}</div>
+                ) : (
+                  <>
+                    {visibleItems.map((item, index) => (
+                    <InboxOpportunityCard
+                      key={item.id}
+                      item={item}
+                      liveNow={liveNow}
+                      livePriorityEvent={laneView.recentEvents.get(item.id)}
+                      liveRank={index}
+                      missionRecoveryActionFeedback={missionRecoveryActionFeedback}
+                      recoveringMissionActionKey={recoveringMissionActionKey}
+                      onOpenOpportunity={onOpenOpportunity}
+                      onExecutePrimaryAction={executePrimaryAction}
+                      onLaunchOpportunityAnalysis={onLaunchOpportunityAnalysis}
+                      onRecoverMission={onRecoverMission}
+                      onOpenMission={onOpenMission}
+                    />
+                    ))}
+                    {hiddenCount > 0 && (
+                      <div className="today-feed-overflow" data-inbox-overflow={lane}>
+                        <strong>+{hiddenCount}</strong>
+                        <span>more in {meta.label}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

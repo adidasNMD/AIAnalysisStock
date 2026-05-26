@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { generateTextCompletion } from '../../utils/llm';
 import { searchPosts, extractTickersFromPosts } from '../../tools/reddit';
-import { fetchGoogleNewsRSS, GoogleNewsItem } from '../../tools/google-news';
+import { fetchGoogleNewsRSS } from '../../tools/google-news';
 import { getQuote } from '../../tools/market-data';
+import { isMarketCapWithinGate, MARKET_CAP_MAX, MARKET_CAP_MIN } from '../../utils/market-cap-gate';
 
 // ==========================================
 // TickerDiscoveryEngine — (Free-form Text Flow 版本)
@@ -22,13 +23,33 @@ function loadInvestorProfile(): string {
   return '';
 }
 
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+  }
+}
+
 /**
  * 从文本中提取 ticker 代码
  */
+const TICKER_BLACKLIST = new Set([
+  'USD', 'EUR', 'GBP', 'CHF', 'JPY',
+  'BTC', 'ETH', 'SOL', 'USDT', 'USDC',
+]);
+
 function extractTickersFromText(text: string): string[] {
-  const matches = text.match(/\$([A-Z]{1,5})\b/g);
+  const matches = text.match(/\$([A-Z]{2,5})\b/g);
   if (!matches) return [];
-  return [...new Set(matches.map(m => m.replace('$', '')))];
+
+  return [...new Set(
+    matches
+      .map(m => m.slice(1))
+      .filter(symbol => !TICKER_BLACKLIST.has(symbol)),
+  )];
 }
 
 // 保持导出兼容
@@ -46,6 +67,14 @@ export interface DiscoveredTicker {
   risks: string[];
 }
 
+export interface RejectedTicker {
+  symbol: string;
+  reason: 'mega_cap' | 'micro_cap' | 'invalid' | 'error';
+  marketCap?: number;
+  thresholdMin?: number;
+  thresholdMax?: number;
+}
+
 export class TickerDiscoveryEngine {
   private investorProfile: string;
 
@@ -60,13 +89,15 @@ export class TickerDiscoveryEngine {
     trendName: string,
     trendDescription?: string,
     existingTickers?: string[],
-  ): Promise<{ tickers: DiscoveredTicker[]; supplyChainLogic: string }> {
+    options: AgentRequestOptions = {},
+  ): Promise<{ tickers: DiscoveredTicker[]; supplyChainLogic: string; rejectedTickers?: RejectedTicker[] }> {
+    throwIfCanceled(options.signal);
     console.log(`\n[TickerDiscovery] 🔍 开始从趋势中发现标的: "${trendName}"`);
 
     // 多源数据采集
     const [redditTickers, newsContext] = await Promise.all([
-      this.collectRedditTickers(trendName),
-      this.collectNewsContext(trendName),
+      this.collectRedditTickers(trendName, options),
+      this.collectNewsContext(trendName, options),
     ]);
 
     // LLM 纯文本产业链推导
@@ -110,8 +141,13 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     userPrompt += `\n请进行完整的产业链推导，三类赛道都要覆盖。`;
 
+    throwIfCanceled(options.signal);
     console.log(`[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...`);
-    const analysisReport = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
+    const analysisReport = await generateTextCompletion(systemPrompt, userPrompt, {
+      streamToConsole: true,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    throwIfCanceled(options.signal);
 
     // 从文本中提取 ticker
     const extractedTickers = extractTickersFromText(analysisReport);
@@ -119,18 +155,26 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
 
     // Yahoo Finance 验证
     const validatedTickers: DiscoveredTicker[] = [];
-    const MEGA_CAP_THRESHOLD = 500_000_000_000;
+    const rejectedTickers: RejectedTicker[] = [];
+    const marketCapMax = Number(process.env.MARKET_CAP_MAX) || MARKET_CAP_MAX;
+    const marketCapMin = Number(process.env.MARKET_CAP_MIN) || MARKET_CAP_MIN;
 
     for (const symbol of extractedTickers) {
       try {
-        const quote = await getQuote(symbol);
+        throwIfCanceled(options.signal);
+        const quote = await getQuote(symbol, options);
+        throwIfCanceled(options.signal);
         if (!quote || quote.price <= 0) {
           console.log(`[TickerDiscovery] ⚠️ 跳过无效标的: ${symbol}`);
+          rejectedTickers.push({ symbol, reason: 'invalid' });
           continue;
         }
 
-        if (quote.marketCap > MEGA_CAP_THRESHOLD) {
-          console.log(`[TickerDiscovery] 🚫 排除巨头: ${symbol} ($${(quote.marketCap / 1e9).toFixed(0)}B)`);
+        if (!isMarketCapWithinGate(quote.marketCap) && (quote.marketCap > marketCapMax || quote.marketCap < marketCapMin)) {
+          const reason: 'mega_cap' | 'micro_cap' = quote.marketCap > marketCapMax ? 'mega_cap' : 'micro_cap';
+          const label = reason === 'mega_cap' ? '巨头' : '微型股';
+          console.log(`[TickerDiscovery] 🚫 排除${label}: ${symbol} ($${(quote.marketCap / 1e9).toFixed(1)}B)`);
+          rejectedTickers.push({ symbol, reason, marketCap: quote.marketCap, thresholdMin: marketCapMin, thresholdMax: marketCapMax });
           continue;
         }
 
@@ -153,7 +197,9 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
           risks: [],
         });
       } catch (e: any) {
+        throwIfCanceled(options.signal);
         console.log(`[TickerDiscovery] ⚠️ 跳过无效标的: ${symbol} (${e.message})`);
+        rejectedTickers.push({ symbol, reason: 'error' });
       }
     }
 
@@ -163,24 +209,36 @@ ${this.investorProfile ? `=== 投资者画像 ===\n${this.investorProfile.substr
       console.log(`  ${levelIcon} ${t.symbol} (${t.name}) | ${t.chainLevel} | 评分${t.multibaggerScore}`);
     }
 
-    return { tickers: validatedTickers, supplyChainLogic: analysisReport.substring(0, 500) };
+    return { tickers: validatedTickers, supplyChainLogic: analysisReport.substring(0, 500), rejectedTickers };
   }
 
-  private async collectRedditTickers(trendName: string): Promise<Map<string, number>> {
+  private async collectRedditTickers(
+    trendName: string,
+    options: AgentRequestOptions = {},
+  ): Promise<Map<string, number>> {
     try {
-      const posts = await searchPosts(trendName, undefined, 20);
+      throwIfCanceled(options.signal);
+      const posts = await searchPosts(trendName, undefined, 20, options);
+      throwIfCanceled(options.signal);
       return extractTickersFromPosts(posts);
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[TickerDiscovery] Reddit 搜索失败: ${e.message}`);
       return new Map();
     }
   }
 
-  private async collectNewsContext(trendName: string): Promise<string> {
+  private async collectNewsContext(
+    trendName: string,
+    options: AgentRequestOptions = {},
+  ): Promise<string> {
     try {
-      const items = await fetchGoogleNewsRSS(trendName, 'en', 8);
+      throwIfCanceled(options.signal);
+      const items = await fetchGoogleNewsRSS(trendName, 'en', 8, options);
+      throwIfCanceled(options.signal);
       return items.map(item => `[${item.source}] ${item.title}`).join('\n');
     } catch (e: any) {
+      throwIfCanceled(options.signal);
       console.error(`[TickerDiscovery] Google News 搜索失败: ${e.message}`);
       return '';
     }

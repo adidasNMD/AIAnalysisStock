@@ -1,34 +1,39 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePolling } from '../hooks/useAgentStream';
-import { RefreshCw, Database, Filter, CheckCircle, XCircle, ChevronLeft, ChevronRight } from 'lucide-react';
-
-interface RawItem {
-  id: number;
-  title: string;
-  url: string;
-  first_crawl_time: string;
-  last_crawl_time: string;
-  platform_name: string;
-  source_type: string;
-  matched: number; // 1 = accepted, 0 = rejected, -1 = not processed
-  matched_tag: string | null;
-}
+import { RefreshCw, Database, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import {
+  RAW_TREND_PAGE_SIZE,
+  buildRawTrendPageInfo,
+  buildRawTrendPlatformTabs,
+  buildRawTrendStats,
+  clampRawTrendPage,
+  filterRawTrendItems,
+  paginateRawTrendItems,
+  type RawTrendFilterType,
+  type RawTrendItem,
+} from './trend-radar-raw-state';
+import './trend-radar.css';
 
 interface RawData {
   date: string | null;
-  items: RawItem[];
+  items: RawTrendItem[];
 }
 
-const PAGE_SIZE = 200;
+function statusMeta(matched: number) {
+  if (matched === 1) return { label: '已收录', className: 'accepted' };
+  if (matched === 0) return { label: '已滤除', className: 'rejected' };
+  return { label: '待处理', className: 'unprocessed' };
+}
 
 export function TrendRadarRaw() {
-  const [filterType, setFilterType] = useState<string>('all');
+  const [filterType, setFilterType] = useState<RawTrendFilterType>('all');
   const [activePlatform, setActivePlatform] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(0);
 
   const { data, loading, error } = usePolling<RawData>(
     async () => {
-      const res = await fetch('http://localhost:3000/api/trendradar/raw');
+      const res = await fetch('/api/trendradar/raw');
       if (!res.ok) throw new Error('API Error');
       return res.json();
     },
@@ -38,50 +43,58 @@ export function TrendRadarRaw() {
 
   const rawData = data || { date: null, items: [] };
 
-  // 获取所有唯一的平台分类（用 useMemo 缓存）
   const platformTabs = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of rawData.items) {
-      map.set(item.platform_name, (map.get(item.platform_name) || 0) + 1);
-    }
-    // 按数量降序排列
-    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+    return buildRawTrendPlatformTabs(rawData.items);
   }, [rawData.items]);
 
-  // 过滤后的数据列表
+  const rawStats = useMemo(() => {
+    return buildRawTrendStats(rawData.items);
+  }, [rawData.items]);
+
   const filteredItems = useMemo(() => {
-    return rawData.items.filter((item: RawItem) => {
-      // 主要状态过滤
-      if (filterType === 'accepted' && item.matched !== 1) return false;
-      if (filterType === 'rejected' && item.matched !== 0) return false;
-      if (filterType === 'unprocessed' && item.matched !== -1) return false;
-      if (filterType === 'rss' && item.source_type !== 'rss') return false;
-      if (filterType === 'hotlist' && item.source_type !== 'hotlist') return false;
+    return filterRawTrendItems(rawData.items, { filterType, activePlatform, searchQuery });
+  }, [rawData.items, filterType, activePlatform, searchQuery]);
 
-      // 平台 Tab 过滤
-      if (activePlatform !== 'all' && item.platform_name !== activePlatform) return false;
+  const pageInfo = useMemo(() => {
+    return buildRawTrendPageInfo(filteredItems.length, currentPage, RAW_TREND_PAGE_SIZE);
+  }, [filteredItems.length, currentPage]);
 
-      return true;
-    });
-  }, [rawData.items, filterType, activePlatform]);
+  const pagedItems = useMemo(() => {
+    return paginateRawTrendItems(filteredItems, pageInfo.currentPage, RAW_TREND_PAGE_SIZE);
+  }, [filteredItems, pageInfo.currentPage]);
 
-  // 分页
-  const totalPages = Math.ceil(filteredItems.length / PAGE_SIZE);
-  const pagedItems = filteredItems.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+  useEffect(() => {
+    if (pageInfo.currentPage !== currentPage) {
+      setCurrentPage(pageInfo.currentPage);
+    }
+  }, [pageInfo.currentPage, currentPage]);
 
-  // 切换过滤器时重置页码
-  const handleFilterChange = (val: string) => {
+  const pageSummary = filteredItems.length > 0
+    ? `显示 ${pageInfo.visibleStart} - ${pageInfo.visibleEnd} / ${filteredItems.length} 条`
+    : '当前筛选范围内没有结果';
+
+  const handleFilterChange = (val: RawTrendFilterType) => {
     setFilterType(val);
     setCurrentPage(0);
   };
+
   const handlePlatformChange = (val: string) => {
     setActivePlatform(val);
     setCurrentPage(0);
   };
 
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    setCurrentPage(0);
+  };
+
+  const setSafePage = (nextPage: number) => {
+    setCurrentPage(clampRawTrendPage(nextPage, filteredItems.length, RAW_TREND_PAGE_SIZE));
+  };
+
   if (loading && !rawData.items.length) {
     return (
-      <div className="radar-container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px' }}>
+      <div className="radar-container trend-radar-raw is-loading">
         <p className="loading-text"><RefreshCw className="spin" size={20} /> 正在调取底层情报库...</p>
       </div>
     );
@@ -89,34 +102,41 @@ export function TrendRadarRaw() {
 
   if (error) {
     return (
-      <div className="radar-container">
-        <h2 className="error-text">❌ 数据拉取失败: {error}</h2>
+      <div className="radar-container trend-radar-raw">
+        <h2 className="error-text">数据拉取失败: {error}</h2>
       </div>
     );
   }
 
   return (
-    <div className="radar-container">
+    <div className="radar-container trend-radar-raw">
       <div className="radar-header glass-panel">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+        <div className="radar-header-main">
           <Database size={24} className="radar-icon" />
-          <div style={{ flex: 1 }}>
+          <div className="radar-header-copy">
             <h1>数据透视舱（原始数据）</h1>
-            <span className="radar-date">{rawData.date || '等待数据接入...'} | 总获取: {rawData.items.length}条</span>
+            <span className="radar-date">
+              {rawData.date || '等待数据接入...'} | 总获取: {rawStats.total} 条 | 当前: {filteredItems.length} 条
+            </span>
           </div>
           
           <div className="radar-controls">
+            <label className="raw-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                data-trend-raw-search="true"
+                value={searchQuery}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="搜索标题、来源、标签"
+                aria-label="搜索原始情报"
+              />
+            </label>
             <select 
+              data-trend-raw-filter="true"
               value={filterType} 
-              onChange={(e) => handleFilterChange(e.target.value)}
-              style={{
-                background: 'rgba(255,255,255,0.06)',
-                border: '1px solid rgba(255,255,255,0.12)',
-                color: '#e0e0e0',
-                padding: '8px 12px',
-                borderRadius: '6px',
-                fontSize: '14px',
-              }}
+              onChange={(e) => handleFilterChange(e.target.value as RawTrendFilterType)}
+              className="raw-filter-select"
+              aria-label="筛选原始情报"
             >
               <option value="all">全量底稿 (所有数据)</option>
               <option value="accepted">已收录 (AI Accepted)</option>
@@ -128,50 +148,36 @@ export function TrendRadarRaw() {
           </div>
         </div>
 
-        {/* 独立展示区 Tabs */}
+        <div className="raw-summary-strip" aria-label="原始情报统计">
+          <span className="raw-summary-chip strong">当前 {filteredItems.length}</span>
+          <span className="raw-summary-chip accepted">收录 {rawStats.accepted}</span>
+          <span className="raw-summary-chip rejected">滤除 {rawStats.rejected}</span>
+          <span className="raw-summary-chip unprocessed">待处理 {rawStats.unprocessed}</span>
+          <span className="raw-summary-chip rss">RSS {rawStats.rss}</span>
+          <span className="raw-summary-chip hotlist">热搜 {rawStats.hotlist}</span>
+        </div>
+
         {platformTabs.length > 0 && (
-          <div style={{ marginTop: '16px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <div className="raw-platform-tabs" aria-label="原始情报来源平台">
             <button
+              data-trend-raw-platform-tab="all"
               onClick={() => handlePlatformChange('all')}
-              style={{
-                background: activePlatform === 'all' ? 'rgba(74, 108, 247, 0.4)' : 'rgba(255,255,255,0.05)',
-                border: activePlatform === 'all' ? '1px solid rgba(74, 108, 247, 0.8)' : '1px solid rgba(255,255,255,0.1)',
-                color: activePlatform === 'all' ? '#fff' : '#aaa',
-                padding: '6px 16px',
-                borderRadius: '20px',
-                cursor: 'pointer',
-                fontSize: '13px',
-                fontWeight: 500,
-                transition: 'all 0.2s ease'
-              }}
+              className={`raw-platform-tab ${activePlatform === 'all' ? 'active' : ''}`}
+              aria-pressed={activePlatform === 'all'}
             >
               全部源
             </button>
             {platformTabs.map(([platform, count]) => (
               <button
                 key={platform}
+                data-trend-raw-platform-tab={platform}
                 onClick={() => handlePlatformChange(platform)}
-                style={{
-                  background: activePlatform === platform ? 'rgba(74, 108, 247, 0.4)' : 'rgba(255,255,255,0.05)',
-                  border: activePlatform === platform ? '1px solid rgba(74, 108, 247, 0.8)' : '1px solid rgba(255,255,255,0.1)',
-                  color: activePlatform === platform ? '#fff' : '#aaa',
-                  padding: '6px 14px',
-                  borderRadius: '20px',
-                  cursor: 'pointer',
-                  fontSize: '13px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  transition: 'all 0.2s ease'
-                }}
+                className={`raw-platform-tab ${activePlatform === platform ? 'active' : ''}`}
+                aria-pressed={activePlatform === platform}
+                title={platform}
               >
-                {platform}
-                <span style={{ 
-                  background: activePlatform === platform ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.3)', 
-                  padding: '2px 6px', 
-                  borderRadius: '10px',
-                  fontSize: '11px'
-                }}>
+                <span className="raw-platform-label">{platform}</span>
+                <span className="raw-platform-count">
                   {count}
                 </span>
               </button>
@@ -180,35 +186,28 @@ export function TrendRadarRaw() {
         )}
       </div>
 
-      {/* 分页控制 */}
-      {totalPages > 1 && (
-        <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px' }}>
-          <span style={{ color: '#9ca3af', fontSize: '13px' }}>
-            显示 {currentPage * PAGE_SIZE + 1} - {Math.min((currentPage + 1) * PAGE_SIZE, filteredItems.length)} / {filteredItems.length} 条
+      {pageInfo.totalPages > 1 && (
+        <div className="raw-pagination">
+          <span className="raw-pagination-count">
+            {pageSummary}
           </span>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div className="raw-pagination-actions">
             <button
-              disabled={currentPage === 0}
-              onClick={() => setCurrentPage(p => p - 1)}
-              style={{
-                background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
-                color: currentPage === 0 ? '#555' : '#e0e0e0', padding: '6px 12px', borderRadius: '6px', cursor: currentPage === 0 ? 'not-allowed' : 'pointer',
-                display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px'
-              }}
+              data-trend-raw-page-prev="true"
+              disabled={pageInfo.currentPage === 0}
+              onClick={() => setSafePage(pageInfo.currentPage - 1)}
+              className="raw-page-btn"
             >
               <ChevronLeft size={14} /> 上一页
             </button>
-            <span style={{ color: '#9ca3af', fontSize: '13px' }}>
-              {currentPage + 1} / {totalPages}
+            <span className="raw-page-index">
+              {pageInfo.currentPage + 1} / {pageInfo.totalPages}
             </span>
             <button
-              disabled={currentPage >= totalPages - 1}
-              onClick={() => setCurrentPage(p => p + 1)}
-              style={{
-                background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
-                color: currentPage >= totalPages - 1 ? '#555' : '#e0e0e0', padding: '6px 12px', borderRadius: '6px', cursor: currentPage >= totalPages - 1 ? 'not-allowed' : 'pointer',
-                display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px'
-              }}
+              data-trend-raw-page-next="true"
+              disabled={pageInfo.currentPage >= pageInfo.totalPages - 1}
+              onClick={() => setSafePage(pageInfo.currentPage + 1)}
+              className="raw-page-btn"
             >
               下一页 <ChevronRight size={14} />
             </button>
@@ -216,55 +215,87 @@ export function TrendRadarRaw() {
         </div>
       )}
 
-      <div className="glass-panel" style={{ marginTop: '12px', padding: '0', overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-            <thead style={{ background: 'rgba(255,255,255,0.05)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+      <div className="glass-panel raw-table-panel">
+        <div className="raw-table-toolbar">
+          <span data-trend-raw-page-summary="true">{pageSummary}</span>
+          <span>每页 {RAW_TREND_PAGE_SIZE} 条</span>
+        </div>
+        <div className="raw-table-scroll" tabIndex={0} aria-label="原始情报数据表" data-trend-raw-table-scroll="true">
+          <table className="raw-table">
+            <colgroup>
+              <col className="raw-status-col" />
+              <col className="raw-title-col" />
+              <col className="raw-source-col" />
+              <col className="raw-time-col" />
+              <col className="raw-tag-col" />
+            </colgroup>
+            <thead>
               <tr>
-                <th style={{ padding: '12px 16px', color: '#9ca3af', fontWeight: '500', fontSize: '13px' }}>状态</th>
-                <th style={{ padding: '12px 16px', color: '#9ca3af', fontWeight: '500', fontSize: '13px' }}>情报内容 (Title)</th>
-                <th style={{ padding: '12px 16px', color: '#9ca3af', fontWeight: '500', fontSize: '13px' }}>探测节点 (Source)</th>
-                <th style={{ padding: '12px 16px', color: '#9ca3af', fontWeight: '500', fontSize: '13px' }}>发现/最后爬取</th>
-                <th style={{ padding: '12px 16px', color: '#9ca3af', fontWeight: '500', fontSize: '13px' }}>AI标签分类</th>
+                <th>状态</th>
+                <th>情报内容 (Title)</th>
+                <th>探测节点 (Source)</th>
+                <th>发现/最后爬取</th>
+                <th>AI标签分类</th>
               </tr>
             </thead>
             <tbody>
-              {pagedItems.map((item: RawItem, idx: number) => (
-                <tr key={`${currentPage}-${idx}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', transition: 'background 0.2s' }}>
-                  <td style={{ padding: '12px 16px' }}>
-                    {item.matched === 1 ? <CheckCircle size={16} color="#10b981" /> : 
-                     item.matched === 0 ? <XCircle size={16} color="#ef4444" /> : 
-                     <Filter size={16} color="#6b7280" />}
-                  </td>
-                  <td style={{ padding: '12px 16px', maxWidth: '400px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    <a href={item.url || '#'} target="_blank" rel="noreferrer" style={{ color: '#e5e7eb', textDecoration: 'none' }}>
-                      {item.title}
-                    </a>
-                  </td>
-                  <td style={{ padding: '12px 16px' }}>
-                    <span style={{ 
-                      background: item.source_type === 'rss' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(236, 72, 153, 0.2)', 
-                      color: item.source_type === 'rss' ? '#60a5fa' : '#f472b6',
-                      padding: '2px 8px', borderRadius: '4px', fontSize: '12px'
-                    }}>
-                      {item.platform_name}
-                    </span>
-                  </td>
-                  <td style={{ padding: '12px 16px', color: '#9ca3af', fontSize: '13px' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span>首次: {item.first_crawl_time}</span>
-                      <span>最新: {item.last_crawl_time}</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: '12px 16px', color: '#9ca3af', fontSize: '13px' }}>
-                    {item.matched_tag || '-'}
-                  </td>
-                </tr>
-              ))}
+              {pagedItems.map((item: RawTrendItem) => {
+                const status = statusMeta(item.matched);
+                const sourceType = item.source_type === 'rss' ? 'RSS' : 'Hotlist';
+                const url = item.url && item.url !== '#' ? item.url : '';
+
+                return (
+                  <tr
+                    key={item.id}
+                    className="raw-table-row"
+                    data-trend-raw-row="true"
+                    data-trend-raw-id={item.id}
+                    data-trend-raw-matched={item.matched}
+                    data-trend-raw-source={item.source_type}
+                    data-trend-raw-platform={item.platform_name}
+                  >
+                    <td className="raw-table-cell raw-status-cell">
+                      <span className={`raw-status-pill ${status.className}`}>
+                        {status.label}
+                      </span>
+                    </td>
+                    <td className="raw-table-cell raw-title-cell">
+                      {url ? (
+                        <a href={url} target="_blank" rel="noreferrer" className="raw-title-link" title={item.title}>
+                          {item.title}
+                        </a>
+                      ) : (
+                        <span className="raw-title-link is-static" title={item.title}>
+                          {item.title}
+                        </span>
+                      )}
+                    </td>
+                    <td className="raw-table-cell raw-source-cell">
+                      <span className={`raw-source-pill ${item.source_type === 'rss' ? 'rss' : 'hotlist'}`} title={`${item.platform_name} · ${sourceType}`}>
+                        {item.platform_name} · {sourceType}
+                      </span>
+                    </td>
+                    <td className="raw-table-cell raw-muted-cell raw-time-cell">
+                      <div className="raw-time-stack">
+                        <span>首次: {item.first_crawl_time}</span>
+                        <span>最新: {item.last_crawl_time}</span>
+                      </div>
+                    </td>
+                    <td className="raw-table-cell raw-muted-cell raw-tag-cell">
+                      <span className={item.matched_tag ? 'raw-tag-pill' : 'raw-tag-empty'}>
+                        {item.matched_tag || '未分类'}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
               {pagedItems.length === 0 && (
                 <tr>
-                  <td colSpan={5} style={{ padding: '30px', textAlign: 'center', color: '#6b7280' }}>
-                    暂无符合条件的数据
+                  <td colSpan={5} className="raw-empty-row">
+                    <div className="raw-empty-state">
+                      <strong>暂无符合条件的数据</strong>
+                      <span>{rawStats.total > 0 ? '当前筛选范围内没有匹配记录。' : '底层情报接入后会出现在这里。'}</span>
+                    </div>
                   </td>
                 </tr>
               )}

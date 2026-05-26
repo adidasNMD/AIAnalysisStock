@@ -1,5 +1,10 @@
 import YahooFinance from 'yahoo-finance2';
+import { yahooLimiter } from '../utils/rate-limiter';
 const yahooFinance = new YahooFinance();
+
+interface RequestOptions {
+  signal?: AbortSignal | undefined;
+}
 
 export interface QuoteSnapshot {
   symbol: string;
@@ -29,12 +34,25 @@ export interface AlertSignal {
   timestamp: number;
 }
 
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getCancelReason(signal);
+  }
+}
+
 /**
  * 获取实时快照报价
  */
-export async function getQuote(symbol: string): Promise<QuoteSnapshot | null> {
+export async function getQuote(symbol: string, options: RequestOptions = {}): Promise<QuoteSnapshot | null> {
   try {
+    throwIfCanceled(options.signal);
+    await yahooLimiter.acquire(options.signal);
     const quote: any = await yahooFinance.quote(symbol);
+    throwIfCanceled(options.signal);
     if (!quote || !quote.regularMarketPrice) return null;
 
     const volume = quote.regularMarketVolume || 0;
@@ -51,6 +69,7 @@ export async function getQuote(symbol: string): Promise<QuoteSnapshot | null> {
       marketCap: quote.marketCap || 0
     };
   } catch (e: any) {
+    throwIfCanceled(options.signal);
     console.error(`[MarketData] Failed to fetch quote for ${symbol}: ${e.message}`);
     return null;
   }
@@ -59,17 +78,20 @@ export async function getQuote(symbol: string): Promise<QuoteSnapshot | null> {
 /**
  * 计算简单移动平均线 (SMA)
  */
-export async function calculateSMA(symbol: string, period: number): Promise<number | null> {
+export async function calculateSMA(symbol: string, period: number, options: RequestOptions = {}): Promise<number | null> {
   try {
+    throwIfCanceled(options.signal);
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(endDate.getDate() - Math.ceil(period * 2.0)); // extra buffer for weekends/holidays
 
+    await yahooLimiter.acquire(options.signal);
     const chartResult: any = await yahooFinance.chart(symbol, {
       period1: startDate,
       period2: endDate,
       interval: '1d'
     });
+    throwIfCanceled(options.signal);
 
     if (!chartResult || !chartResult.quotes) return null;
     
@@ -82,6 +104,7 @@ export async function calculateSMA(symbol: string, period: number): Promise<numb
     const sma = recentClose.reduce((sum: number, p: number) => sum + p, 0) / period;
     return Math.round(sma * 100) / 100;
   } catch (e: any) {
+    throwIfCanceled(options.signal);
     console.error(`[MarketData] Failed to calculate SMA(${period}) for ${symbol}: ${e.message}`);
     return null;
   }
@@ -90,13 +113,21 @@ export async function calculateSMA(symbol: string, period: number): Promise<numb
 /**
  * 检测均线突破/跌破
  */
-export async function checkSMACross(symbol: string, periods: number[]): Promise<SMACheckResult[]> {
-  const quote = await getQuote(symbol);
+export async function checkSMACross(
+  symbol: string,
+  periods: number[],
+  options: RequestOptions = {},
+): Promise<SMACheckResult[]> {
+  throwIfCanceled(options.signal);
+  const quote = await getQuote(symbol, options);
+  throwIfCanceled(options.signal);
   if (!quote) return [];
 
   const results: SMACheckResult[] = [];
   for (const period of periods) {
-    const sma = await calculateSMA(symbol, period);
+    throwIfCanceled(options.signal);
+    const sma = await calculateSMA(symbol, period, options);
+    throwIfCanceled(options.signal);
     if (sma === null) continue;
 
     results.push({
@@ -116,10 +147,11 @@ export async function checkSMACross(symbol: string, periods: number[]): Promise<
  */
 export async function scanTicker(
   symbol: string, 
-  alertConfig: { breakAboveSMA?: number[]; breakBelowSMA?: number[]; volumeSurgeMultiple?: number }
+  alertConfig: { breakAboveSMA?: number[]; breakBelowSMA?: number[]; volumeSurgeMultiple?: number },
+  options: RequestOptions = {},
 ): Promise<AlertSignal[]> {
   const alerts: AlertSignal[] = [];
-  const quote = await getQuote(symbol);
+  const quote = await getQuote(symbol, options);
   if (!quote) return alerts;
 
   // 1. 放量检测
@@ -156,7 +188,7 @@ export async function scanTicker(
   // 3. 均线突破检测
   const allPeriods = [...(alertConfig.breakAboveSMA || []), ...(alertConfig.breakBelowSMA || [])];
   const uniquePeriods = [...new Set(allPeriods)];
-  const smaResults = await checkSMACross(symbol, uniquePeriods);
+  const smaResults = await checkSMACross(symbol, uniquePeriods, options);
 
   for (const result of smaResults) {
     if (alertConfig.breakAboveSMA?.includes(result.period) && result.position === 'above' && result.crossedToday) {
@@ -186,13 +218,13 @@ export async function scanTicker(
 /**
  * 为 Agent Prompt 生成技术面快照摘要
  */
-export async function generateTechSnapshot(symbol: string): Promise<string> {
-  const quote = await getQuote(symbol);
+export async function generateTechSnapshot(symbol: string, options: RequestOptions = {}): Promise<string> {
+  const quote = await getQuote(symbol, options);
   if (!quote) return `[${symbol}] 无法获取行情数据`;
 
-  const sma20 = await calculateSMA(symbol, 20);
-  const sma50 = await calculateSMA(symbol, 50);
-  const sma200 = await calculateSMA(symbol, 200);
+  const sma20 = await calculateSMA(symbol, 20, options);
+  const sma50 = await calculateSMA(symbol, 50, options);
+  const sma200 = await calculateSMA(symbol, 200, options);
 
   return `[${symbol}] 实时: $${quote.price} (${quote.changePercent > 0 ? '+' : ''}${quote.changePercent.toFixed(2)}%) | 量比: ${quote.volumeSurgeRatio.toFixed(1)}x | SMA20: $${sma20 ?? 'N/A'} | SMA50: $${sma50 ?? 'N/A'} | SMA200: $${sma200 ?? 'N/A'} | 市值: $${(quote.marketCap / 1e9).toFixed(1)}B`;
 }

@@ -1,4 +1,62 @@
 import { generateTextCompletion } from '../../utils/llm';
+import { MAX_SINGLE_POSITION_PCT, PROBE_POSITION_PCT } from '../../utils/position-guard';
+import { validateTradeDecision } from '../../utils/report-validator';
+
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
+/**
+ * Extract a verdict keyword near a ticker mention in the report text.
+ * Returns 'BUY' | 'SELL' | 'HOLD' | 'SKIP' or null if indeterminate.
+ */
+function extractVerdictNearTicker(report: string, ticker: string): 'BUY' | 'SELL' | 'HOLD' | 'SKIP' | null {
+  const escapedTicker = ticker.replace(/\$/g, '\\$');
+  const pattern = new RegExp(`${escapedTicker}[\\s\\S]{0,200}`, 'i');
+  const match = report.match(pattern);
+  if (!match) return null;
+  const snippet = match[0];
+  if (/\bBUY\b/i.test(snippet) || /买入/i.test(snippet)) return 'BUY';
+  if (/\bSELL\b/i.test(snippet) || /卖出/i.test(snippet)) return 'SELL';
+  if (/\bSKIP\b/i.test(snippet) || /不买|观望/i.test(snippet)) return 'SKIP';
+  if (/\bHOLD\b/i.test(snippet) || /持有/i.test(snippet)) return 'HOLD';
+  return null;
+}
+
+function extractSnippet(report: string, ticker: string, keywords: RegExp, maxLen: number): string {
+  const escapedTicker = ticker.replace(/\$/g, '\\$');
+  const regionPattern = new RegExp(`${escapedTicker}[\\s\\S]{0,800}`, 'i');
+  const region = report.match(regionPattern);
+  if (!region) return '';
+  const sentences = region[0].split(/[。！？\n.!?]+/);
+  for (const s of sentences) {
+    if (keywords.test(s)) return s.trim().substring(0, maxLen);
+  }
+  return '';
+}
+
+export function emitStructuredVerdictBlock(report: string, tickers: string[]): string {
+  try {
+    const verdicts: Array<{ ticker: string; verdict: string; bullCase: string; bearCase: string }> = [];
+    for (const rawTicker of tickers) {
+      const ticker = rawTicker.startsWith('$') ? rawTicker : `$${rawTicker}`;
+      const verdict = extractVerdictNearTicker(report, ticker);
+      if (!verdict) continue;
+      const bullCase = extractSnippet(report, ticker, /看多|看好|bullish|BUY|催化|upside|catalyst/i, 200);
+      const bearCase = extractSnippet(report, ticker, /风险|看空|bearish|止损|downside|risk/i, 200);
+      verdicts.push({
+        ticker: rawTicker.replace(/^\$/, ''),
+        verdict,
+        bullCase: bullCase || '详见完整报告',
+        bearCase: bearCase || '详见完整报告',
+      });
+    }
+    const json = JSON.stringify(verdicts, null, 2);
+    return `${report}\n\n## STRUCTURED_VERDICTS\n\`\`\`json\n${json}\n\`\`\``;
+  } catch {
+    return report;
+  }
+}
 
 /**
  * SynthesisAgent — 报告合成智能体
@@ -18,6 +76,7 @@ export class SynthesisAgent {
     macroAppendix?: string,
     performanceAppendix?: string,
     investorProfile?: string,
+    options: AgentRequestOptions = {},
   ): Promise<string> {
     console.log(`\n[SynthesisAgent] 📝 Synthesizing Executive Daily Brief via LLM...`);
 
@@ -80,7 +139,42 @@ ${debateReport}`;
 ## 📊 操作建议
 仓位建议、入场/止盈时机、风险提示`;
 
-    const report = await generateTextCompletion(systemPrompt, userPrompt, { streamToConsole: true });
+    let report = await generateTextCompletion(systemPrompt, userPrompt, {
+      streamToConsole: true,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    try {
+      const combinedSources = `${analysisMemo} ${strategyReport} ${debateReport}`;
+      const tickerMatches = combinedSources.match(/\$[A-Z]{1,5}/g) || [];
+      const counts = new Map<string, number>();
+      for (const tk of tickerMatches) {
+        const t = tk.trim();
+        counts.set(t, (counts.get(t) ?? 0) + 1);
+      }
+      const crowded = Array.from(counts.entries()).filter(([, c]) => c >= 3);
+      const crowdedText = crowded.length > 0
+        ? crowded.map(([t, c]) => `${t}(${c}次)`).join(', ')
+        : '无显著聚集';
+      const riskNote = crowded.length > 0 ? `高集中风险: ${crowdedText}` : '无显著聚集风险';
+      const positionSection = `
+## 💹 Position Sizing Guard
+- 最大单笔仓位占比: ${MAX_SINGLE_POSITION_PCT}%
+- 入场探针仓位: ${PROBE_POSITION_PCT}%
+- 风险注记: ${riskNote}
+`;
+      report += positionSection;
+    } catch {
+      // best-effort only; do not fail the synthesis if this annotation cannot be added
+    }
+
+    const reportTickers = (report.match(/\$[A-Z]{1,5}/g) || []).map(t => t.replace(/^\$/, ''));
+    const uniqueTickers = [...new Set(reportTickers)];
+    report = emitStructuredVerdictBlock(report, uniqueTickers);
+
+    const validation = validateTradeDecision(report, 'SYNTHESIS');
+    if (!validation) {
+      console.warn('[SynthesisAgent] ⚠️ validateTradeDecision returned null — report may be missing structured fields');
+    }
 
     console.log(`[SynthesisAgent] ✅ 最终研报生成完成 (${report.length} 字)`);
     return report;

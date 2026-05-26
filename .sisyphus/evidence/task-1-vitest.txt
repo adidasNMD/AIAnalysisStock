@@ -1,0 +1,217 @@
+
+[7m[1m[36m RUN [39m[22m[27m [36mv0.34.6[39m [90m/Users/dujialun/Desktop/AIAnalysisStock-main[39m
+
+ [32m✓[39m src/__tests__/trail-renderer.test.ts [2m ([22m[2m6 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+[90mstdout[2m | src/__tests__/task-queue.test.ts[2m > [22m[2mTaskQueue concurrency[2m > [22m[2mdecrements runningCount after task completion[22m[39m
+[TaskQueue] 🔄 并发: 1/3
+[TaskQueue] ▶️ 开始处理: "q1" [shallow] (队列剩余: 0)
+[TaskQueue] ✅ 完成: "q1" (0.0s)
+
+ [32m✓[39m src/__tests__/task-queue.test.ts [2m ([22m[2m4 tests[22m[2m)[22m[90m 70[2mms[22m[39m
+ [32m✓[39m src/__tests__/watchlist-role.test.ts [2m ([22m[2m5 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+ [32m✓[39m src/__tests__/market-cap-filter.test.ts [2m ([22m[2m8 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mfilters out mega-cap: $60B marketCap exceeds $50B threshold[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+[TickerDiscovery] 🚫 排除巨头: TSYM ($60B)
+
+[TickerDiscovery] ✅ 发现 0 个有效标的
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mfilters out micro-cap: $100M marketCap below $200M lower bound[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+[TickerDiscovery] 🚫 排除微型股: TSYM ($100M)
+
+[TickerDiscovery] ✅ 发现 0 个有效标的
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mallows valid range: $5B marketCap passes both filters[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+
+[TickerDiscovery] ✅ 发现 1 个有效标的
+  🔍 TSYM (TSYM) | bottleneck | 评分60
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mrespects MARKET_CAP_MAX env var override: $60B passes when env var is $100B[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+
+[TickerDiscovery] ✅ 发现 1 个有效标的
+  👑 TSYM (TSYM) | sector_leader | 评分40
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mboundary: $50B exactly is filtered out (> threshold, not >=)[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+
+[TickerDiscovery] ✅ 发现 1 个有效标的
+  👑 TSYM (TSYM) | sector_leader | 评分40
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mboundary: $50B + 1 is filtered out (exceeds threshold)[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+[TickerDiscovery] 🚫 排除巨头: TSYM ($50B)
+
+[TickerDiscovery] ✅ 发现 0 个有效标的
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mboundary: $200M exactly passes lower bound (< threshold, not <=)[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "AI数据中心"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 1 个 ticker: TSYM
+
+[TickerDiscovery] ✅ 发现 1 个有效标的
+  🎯 TSYM (TSYM) | hidden_gem | 评分80
+
+[90mstdout[2m | src/__tests__/market-cap-filter.test.ts[2m > [22m[2mmarket cap filtering in TickerDiscoveryEngine[2m > [22m[2mreturns rejected tickers with reasons[22m[39m
+[TickerDiscovery] ✅ 投资者画像已加载
+
+[TickerDiscovery] 🔍 开始从趋势中发现标的: "test theme"
+[TickerDiscovery] 🧠 提交至 LLM 进行产业链推导...
+[TickerDiscovery] 📊 从文本中提取到 3 个 ticker: HUGE, TINY, GOOD
+[TickerDiscovery] 🚫 排除巨头: HUGE ($100B)
+[TickerDiscovery] 🚫 排除微型股: TINY ($50M)
+
+[TickerDiscovery] ✅ 发现 1 个有效标的
+  🔍 GOOD (GOOD) | bottleneck | 评分60
+
+ [32m✓[39m src/__tests__/schemas.test.ts [2m ([22m[2m9 tests[22m[2m)[22m[90m 8[2mms[22m[39m
+[90mstdout[2m | unknown test[22m[39m
+
+==================================================================
+⚡ OPENCLAW V4 SENTINEL DAEMON STARTED
+   Mode: Multi-trigger Watchlist Sentinel + TrendRadar + RAG Bot
+   Triggers: T1(5min 价量), T2(15min RSS/EDGAR), T3(08:30 日报), T4(15min 趋势雷达)
+==================================================================
+
+[Sentinel] ✅ T1 价量哨兵已启用 (每5分钟, cooldown=30min)
+
+ [32m✓[39m src/__tests__/t1-cooldown.test.ts [2m ([22m[2m5 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+[90mstdout[2m | src/__tests__/t1-cooldown.test.ts[2m > [22m[2mT1 cooldown deduplication[2m > [22m[2mcooldown blocks repeat[22m[39m
+[T1] ⏳ AAOI 在冷却期内，跳过 (0min ago)
+
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🤖 agentic secret storage: https://dotenvx.com/as2
+
+ [32m✓[39m src/__tests__/smoke.test.ts [2m ([22m[2m1 test[22m[2m)[22m[90m 3[2mms[22m[39m
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts driverType=Fundamental when report contains "基本面"[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts driverType=Policy_Driven when report contains "政策驱动"[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Policy_Driven, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts driverType=Narrative_Hype when report contains "叙事"[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Narrative_Hype, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts driverType=Narrative_Hype when report contains "hype"[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Narrative_Hype, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mdefaults driverType=Fundamental and positionSize=trial when no keywords match[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts non-empty stopLosses when report contains "止损" sentence[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mreturns empty stopLosses array when no stop loss keywords found[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mreturns valid bullCase and bearCase defaults from empty report[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts bullCase from report containing "看多" keyword[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts bearCase from report containing "风险" keyword[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mreturns null and does not throw when schema receives invalid ticker type[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mreturns object with correct ticker field[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Policy_Driven, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mreturns verdict=HOLD (conservative default)[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mreturns agreement=pending (conservative default)[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Narrative_Hype, positionSize=trial
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts positionSize=full when report contains "满仓"[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=full
+
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mextracts positionSize=skip when report contains "不买"[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=skip
+
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+ [32m✓[39m src/__tests__/report-validator.test.ts [2m ([22m[2m17 tests[22m[2m)[22m[90m 10[2mms[22m[39m
+[90mstdout[2m | src/__tests__/report-validator.test.ts[2m > [22m[2mvalidateTradeDecision[2m > [22m[2mhandles stop loss in English "stop loss" text[22m[39m
+[ReportValidator] 📋 结构化提取成功: driverType=Fundamental, positionSize=trial
+
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+[90mstdout[2m | src/__tests__/alert-wiring.test.ts[2m > [22m[2mNarrativeLifecycleEngine — lifecycle downgrade alert[2m > [22m[2mcalls sendStopLossAlert with 叙事阶段降级 when stage transitions to narrativeFatigue[22m[39m
+
+[LifecycleEngine] 🔄 开始评估活跃叙事的生命周期状态...
+[LifecycleEngine] ✅ 评估完成。共评估 1 个叙事，状态变更 1 个。
+
+ [32m✓[39m src/__tests__/alert-wiring.test.ts [2m ([22m[2m5 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+[90mstdout[2m | unknown test[22m[39m
+<empty line>
+[90mstderr[2m | unknown test[22m[39m
+[yahoo-finance2] Unsupported environment: Requires Node >= 22.0.0, found 16.20.2. (runtime=node, version=16.20.2). Things might break or work unexpectedly!
+
+[90mstderr[2m | unknown test[22m[39m
+<empty line>
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent building .env in docker: https://dotenvx.com/prebuild
+
+[90mstdout[2m | unknown test[22m[39m
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+ [32m✓[39m src/__tests__/decision-trail.test.ts [2m ([22m[2m12 tests[22m[2m)[22m[90m 6[2mms[22m[39m
+ [32m✓[39m src/__tests__/consensus.test.ts [2m ([22m[2m6 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+[90mstdout[2m | src/__tests__/consensus.test.ts[2m > [22m[2mcomputeConsensus[2m > [22m[2mblocks BUY when agree and price is below SMA250[22m[39m
+[Consensus] 🚫 SMA250 否决: NVDA 处于 250日均线下方 (价格 95 < SMA250 120)，右侧趋势未确认，否决 BUY
+
+[90mstdout[2m | src/__tests__/consensus.test.ts[2m > [22m[2mcomputeConsensus[2m > [22m[2madds conflict vetoReason when OC and TA disagree[22m[39m
+[Consensus] ⚠️ 双大脑冲突: OpenClaw=BUY vs TradingAgents=SELL，强制 HOLD
+
+[90mstderr[2m | src/__tests__/consensus.test.ts[2m > [22m[2mcomputeConsensus[2m > [22m[2mfalls back gracefully when checkSMACross throws[22m[39m
+[Consensus] SMA250 检查失败 META: network down，跳过否决
+
+
+[2m Test Files [22m [1m[32m11 passed[39m[22m[90m (11)[39m
+[2m      Tests [22m [1m[32m78 passed[39m[22m[90m (78)[39m
+[2m   Start at [22m 21:21:55
+[2m   Duration [22m 944ms[2m (transform 385ms, setup 0ms, collect 1.75s, tests 125ms, environment 1ms, prepare 745ms)[22m
+

@@ -6,6 +6,8 @@ import { NormalizerAgent } from '../agents/normalizer/index';
 import { SynthesisAgent } from '../agents/intelligence/synthesis';
 import { saveReport } from '../utils/storage';
 import { sendReportSummary } from '../utils/telegram';
+import { validateTradeDecision } from '../utils/report-validator';
+import { isCanceledError } from '../utils/error-classification';
 import { loadNarratives, findRelatedNarrative, createNarrative, updateNarrative, getNarrativeContext } from '../utils/narrative-store';
 import { startMissionTrace, logAgentStep, endMissionTrace } from '../utils/agent-logger';
 import {
@@ -80,7 +82,9 @@ export class AgentSwarmOrchestrator {
     saveState?: (state: SwarmState) => Promise<void>,
     onProgress?: (step: 'scout' | 'analyst' | 'strategist' | 'council' | 'synthesis') => void,
     checkCanceled?: () => Promise<boolean>,
-    explicitMissionId?: string
+    explicitMissionId?: string,
+    explicitRunId?: string,
+    abortSignal?: AbortSignal,
   ): Promise<string | null> {
     console.log(`\n======================================================`);
     console.log(`🦅 OPENCLAW V4 SWARM (Free-form Text Flow) ENGAGED: Target [${query}]`);
@@ -98,22 +102,37 @@ export class AgentSwarmOrchestrator {
     let debateReport = initialState?.debateReport || '';
     let rawSignals: any[] = initialState?.rawSignals || [];
     let enrichedBrief = initialState?.enrichedBrief || '';
+    const throwIfCanceled = async () => {
+      if (abortSignal?.aborted) {
+        throw abortSignal.reason instanceof Error ? abortSignal.reason : new Error('Canceled by user');
+      }
+      if (await checkCanceled?.()) {
+        throw new Error('Canceled by user');
+      }
+    };
+    const agentOptions = abortSignal ? { signal: abortSignal } : {};
 
     if (completedPhases.length > 0) {
       console.log(`[SwarmManager] 🔄 从中断状态恢复任务！已跳过阶段: ${completedPhases.join(', ')}`);
     }
 
-    const missionId = startMissionTrace(query, explicitMissionId);
+    const traceId = startMissionTrace(query, {
+      ...(explicitMissionId ? { missionId: explicitMissionId } : {}),
+      ...(explicitRunId ? { runId: explicitRunId } : {}),
+    });
 
     // 0. 加载投资者画像
+    await throwIfCanceled();
     const investorProfile = loadInvestorProfile();
     if (investorProfile) {
       console.log(`[SwarmManager] 🧠 投资者画像已加载 (${investorProfile.length} 字)`);
     }
 
     // 0.5 加载历史叙事记忆
+    await throwIfCanceled();
     const existingNarratives = await loadNarratives();
     const relatedNarrative = await findRelatedNarrative(query);
+    await throwIfCanceled();
     if (relatedNarrative) {
       console.log(`[SwarmManager] 💾 发现关联历史叙事: "${relatedNarrative.title}" (已追踪 ${relatedNarrative.eventHistory.length} 个事件)`);
     }
@@ -123,18 +142,19 @@ export class AgentSwarmOrchestrator {
     // ====================================================
     let t0 = Date.now();
     if (!completedPhases.includes('scout')) {
-      if (await checkCanceled?.()) throw new Error('Canceled by user');
+      await throwIfCanceled();
       onProgress?.('scout');
-      const scoutRes = await this.scout.scout(query);
+      const scoutRes = await this.scout.scout(query, agentOptions);
+      await throwIfCanceled();
       rawSignals = scoutRes.signals;
       intelligenceBrief = scoutRes.intelligenceBrief;
-      logAgentStep('DataScout', 'scouting', { query, rawSignals }, intelligenceBrief, Date.now() - t0, { signalCount: rawSignals.length });
+      logAgentStep(traceId, 'DataScout', 'scouting', { query, rawSignals }, intelligenceBrief, Date.now() - t0, { signalCount: rawSignals.length });
       handoffs.push(createHandoff('DataScout', intelligenceBrief, Date.now() - t0, { signalCount: rawSignals.length }));
 
       if (rawSignals.length === 0 && intelligenceBrief.length === 0) {
         console.log('🛑 [SwarmManager] Scout returned no actionable intelligence. Initiating early abort.');
         saveReport(query, `# V4 Execution Aborted\n\nNo actionable intelligence found on the web/social for query: **${query}**`);
-        endMissionTrace();
+        endMissionTrace(traceId);
         return null;
       }
     } else {
@@ -145,11 +165,14 @@ export class AgentSwarmOrchestrator {
     let cleanedSignals: any[] = [];
     if (!completedPhases.includes('scout')) {
       t0 = Date.now();
+      await throwIfCanceled();
       cleanedSignals = await this.normalizer.process(rawSignals);
-      logAgentStep('Normalizer', 'dedup_filter', rawSignals, cleanedSignals, Date.now() - t0);
+      await throwIfCanceled();
+      logAgentStep(traceId, 'Normalizer', 'dedup_filter', rawSignals, cleanedSignals, Date.now() - t0);
 
       // 将叙事记忆注入情报上下文
       const narrativeMemory = await getNarrativeContext();
+      await throwIfCanceled();
       enrichedBrief = intelligenceBrief;
       if (narrativeMemory) {
         enrichedBrief += `\n\n=== 系统历史叙事记忆 ===\n${narrativeMemory}`;
@@ -166,26 +189,29 @@ export class AgentSwarmOrchestrator {
     
     t0 = Date.now();
     if (!completedPhases.includes('analyst')) {
-        if (await checkCanceled?.()) throw new Error('Canceled by user');
+        await throwIfCanceled();
         onProgress?.('analyst');
         try {
-          const analystResult = await this.analyst.analyze(enrichedBrief, query);
+          const analystResult = await this.analyst.analyze(enrichedBrief, query, agentOptions);
+          await throwIfCanceled();
           analysisMemo = analystResult.analysisMemo;
           shouldProceed = analystResult.shouldProceed;
-          logAgentStep('LeadAnalyst', 'event_analysis', enrichedBrief, analysisMemo, Date.now() - t0, { shouldProceed });
+          logAgentStep(traceId, 'LeadAnalyst', 'event_analysis', enrichedBrief, analysisMemo, Date.now() - t0, { shouldProceed });
           handoffs.push(createHandoff('LeadAnalyst', analysisMemo, Date.now() - t0, { shouldProceed }));
         } catch (e: any) {
+          if (isCanceledError(e)) throw e;
           console.error(`[SwarmManager] ⚠️ Analyst phase failed: ${e.message}. Using raw intelligence brief as fallback.`);
           analysisMemo = enrichedBrief; // 降级：直接用情报文本
-          logAgentStep('LeadAnalyst', 'event_analysis_FALLBACK', { error: e.message }, 'Using raw brief', Date.now() - t0);
+          logAgentStep(traceId, 'LeadAnalyst', 'event_analysis_FALLBACK', { error: e.message }, 'Using raw brief', Date.now() - t0);
           handoffs.push(createDegradedHandoff('LeadAnalyst', analysisMemo, Date.now() - t0, e.message));
         }
 
         if (!shouldProceed) {
           console.log('🛑 [SwarmManager] Analyst dismissed event. Insufficient novelty/credibility.');
           const abortReport = `# V4 分析中止报告\n\n**搜索目标:** ${query}\n\n## 分析师评估\n\n${analysisMemo}\n\n---\n*分析师判定该事件不具备足够的可信度/新颖度，Pipeline 提前终止。*`;
+          await throwIfCanceled();
           saveReport(query, abortReport);
-          endMissionTrace();
+          endMissionTrace(traceId);
           return abortReport;
         }
 
@@ -199,12 +225,15 @@ export class AgentSwarmOrchestrator {
     if (depth === 'quick') {
       const quickReport = `# ⚡ OpenClaw 快速扫描报告: ${new Date().toISOString().split('T')[0]}\n\n**搜索目标:** ${query}\n**分析深度:** 快速扫描\n\n---\n\n## 📌 事件分析\n\n${analysisMemo}\n\n---\n*Generated by OpenClaw V4 (Quick Scan Mode)*`;
       
+      await throwIfCanceled();
       saveReport(query, quickReport);
+      await throwIfCanceled();
       await this.persistNarrative(query, analysisMemo, '', relatedNarrative);
-      endMissionTrace();
+      endMissionTrace(traceId);
 
       // Telegram Push
-      await this.pushToTelegram(query, quickReport, relatedNarrative, '⚡ 快速扫描');
+      await throwIfCanceled();
+      await this.pushToTelegram(query, quickReport, relatedNarrative, '⚡ 快速扫描', abortSignal);
 
       console.log(`[SwarmManager] ⚡ Quick Scan 完成. Pipeline 提前终止. (${Date.now() - pipelineStart}ms)`);
       return quickReport;
@@ -215,16 +244,18 @@ export class AgentSwarmOrchestrator {
     // ====================================================
     t0 = Date.now();
     if (!completedPhases.includes('strategist')) {
-        if (await checkCanceled?.()) throw new Error('Canceled by user');
+        await throwIfCanceled();
         onProgress?.('strategist');
         try {
-          strategyReport = await this.strategist.strategize(analysisMemo, investorProfile);
-          logAgentStep('QuantStrategist', 'supply_chain_mapping', analysisMemo, strategyReport, Date.now() - t0);
+          strategyReport = await this.strategist.strategize(analysisMemo, investorProfile, agentOptions);
+          await throwIfCanceled();
+          logAgentStep(traceId, 'QuantStrategist', 'supply_chain_mapping', analysisMemo, strategyReport, Date.now() - t0);
           handoffs.push(createHandoff('QuantStrategist', strategyReport, Date.now() - t0));
         } catch (e: any) {
+          if (isCanceledError(e)) throw e;
           console.error(`[SwarmManager] ⚠️ Strategist phase failed: ${e.message}. Continuing with analyst memo.`);
           strategyReport = analysisMemo; // 降级：直接用分析师备忘录
-          logAgentStep('QuantStrategist', 'supply_chain_mapping_FALLBACK', { error: e.message }, 'Using analyst memo', Date.now() - t0);
+          logAgentStep(traceId, 'QuantStrategist', 'supply_chain_mapping_FALLBACK', { error: e.message }, 'Using analyst memo', Date.now() - t0);
           handoffs.push(createDegradedHandoff('QuantStrategist', strategyReport, Date.now() - t0, e.message));
         }
         
@@ -239,20 +270,22 @@ export class AgentSwarmOrchestrator {
     // ====================================================
     t0 = Date.now();
     if (!completedPhases.includes('council')) {
-        if (await checkCanceled?.()) throw new Error('Canceled by user');
+        await throwIfCanceled();
         onProgress?.('council');
         try {
           if (depth === 'deep') {
-            debateReport = await this.council.convene(strategyReport, investorProfile);
+            debateReport = await this.council.convene(strategyReport, investorProfile, agentOptions);
           } else {
-            debateReport = await this.council.singlePassDebate(strategyReport, investorProfile);
+            debateReport = await this.council.singlePassDebate(strategyReport, investorProfile, agentOptions);
           }
-          logAgentStep('Council', depth === 'deep' ? 'multi_persona_debate' : 'single_pass_debate', strategyReport, debateReport, Date.now() - t0);
+          await throwIfCanceled();
+          logAgentStep(traceId, 'Council', depth === 'deep' ? 'multi_persona_debate' : 'single_pass_debate', strategyReport, debateReport, Date.now() - t0);
           handoffs.push(createHandoff('Council', debateReport, Date.now() - t0, { mode: depth === 'deep' ? 'full' : 'single-pass' }));
         } catch (e: any) {
+          if (isCanceledError(e)) throw e;
           console.error(`[SwarmManager] ⚠️ Council phase failed: ${e.message}. Continuing with strategy report.`);
           debateReport = `## ⚖️ 辩论环节异常\n\n> 辩论 Agent 执行失败: ${e.message}\n\n请参考上游策略师的产业链研报进行独立判断。`;
-          logAgentStep('Council', 'debate_FALLBACK', { error: e.message }, 'Partial output', Date.now() - t0);
+          logAgentStep(traceId, 'Council', 'debate_FALLBACK', { error: e.message }, 'Partial output', Date.now() - t0);
           handoffs.push(createDegradedHandoff('Council', debateReport, Date.now() - t0, e.message));
         }
         
@@ -266,7 +299,7 @@ export class AgentSwarmOrchestrator {
     // Phase 5: Synthesis — 最终研报生成 (standard + deep)
     // ====================================================
     t0 = Date.now();
-    if (await checkCanceled?.()) throw new Error('Canceled by user');
+    await throwIfCanceled();
     onProgress?.('synthesis');
     let finalReport = '';
     
@@ -274,7 +307,17 @@ export class AgentSwarmOrchestrator {
     const handoffSummary = this.buildHandoffSummary(handoffs);
     
     try {
-      finalReport = await this.synthesizer.synthesize(query, analysisMemo, strategyReport, debateReport, undefined, undefined, investorProfile);
+      finalReport = await this.synthesizer.synthesize(
+        query,
+        analysisMemo,
+        strategyReport,
+        debateReport,
+        undefined,
+        undefined,
+        investorProfile,
+        agentOptions,
+      );
+      await throwIfCanceled();
       
       // 如果有降级情况，在报告末尾附加 Pipeline 健康状态
       const degradedSteps = handoffs.filter(h => h.status !== 'success');
@@ -282,13 +325,21 @@ export class AgentSwarmOrchestrator {
         finalReport += `\n\n---\n\n> ⚠️ **Pipeline 健康提示**: ${degradedSteps.length} 个阶段降级运行 (${degradedSteps.map(h => `${h.agentName}: ${h.degradeReason}`).join('; ')})`;
       }
     } catch (e: any) {
+      if (isCanceledError(e)) throw e;
       console.error(`[SwarmManager] ⚠️ Synthesis failed: ${e.message}. Assembling raw report.`);
       // 降级：手动拼装原始文本
       finalReport = `# 📈 OpenClaw 深度研报: ${new Date().toISOString().split('T')[0]}\n\n**搜索目标:** ${query}\n**分析深度:** ${DEPTH_LABELS[depth]}\n\n---\n\n## 📌 事件分析\n\n${analysisMemo}\n\n---\n\n## 🗺️ 产业链研报\n\n${strategyReport}\n\n---\n\n## ⚔️ 多空辩论\n\n${debateReport}\n\n---\n*Generated by OpenClaw Autonomous Intelligence Desk (fallback mode)*`;
     }
-    logAgentStep('Synthesis', 'report_generation', { query, analysisMemo, strategyReport, debateReport, depth }, finalReport, Date.now() - t0);
+    await throwIfCanceled();
+    logAgentStep(traceId, 'Synthesis', 'report_generation', { query, analysisMemo, strategyReport, debateReport, depth }, finalReport, Date.now() - t0);
+
+    const structured = validateTradeDecision(finalReport, query);
+    if (structured) {
+      console.log(`[SwarmPipeline] 📋 结构化提取: driverType=${structured.driverType}, positionSize=${structured.positionSize}`);
+    }
 
     // === 保存 Agent 中间态数据 ===
+    await throwIfCanceled();
     try {
       const debugData = {
         query,
@@ -320,17 +371,20 @@ export class AgentSwarmOrchestrator {
       console.error(`[SwarmManager] ⚠️ 调试数据写入失败: ${err.message}`);
     }
 
+    await throwIfCanceled();
     saveReport(query, finalReport);
 
     // 6. 叙事记忆持久化
+    await throwIfCanceled();
     await this.persistNarrative(query, strategyReport, debateReport, relatedNarrative);
     
     // 7. 保存全链路追踪
-    endMissionTrace();
+    endMissionTrace(traceId);
 
     // 8. Telegram Push
+    await throwIfCanceled();
     const depthEmoji = depth === 'deep' ? '🔬' : depth === 'standard' ? '📊' : '⚡';
-    await this.pushToTelegram(query, finalReport, relatedNarrative, `${depthEmoji} ${depth.toUpperCase()}`);
+    await this.pushToTelegram(query, finalReport, relatedNarrative, `${depthEmoji} ${depth.toUpperCase()}`, abortSignal);
 
     const totalMs = Date.now() - pipelineStart;
     console.log(`\n[SwarmManager] 🎉 Mission Accomplished. Depth=${depth}, Duration=${(totalMs / 1000).toFixed(1)}s, Handoffs=${handoffs.length}`);
@@ -371,12 +425,19 @@ export class AgentSwarmOrchestrator {
   /**
    * Telegram 推送
    */
-  private async pushToTelegram(query: string, report: string, relatedNarrative: any, tag: string) {
+  private async pushToTelegram(
+    query: string,
+    report: string,
+    relatedNarrative: any,
+    tag: string,
+    signal?: AbortSignal,
+  ) {
     try {
       const memoryTag = relatedNarrative ? `♻️ 已更新叙事 (第${relatedNarrative.eventHistory.length + 1}次追踪)` : '🆕 新建叙事';
       const summary = `📊 *${query}*\n${tag} | ${memoryTag}\n\n${report.substring(0, 500).replace(/[*_`]/g, '')}...`;
-      await sendReportSummary(query, summary);
+      await sendReportSummary(query, summary, { signal });
     } catch (e: any) {
+      if (signal?.aborted) throw (signal.reason instanceof Error ? signal.reason : new Error('Canceled by user'));
       console.error(`[SwarmManager] Telegram push failed: ${e.message}`);
     }
   }

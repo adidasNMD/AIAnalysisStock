@@ -19,6 +19,8 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
   --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-serif: 'Merriweather', 'Georgia', serif;
+  --app-sidebar-width: 220px;
+  --macro-strip-height: 48px;
 }
 
 * {

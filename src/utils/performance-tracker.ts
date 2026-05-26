@@ -42,7 +42,7 @@ export interface PerformanceSummary {
 /**
  * 加载绩效数据
  */
-function loadPerformanceData(): TickerPerformance[] {
+export function loadPerformanceData(): TickerPerformance[] {
   try {
     if (fs.existsSync(PERF_DATA_PATH)) {
       return JSON.parse(fs.readFileSync(PERF_DATA_PATH, 'utf-8'));

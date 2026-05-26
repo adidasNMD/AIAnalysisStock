@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/__tests__/**",
+    "src/utils/langchain-callback.ts",
+    "src/test-swarm.ts",
+    "dashboard/**",
+    "vendors/**"
+  ]
+}

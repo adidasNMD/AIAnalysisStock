@@ -1,0 +1,2 @@
+23:  await db.exec(`PRAGMA journal_mode = WAL;`);
+24:  await db.exec(`PRAGMA busy_timeout = 5000;`);

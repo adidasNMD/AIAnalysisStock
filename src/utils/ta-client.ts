@@ -16,6 +16,41 @@ import { getTradingAgentsConfig } from './model-config';
 const TA_BASE_URL = process.env.TRADING_AGENTS_URL || 'http://localhost:8001';
 const REQUEST_TIMEOUT_MS = 600_000; // 10 分钟超时（单只票分析可能较长）
 
+interface RequestOptions {
+  signal?: AbortSignal | undefined;
+}
+
+function getCancelReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getCancelReason(signal);
+  }
+}
+
+function createRequestController(timeoutMs: number, externalSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(new Error(`TradingAgents request timed out after ${Math.round(timeoutMs / 1000)}s`)),
+    timeoutMs,
+  );
+  const onAbort = () => controller.abort(getCancelReason(externalSignal));
+  externalSignal?.addEventListener('abort', onAbort, { once: true });
+  if (externalSignal?.aborted) {
+    onAbort();
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      externalSignal?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
 // ===== 类型定义 =====
 
 export interface TAAnalystReports {
@@ -72,8 +107,10 @@ export interface TAAnalysisResult {
 export async function analyzeTicker(
   ticker: string,
   date?: string,
-  context?: string
+  context?: string,
+  options: RequestOptions = {},
 ): Promise<TAAnalysisResult> {
+  throwIfCanceled(options.signal);
   const analysisDate: string = date || new Date().toISOString().split('T')[0] || '';
   console.log(`[TradingAgents] 🟢 开始分析: ${ticker} (${analysisDate})`);
 
@@ -83,29 +120,33 @@ export async function analyzeTicker(
     // 从统一配置获取 LLM 参数
     const modelConfig = getTradingAgentsConfig();
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const request = createRequestController(REQUEST_TIMEOUT_MS, options.signal);
 
-    const response = await fetch(`${TA_BASE_URL}/api/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ticker,
-        date: analysisDate,
-        config: modelConfig,
-        context,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
+    let response: Response;
+    try {
+      response = await fetch(`${TA_BASE_URL}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker,
+          date: analysisDate,
+          config: modelConfig,
+          context,
+        }),
+        signal: request.signal,
+      });
+    } finally {
+      request.cleanup();
+    }
 
     if (!response.ok) {
       const errorBody = await response.text();
       throw new Error(`TradingAgents API 错误 (${response.status}): ${errorBody}`);
     }
 
+    throwIfCanceled(options.signal);
     const result = await response.json();
+    throwIfCanceled(options.signal);
     const duration = Math.round((Date.now() - startTime) / 1000);
 
     // 解析 TradingAgents 的 log_states_dict 到我们的结构
@@ -114,6 +155,7 @@ export async function analyzeTicker(
 
     return parsed;
   } catch (e: any) {
+    throwIfCanceled(options.signal);
     const duration = Math.round((Date.now() - startTime) / 1000);
     console.error(`[TradingAgents] ❌ ${ticker} 分析失败 (${duration}s): ${e.message}`);
 
@@ -139,15 +181,20 @@ export async function analyzeTicker(
 export async function analyzeMultipleTickers(
   tickers: string[],
   date?: string,
-  onProgress?: (ticker: string, index: number, total: number) => void
+  onProgress?: (ticker: string, index: number, total: number) => void,
+  options: RequestOptions = {},
 ): Promise<TAAnalysisResult[]> {
   console.log(`[TradingAgents] 🟢 批量分析 ${tickers.length} 只标的: ${tickers.join(', ')}`);
 
   const results: TAAnalysisResult[] = [];
+  throwIfCanceled(options.signal);
   for (let i = 0; i < tickers.length; i++) {
+    throwIfCanceled(options.signal);
     const t = tickers[i]!;
     if (onProgress) onProgress(t, i, tickers.length);
-    const result = await analyzeTicker(t, date);
+    throwIfCanceled(options.signal);
+    const result = await analyzeTicker(t, date, undefined, options);
+    throwIfCanceled(options.signal);
     results.push(result);
   }
 
@@ -157,14 +204,20 @@ export async function analyzeMultipleTickers(
 /**
  * 健康检查：TradingAgents 服务是否在线
  */
-export async function checkTAHealth(): Promise<boolean> {
+export async function checkTAHealth(options: RequestOptions = {}): Promise<boolean> {
+  throwIfCanceled(options.signal);
+  const request = createRequestController(5000, options.signal);
   try {
     const response = await fetch(`${TA_BASE_URL}/api/health`, {
-      signal: AbortSignal.timeout(5000),
+      signal: request.signal,
     });
+    throwIfCanceled(options.signal);
     return response.ok;
   } catch {
+    throwIfCanceled(options.signal);
     return false;
+  } finally {
+    request.cleanup();
   }
 }
 

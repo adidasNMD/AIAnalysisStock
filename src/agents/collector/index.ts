@@ -4,6 +4,16 @@ import { RawSignal } from '../../models/types';
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+interface CollectorRequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+  }
+}
+
 export class CollectorAgent {
   private twitterCollector: DesearchCollector;
   private newsCollector: FirecrawlCollector;
@@ -19,14 +29,16 @@ export class CollectorAgent {
    * @param topicOrTicker The central thesis or company to investigate
    * @returns Aggregated array of raw intelligence signals ready for normalisation
    */
-  async collectSignals(topicOrTicker: string): Promise<RawSignal[]> {
+  async collectSignals(topicOrTicker: string, options: CollectorRequestOptions = {}): Promise<RawSignal[]> {
+    throwIfCanceled(options.signal);
     console.log(`\n[CollectorAgent] 🔍 Starting multi-source extraction sweep for: "${topicOrTicker}"...`);
     
     // Fetch signals concurrently from our multi-agents to reduce latency
     const [twitterSignals, newsSignals] = await Promise.all([
-      this.twitterCollector.fetchRecentTweets(topicOrTicker, 15),
-      this.newsCollector.scrapeNews(topicOrTicker, 3)
+      this.twitterCollector.fetchRecentTweets(topicOrTicker, 15, options),
+      this.newsCollector.scrapeNews(topicOrTicker, 3, options)
     ]);
+    throwIfCanceled(options.signal);
 
     const aggregatedSignals = [...twitterSignals, ...newsSignals];
     console.log(`[CollectorAgent] ✅ Sweep complete. Total Raw Signals Found: ${aggregatedSignals.length}`);

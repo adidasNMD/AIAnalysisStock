@@ -1,6 +1,32 @@
 import { AutonomousAgent } from '../core/agent';
+import { isCanceledError } from '../../utils/error-classification';
 
-const COUNCIL_ROLES = [
+interface AgentRequestOptions {
+  signal?: AbortSignal;
+}
+
+function throwIfCanceled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Canceled by user');
+  }
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfCanceled(signal);
+  let onAbort: (() => void) | null = null;
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(resolve, ms);
+    onAbort = () => {
+      clearTimeout(timeoutId);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Canceled by user'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  }).finally(() => {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  });
+}
+
+const ALL_COUNCIL_ROLES = [
   { role: '技术派散户 (Technical Retail Trader)', perspective: '纯技术面分析，关注K线形态、均线系统、量价关系、MACD/RSI 指标。你只看图表，不关心基本面。' },
   { role: '情绪派散户 / WSB 风格 (Emotional Retail / WSB)', perspective: '你是 Reddit WSB 风格的激进散户。你关注 meme 潜力、短期挤空（short squeeze）、gamma squeeze 机会。用激进的语气表达观点。' },
   { role: '机构席位 (Institutional Desk)', perspective: '你代表大型机构的交易台。关注流动性、大单暗盘、期权未平仓量(OI)变化、机构持仓报告(13F)、ETF 资金流向。' },
@@ -8,7 +34,16 @@ const COUNCIL_ROLES = [
   { role: '宏观经济分析师 (Macro Economist)', perspective: '你关注美联储利率政策、收益率曲线、美元指数、全球资金流动、地缘政治、关税政策对该叙事的影响。' },
   { role: '价值投资者 (Value Investor)', perspective: '你信奉巴菲特/格雷厄姆。用 DCF、P/E、P/B、自由现金流等估值框架冷静评估。你讨厌追高和投机。' },
   { role: '量化资金 (Quant Fund)', perspective: '你代表量化交易策略。关注统计套利、因子暴露、波动率微笑曲面、期限结构、跨资产相关性。用数据说话。' },
+  { role: '供应链分析师 (Supply Chain Analyst)', perspective: '你关注上游/下游扰动、物流瓶颈、库存周期、订单能见度、产能利用率和交期变化。你从供应链韧性和传导路径判断叙事真假。' },
+  { role: '科技产业观察者 (Tech Industry Observer)', perspective: '你关注产品迭代节奏、采用曲线、竞争壁垒、平台生态、开发者采纳和技术替代风险。你判断技术叙事是否真的会转化为收入。' },
+  { role: '事件驱动交易员 (Event-Driven Trader)', perspective: '你专注催化剂、财报、并购、监管事件、产品发布和指引变化。你关心事件时间表、预期差和事件后波动收敛。' },
+  { role: '期权做市商 (Options Market Maker)', perspective: '你关注隐含波动率、偏斜(skew)、期限结构、异常期权成交、Gamma 暴露和对冲流。你从衍生品定价判断市场预期。' },
 ];
+
+function selectCouncilRoles(count: number = 7): typeof ALL_COUNCIL_ROLES {
+  const shuffled = [...ALL_COUNCIL_ROLES].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, count);
+}
 
 /**
  * CouncilArbitratorGroup — 多视角辩论议会
@@ -19,20 +54,22 @@ const COUNCIL_ROLES = [
  * 7 个人格 Agent 并发输出纯文本观点，仲裁 Agent 汇总输出最终辩论报告。
  */
 export class CouncilArbitratorGroup {
-  async convene(strategyReport: string, investorProfile?: string): Promise<string> {
-    console.log(`\n[CouncilArbitrator] ⚖️ Convening the high council Swarm (${COUNCIL_ROLES.length} agents)...`);
+  async convene(strategyReport: string, investorProfile?: string, options: AgentRequestOptions = {}): Promise<string> {
+    const councilRoles = selectCouncilRoles();
+    console.log(`\n[CouncilArbitrator] ⚖️ Convening the high council Swarm (${councilRoles.length} agents)...`);
 
     // 分批执行人格 Agent（每批 2 个，批间间隔 3 秒，避免打爆 API 代理）
     const BATCH_SIZE = 2;
     const BATCH_DELAY_MS = 3000;
     const perspectives: string[] = [];
 
-    for (let i = 0; i < COUNCIL_ROLES.length; i += BATCH_SIZE) {
-      const batch = COUNCIL_ROLES.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < councilRoles.length; i += BATCH_SIZE) {
+      throwIfCanceled(options.signal);
+      const batch = councilRoles.slice(i, i + BATCH_SIZE);
       
       if (i > 0) {
         console.log(`[CouncilArbitrator] ⏳ 等待 ${BATCH_DELAY_MS / 1000}s 后启动下一批人格...`);
-        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        await abortableDelay(BATCH_DELAY_MS, options.signal);
       }
       
       console.log(`[CouncilArbitrator] 🎭 启动第 ${Math.floor(i / BATCH_SIZE) + 1} 批人格 (${batch.map(b => b.role.split(' (')[0]).join(', ')})...`);
@@ -52,12 +89,15 @@ export class CouncilArbitratorGroup {
         });
 
         try {
+          throwIfCanceled(options.signal);
           const opinion = await agent.executeTextTask(
             `基于上游策略师的产业链研报，从你的人格立场发表深度交易观点。`,
-            strategyReport
+            strategyReport,
+            { ...(options.signal ? { signal: options.signal } : {}) },
           );
           return `### 🎭 ${role}\n\n${opinion}`;
         } catch (e: any) {
+          if (isCanceledError(e)) throw e;
           console.error(`[Council] ⚠️ 人格 ${role} 发言失败: ${e.message}`);
           return `### 🎭 ${role}\n\n> ⚠️ 该人格 Agent 发言失败: ${e.message}`;
         }
@@ -85,6 +125,7 @@ export class CouncilArbitratorGroup {
 6. 所有输出使用中文`
     });
 
+    throwIfCanceled(options.signal);
     const debateReport = await arbitrator.executeTextTask(
       `作为首席仲裁官，基于以下 7 位分析师的辩论证词，撰写最终的《多视角辩论交易备忘录》。
 ${investorProfile ? `\n=== 投资者画像（请据此调整操作建议的风格和仓位建议）===\n${investorProfile.substring(0, 1500)}\n` : ''}
@@ -107,7 +148,8 @@ ${investorProfile ? `\n=== 投资者画像（请据此调整操作建议的风�
 
 ## 📊 仲裁裁决
 你的最终判断：该叙事目前的多空胜率、建议仓位比例、操作策略`,
-      `=== 策略师产业链研报 ===\n${strategyReport}\n\n=== 议会辩论证词 ===\n${allPerspectivesText}`
+      `=== 策略师产业链研报 ===\n${strategyReport}\n\n=== 议会辩论证词 ===\n${allPerspectivesText}`,
+      { ...(options.signal ? { signal: options.signal } : {}) },
     );
 
     // 组装完整辩论报告（包含每个人格的原始发言 + 仲裁结论）
@@ -123,10 +165,11 @@ ${investorProfile ? `\n=== 投资者画像（请据此调整操作建议的风�
    * 适用于 quick/standard 分析模式。
    * 一次 LLM 调用中同时扮演所有 7 个人格，输出完整辩论报告。
    */
-  async singlePassDebate(strategyReport: string, investorProfile?: string): Promise<string> {
+  async singlePassDebate(strategyReport: string, investorProfile?: string, options: AgentRequestOptions = {}): Promise<string> {
     console.log(`\n[CouncilArbitrator] ⚡ 启动单次辩论模式 (Single-pass, 1 次 LLM 调用)...`);
 
-    const rolesDescription = COUNCIL_ROLES.map((r, i) => `${i + 1}. **${r.role}**: ${r.perspective}`).join('\n');
+    const councilRoles = selectCouncilRoles();
+    const rolesDescription = councilRoles.map((r, i) => `${i + 1}. **${r.role}**: ${r.perspective}`).join('\n');
 
     const agent = new AutonomousAgent({
       role: '首席仲裁官 + 7 人格议会 (Single-pass Mode)',
@@ -154,7 +197,8 @@ ${rolesDescription}
 
     const debateReport = await agent.executeTextTask(
       `基于上游策略师的产业链研报，依次从 7 个不同人格的立场发表观点，然后作为首席仲裁官给出最终裁决。`,
-      context
+      context,
+      { ...(options.signal ? { signal: options.signal } : {}) },
     );
 
     console.log(`[CouncilArbitrator] 🏆 单次辩论报告完成 (${debateReport.length} 字)`);

@@ -1,0 +1,25 @@
+
+ RUN  v0.34.6 /Users/dujialun/Desktop/AIAnalysisStock-main
+
+ ✓ src/__tests__/schemas.test.ts  (16 tests) 5ms
+stdout | unknown test
+[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+
+stdout | unknown test
+[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+stdout | unknown test
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+
+stdout | unknown test
+<empty line>
+stderr | unknown test
+[yahoo-finance2] Unsupported environment: Requires Node >= 22.0.0, found 16.20.2. (runtime=node, version=16.20.2). Things might break or work unexpectedly!
+
+ ✓ src/__tests__/decision-trail.test.ts  (14 tests) 5ms
+
+ Test Files  2 passed (2)
+      Tests  30 passed (30)
+   Start at  11:31:54
+   Duration  867ms (transform 137ms, setup 0ms, collect 549ms, tests 10ms, environment 0ms, prepare 97ms)
+

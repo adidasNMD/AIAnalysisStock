@@ -5,6 +5,7 @@
       "name": "NVIDIA",
       "sector": "Semiconductor",
       "narrative": "AI Data Center GPU Dominance",
+      "role": "sector_leader",
       "alerts": { "priceSurge": 5, "volumeSurge": 2.5, "smaBreakout": [20, 50], "edgarWatch": true }
     },
     {
@@ -12,6 +13,7 @@
       "name": "Taiwan Semiconductor",
       "sector": "Semiconductor",
       "narrative": "Advanced Node Foundry Dominance",
+      "role": "sector_leader",
       "alerts": { "priceSurge": 4, "volumeSurge": 2.0, "smaBreakout": [20], "edgarWatch": false }
     },
     {
@@ -19,6 +21,7 @@
       "name": "AST SpaceMobile",
       "sector": "Space",
       "narrative": "Direct-to-Cell LEO Satellite Network",
+      "role": "target",
       "alerts": { "priceSurge": 10, "volumeSurge": 3.0, "smaBreakout": [20], "edgarWatch": true }
     }
   ],
